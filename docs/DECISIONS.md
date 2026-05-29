@@ -56,6 +56,21 @@ the dogfood and would add cert provisioning the agent can't self-serve yet. Agen
 for any non-tailnet exposure.
 **Rejected:** self-signed TLS now (cert distribution burden, no security gain inside WireGuard).
 
+## D12 — Cross-platform PTY via `github.com/aymanbagabas/go-pty`
+**Why:** one terminal codepath for unix (creack/pty) AND Windows (ConPTY), still CGO-free →
+keeps the single-binary cross-compile-from-one-host story intact. Verified building for
+darwin/windows/linux with `CGO_ENABLED=0`.
+**Rejected:** creack/pty alone (no Windows); shelling without a PTY (breaks interactive TUIs,
+no colors/resize).
+
+## D13 — WoL: agent broadcasts via an unconnected UDP socket with SO_BROADCAST
+**Why:** the hub never reaches a sleeping leaf; a peer agent on the target's LAN sends the magic
+packet. Agents report MACs in the heartbeat so the hub knows an offline machine's address →
+turnkey "Wake" (no manual MAC entry). Connecting a UDP socket to 255.255.255.255 fails on macOS,
+so we use an unconnected socket + WriteTo, hitting the limited broadcast AND each interface's
+directed broadcast. Hub retains offline machines (persisted∪live) so a sleeping host stays
+visible/wakeable. **Verified:** slept + woke the real PC from the dashboard.
+
 ## D9 — Provisional name "Lattice"
 **Why:** mesh imagery, reasonably clear of big collisions (`helm`=k8s, `fleet`=fleetdm).
 **Status:** placeholder; finalize before any public/GitHub release.

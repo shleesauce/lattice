@@ -6,8 +6,25 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 ---
 
 ## Current phase
-**Phase 1 COMPLETE & verified (2026-05-29).** → Next: Phase 2 (xterm.js terminal +
-file browser + wake-the-PC). See ROADMAP.
+**Phases 1 & 2 COMPLETE & verified on the real fleet (2026-05-29).** → Next: Phase 4
+(packaging/installers — the success criterion) and/or Phase 3 (code-server). See ROADMAP.
+
+## Phase 2 — what shipped and is VERIFIED
+- **Interactive terminal:** per-agent PTY via `github.com/aymanbagabas/go-pty` (unix + Windows
+  ConPTY, CGO-free). Dashboard xterm.js terminal over `/ws/terminal?agent=<id>`. Verified: real
+  zsh session on mbp through the browser (independent Playwright agent) + WS-level echo test.
+- **File browser:** scoped list (`GET /api/agents/{id}/files?path=`) + download
+  (`GET /api/agents/{id}/download?path=`), dirs-first, breadcrumb + up-nav. Verified: listed
+  mini-ops /tmp + PC `C:\` (cross-OS), downloaded a seeded file, browser UI renders 30+ entries.
+- **Wake-on-LAN:** agent broadcasts a magic packet (SO_BROADCAST, unconnected socket +
+  per-interface directed broadcasts — macOS needs this). **Verified end-to-end on real hardware:**
+  slept the PC → it dropped offline (still visible via offline-retention) → POST wake from the
+  dashboard (mini-ops agent as LAN sender) → PC woke + agent reconnected in ~35s.
+- **Offline-machine retention:** hub `fleet()` merges persisted (offline, last-known metrics+MACs)
+  with the live registry, so a sleeping machine stays visible and wakeable. Agents report their
+  MACs in the heartbeat → Wake is turnkey (no manual MAC entry).
+- Reviewer majors fixed: WoL SO_BROADCAST + macOS broadcast path; PTY `explicitClose` data race
+  (atomic.Bool).
 
 ## Phase 1 — what shipped and is RUNNING
 - Single Go binary (`github.com/dylanstoryyy/lattice`), roles `hub`/`agent`. Go 1.26.3 installed.

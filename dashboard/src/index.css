@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #09090b;
+  color: #e4e4e7;
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Hairline grid texture — the differentiation anchor: an "ops console" lattice. */
+.lattice-bg {
+  background-image:
+    linear-gradient(to right, rgba(63, 63, 70, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(63, 63, 70, 0.18) 1px, transparent 1px);
+  background-size: 44px 44px;
+  background-position: center top;
+}
+
+/* Terminal scroll surface */
+.term-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}
+.term-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.term-scroll::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 8px;
+}

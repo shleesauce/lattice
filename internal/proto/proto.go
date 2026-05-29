@@ -30,7 +30,118 @@ const (
 	TypeRegistered MessageType = "registered"  // ack of register
 	TypeRunCommand MessageType = "run_command" // one-shot command request
 	TypePing       MessageType = "ping"        // hub keepalive (agent need not reply)
+
+	// --- Phase 2: interactive terminal (PTY) ---
+	// Hub → Agent
+	TypeTermStart  MessageType = "term_start"  // open a PTY session
+	TypeTermInput  MessageType = "term_input"  // keystrokes to the PTY (Data base64)
+	TypeTermResize MessageType = "term_resize" // window resize
+	TypeTermClose  MessageType = "term_close"  // close the PTY session
+	// Agent → Hub
+	TypeTermOutput MessageType = "term_output" // PTY output (Data base64)
+	TypeTermExit   MessageType = "term_exit"   // PTY session ended
+
+	// --- Phase 2: scoped file browser (request/response, correlated by ReqID) ---
+	// Hub → Agent
+	TypeFileList MessageType = "file_list" // list a directory
+	TypeFileGet  MessageType = "file_get"  // fetch a file's bytes (size-capped)
+	// Agent → Hub
+	TypeFileListResult MessageType = "file_list_result"
+	TypeFileGetResult  MessageType = "file_get_result"
+
+	// --- Phase 2: Wake-on-LAN (request/response, correlated by ReqID) ---
+	// Hub → Agent
+	TypeWake MessageType = "wake" // send a magic packet on this agent's LAN
+	// Agent → Hub
+	TypeWakeResult MessageType = "wake_result"
 )
+
+// FileGetMaxBytes caps a single file_get response (base64 over the JSON WS).
+const FileGetMaxBytes = 10 << 20 // 10 MiB
+
+// --- Phase 2 payloads: terminal ---
+
+// TermStartPayload opens a PTY. Shell empty ⇒ agent picks the OS default.
+type TermStartPayload struct {
+	TermID string `json:"termId"`
+	Shell  string `json:"shell,omitempty"`
+	Cols   uint16 `json:"cols"`
+	Rows   uint16 `json:"rows"`
+}
+
+// TermDataPayload carries terminal bytes in both directions. Data is base64 so
+// raw control bytes / partial UTF-8 survive the JSON transport intact.
+type TermDataPayload struct {
+	TermID string `json:"termId"`
+	Data   string `json:"data"` // base64-encoded bytes
+}
+
+// TermResizePayload resizes a live PTY.
+type TermResizePayload struct {
+	TermID string `json:"termId"`
+	Cols   uint16 `json:"cols"`
+	Rows   uint16 `json:"rows"`
+}
+
+// TermControlPayload references a PTY session (close / exit).
+type TermControlPayload struct {
+	TermID   string `json:"termId"`
+	ExitCode int    `json:"exitCode,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// --- Phase 2 payloads: file browser ---
+
+// FileReqPayload requests a directory listing or a file fetch.
+type FileReqPayload struct {
+	ReqID string `json:"reqId"`
+	Path  string `json:"path"` // empty ⇒ agent's home directory
+}
+
+// FileEntry is one item in a directory listing.
+type FileEntry struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"` // RFC3339
+}
+
+// FileListResultPayload answers a file_list.
+type FileListResultPayload struct {
+	ReqID   string      `json:"reqId"`
+	Path    string      `json:"path"`    // resolved absolute path listed
+	Parent  string      `json:"parent"`  // parent dir for up-navigation
+	Entries []FileEntry `json:"entries"` // dirs first, then files (agent sorts)
+	Error   string      `json:"error,omitempty"`
+}
+
+// FileGetResultPayload answers a file_get. Content is base64; truncated if the
+// file exceeds FileGetMaxBytes (Truncated=true).
+type FileGetResultPayload struct {
+	ReqID     string `json:"reqId"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	Content   string `json:"content"` // base64
+	Truncated bool   `json:"truncated,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// --- Phase 2 payloads: Wake-on-LAN ---
+
+// WakePayload asks the agent to broadcast a WoL magic packet for the target MAC.
+type WakePayload struct {
+	ReqID string `json:"reqId"`
+	MAC   string `json:"mac"` // aa:bb:cc:dd:ee:ff or aa-bb-... etc.
+}
+
+// WakeResultPayload answers a wake.
+type WakeResultPayload struct {
+	ReqID string `json:"reqId"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
 
 // Envelope wraps every message. Payload is the type-specific body.
 type Envelope struct {

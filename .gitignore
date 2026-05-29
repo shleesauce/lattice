@@ -1,0 +1,27 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# Node / dashboard
+node_modules/
+dashboard/dist/
+.vite/
+
+# Local / secrets
+.env
+.env.*
+*.pem
+*.key
+lattice.db
+*.sqlite
+*.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.log

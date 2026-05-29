@@ -214,8 +214,12 @@ func session(ctx context.Context, wsURL string, cfg config, version string) (sto
 	// Heartbeat loop.
 	go heartbeatLoop(sessCtx, outbound)
 
+	// Per-session PTY registry; torn down with the connection.
+	terms := newTerminals()
+	defer terms.closeAll()
+
 	// Read loop drives the session; it returns when the connection drops.
-	readErr := readLoop(sessCtx, conn, outbound)
+	readErr := readLoop(sessCtx, conn, outbound, terms)
 
 	cancel()
 	<-writerDone
@@ -276,7 +280,7 @@ func heartbeatLoop(ctx context.Context, outbound chan<- []byte) {
 
 // readLoop consumes frames from the hub and dispatches them. It returns when
 // the connection produces an error (drop, deadline, ctx cancel).
-func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte) error {
+func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte, terms *terminals) error {
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -302,6 +306,58 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte)
 			go runCommand(ctx, rc, outbound)
 		case proto.TypePing:
 			// Keepalive: nothing to do. Control pings are handled by gorilla.
+
+		case proto.TypeTermStart:
+			var p proto.TermStartPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad term_start: %v", err)
+				continue
+			}
+			terms.startTerm(ctx, p, outbound)
+		case proto.TypeTermInput:
+			var p proto.TermDataPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			terms.input(p)
+		case proto.TypeTermResize:
+			var p proto.TermResizePayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			terms.resize(p)
+		case proto.TypeTermClose:
+			var p proto.TermControlPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			if terms.close(p.TermID) {
+				terms.sendExit(ctx, outbound, p.TermID, 0, "")
+			}
+
+		case proto.TypeFileList:
+			var p proto.FileReqPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad file_list: %v", err)
+				continue
+			}
+			go listFiles(ctx, p, outbound)
+		case proto.TypeFileGet:
+			var p proto.FileReqPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad file_get: %v", err)
+				continue
+			}
+			go getFile(ctx, p, outbound)
+
+		case proto.TypeWake:
+			var p proto.WakePayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad wake: %v", err)
+				continue
+			}
+			go wake(ctx, p, outbound)
+
 		default:
 			log.Printf("agent: ignoring unexpected frame %q", env.Type)
 		}

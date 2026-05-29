@@ -9,9 +9,12 @@ interface Props {
   onSelect: (id: string) => void
   runs: Record<string, CommandRun>
   registerRun: (cmdId: string, agentId: string, command: string) => void
+  // embedded: rendered inside ConsolePanel, which already owns the section
+  // chrome (header + target selector). Skip our own to avoid double framing.
+  embedded?: boolean
 }
 
-export function CommandPanel({ agents, selectedId, onSelect, runs, registerRun }: Props) {
+export function CommandPanel({ agents, selectedId, onSelect, runs, registerRun, embedded }: Props) {
   const [command, setCommand] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -43,28 +46,8 @@ export function CommandPanel({ agents, selectedId, onSelect, runs, registerRun }
     }
   }
 
-  return (
-    <section className="flex h-full min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/60">
-      <header className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
-        <h2 className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-zinc-400">command</h2>
-        <div className="ml-auto">
-          <select
-            value={selectedId ?? ''}
-            onChange={(e) => onSelect(e.target.value)}
-            className="max-w-[16rem] rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-zinc-200 focus:border-emerald-500/60 focus:outline-none"
-          >
-            <option value="" disabled>
-              select target…
-            </option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {(a.name || a.hostname) + (a.online ? '' : '  (offline)')}
-              </option>
-            ))}
-          </select>
-        </div>
-      </header>
-
+  const body = (
+    <>
       {/* input */}
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-stretch gap-2">
@@ -95,6 +78,35 @@ export function CommandPanel({ agents, selectedId, onSelect, runs, registerRun }
 
       {/* terminal */}
       <Terminal runs={agentRuns} hasSelection={!!selected} />
+    </>
+  )
+
+  if (embedded) {
+    return <div className="flex min-h-0 flex-1 flex-col">{body}</div>
+  }
+
+  return (
+    <section className="flex h-full min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/60">
+      <header className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-3">
+        <h2 className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-zinc-400">command</h2>
+        <div className="ml-auto">
+          <select
+            value={selectedId ?? ''}
+            onChange={(e) => onSelect(e.target.value)}
+            className="max-w-[16rem] rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 font-mono text-xs text-zinc-200 focus:border-emerald-500/60 focus:outline-none"
+          >
+            <option value="" disabled>
+              select target…
+            </option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {(a.name || a.hostname) + (a.online ? '' : '  (offline)')}
+              </option>
+            ))}
+          </select>
+        </div>
+      </header>
+      {body}
     </section>
   )
 }

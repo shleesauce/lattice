@@ -11,6 +11,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -36,6 +37,19 @@ const agentReadTimeout = 20 * time.Second
 // agentWriteTimeout bounds a hub→agent write so a dead/slow agent socket cannot
 // block the dispatching HTTP handler or the per-heartbeat fleet broadcast.
 const agentWriteTimeout = 10 * time.Second
+
+// terminalWriteTimeout bounds a hub→browser terminal write so a stalled browser
+// socket cannot block the agentws read loop forwarding PTY output.
+const terminalWriteTimeout = 10 * time.Second
+
+// terminalReadTimeout bounds how long the hub waits for the next frame from a
+// browser terminal. An idle interactive shell still pings via gorilla control
+// frames; a dead browser trips this and the bridge unwinds.
+const terminalReadTimeout = 5 * time.Minute
+
+// pendingTimeout bounds a file/wake round-trip to the agent before the hub
+// gives up and returns an error to the HTTP caller.
+const pendingTimeout = 10 * time.Second
 
 // Hub holds the shared runtime state for a running controller.
 type Hub struct {
@@ -120,11 +134,67 @@ func (h *Hub) sweepLoop(ctx context.Context) {
 
 // broadcastFleet sends a full fleet snapshot to every dashboard client.
 func (h *Hub) broadcastFleet() {
-	agents := h.registry.snapshot(offlineAfter)
 	h.registry.broadcast(map[string]any{
 		"type":   "fleet",
-		"agents": agents,
+		"agents": h.fleet(),
 	})
+}
+
+// fleet returns the dashboard view of every known machine: the UNION of agents
+// persisted in the store (shown offline with last-known metrics + MACs) and the
+// live registry (online + fresh metrics override). Offline/disconnected
+// machines therefore remain visible — required so a sleeping host can still be
+// woken via WoL. Stable-sorted by id.
+func (h *Hub) fleet() []Agent {
+	live := h.registry.snapshot(offlineAfter)
+	byID := make(map[string]Agent, len(live))
+	for _, a := range live {
+		byID[a.ID] = a
+	}
+
+	persisted, err := h.store.ListAgents()
+	if err != nil {
+		log.Printf("fleet: list persisted agents failed: %v", err)
+	} else {
+		for _, rec := range persisted {
+			if _, ok := byID[rec.ID]; ok {
+				// Live registry entry wins (fresh metrics / online state).
+				continue
+			}
+			byID[rec.ID] = agentFromRecord(rec)
+		}
+	}
+
+	out := make([]Agent, 0, len(byID))
+	for _, a := range byID {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// agentFromRecord builds an offline dashboard Agent from a persisted row and
+// its last-known heartbeat metrics.
+func agentFromRecord(rec AgentRecord) Agent {
+	return Agent{
+		ID:           rec.ID,
+		Name:         rec.Name,
+		Hostname:     rec.Hostname,
+		OS:           rec.OS,
+		Arch:         rec.Arch,
+		AgentVersion: rec.AgentVersion,
+		Online:       false,
+		LastSeen:     rec.LastSeen.UTC().Format(time.RFC3339),
+		UptimeSec:    rec.Metrics.UptimeSec,
+		DiskTotal:    rec.Metrics.DiskTotal,
+		DiskFree:     rec.Metrics.DiskFree,
+		MemTotal:     rec.Metrics.MemTotal,
+		DiskUsedPct:  rec.Metrics.DiskUsedPct,
+		MemUsedPct:   rec.Metrics.MemUsedPct,
+		LoadAvg1:     rec.Metrics.LoadAvg1,
+		CPUCount:     rec.Metrics.CPUCount,
+		MACs:         copyMACs(rec.Metrics.MACs),
+	}
 }
 
 // randomToken returns an 8-char hex enrollment token.
@@ -138,9 +208,24 @@ func randomToken() string {
 
 // newCmdID returns a random 16-char hex command id.
 func newCmdID() string {
+	return randomID("cmd")
+}
+
+// newTermID returns a random terminal-session id.
+func newTermID() string {
+	return randomID("term")
+}
+
+// newReqID returns a random request-correlation id for file/wake round-trips.
+func newReqID() string {
+	return randomID("req")
+}
+
+// randomID returns a random 16-char hex id with a fallback prefix.
+func randomID(prefix string) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return "cmd" + time.Now().Format("150405.000")
+		return prefix + time.Now().Format("150405.000")
 	}
 	return hex.EncodeToString(b)
 }

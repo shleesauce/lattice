@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
@@ -46,7 +48,37 @@ func gatherMetrics(ctx context.Context) proto.HeartbeatPayload {
 		hb.LoadAvg1 = avg.Load1
 	}
 
+	hb.MACs = hardwareMACs()
+
 	return hb
+}
+
+// hardwareMACs returns the deduped physical-interface MAC addresses, skipping
+// loopback, down, and zero-address interfaces. The hub keeps the last-known set
+// so an offline machine can still be woken by a LAN peer.
+func hardwareMACs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagLoopback != 0 || ifc.Flags&net.FlagUp == 0 {
+			continue
+		}
+		mac := ifc.HardwareAddr.String()
+		if mac == "" || mac == "00:00:00:00:00:00" {
+			continue
+		}
+		mac = strings.ToLower(mac)
+		if _, dup := seen[mac]; dup {
+			continue
+		}
+		seen[mac] = struct{}{}
+		out = append(out, mac)
+	}
+	return out
 }
 
 // rootPath is the volume to report disk usage for: "/" on unix, the system

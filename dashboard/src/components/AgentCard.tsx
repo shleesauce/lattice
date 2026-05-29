@@ -1,4 +1,5 @@
-import type { Agent } from '../types'
+import { useState } from 'react'
+import type { Agent, WakeResult } from '../types'
 import { humanBytes, humanUptime, pct, shortTime } from '../format'
 import { Meter, OSGlyph } from './Glyphs'
 
@@ -6,19 +7,24 @@ interface Props {
   agent: Agent
   selected: boolean
   onSelect: (id: string) => void
+  canWake: boolean
+  onWake: (mac: string) => Promise<WakeResult>
 }
 
-export function AgentCard({ agent, selected, onSelect }: Props) {
+export function AgentCard({ agent, selected, onSelect, canWake, onWake }: Props) {
   const online = agent.online
+  const mac = agent.macs?.[0]
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(agent.id)}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onSelect(agent.id))}
       aria-pressed={selected}
       className={[
-        'group relative flex flex-col gap-4 rounded-xl border p-4 text-left transition-all duration-200 animate-risein',
+        'group relative flex cursor-pointer flex-col gap-4 rounded-xl border p-4 text-left transition-all duration-200 animate-risein',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/60',
-        online ? 'border-zinc-800 bg-zinc-900/60' : 'border-zinc-900 bg-zinc-950/60 opacity-60',
+        online ? 'border-zinc-800 bg-zinc-900/60' : 'border-zinc-900 bg-zinc-950/60 opacity-80',
         selected
           ? 'border-emerald-500/70 bg-zinc-900 shadow-[0_0_0_1px_rgba(16,185,129,0.4),0_8px_30px_-12px_rgba(16,185,129,0.5)]'
           : 'hover:border-zinc-700 hover:bg-zinc-900',
@@ -60,7 +66,54 @@ export function AgentCard({ agent, selected, onSelect }: Props) {
         </span>
         <span className="text-zinc-600">v{agent.agentVersion || '0'}</span>
       </div>
-    </button>
+
+      {!online && <WakeRow mac={mac} canWake={canWake} onWake={onWake} />}
+    </div>
+  )
+}
+
+function WakeRow({ mac, canWake, onWake }: { mac?: string; canWake: boolean; onWake: (mac: string) => Promise<WakeResult> }) {
+  const [state, setState] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle')
+  const [msg, setMsg] = useState('')
+
+  const disabled = !mac || !canWake || state === 'sending'
+  const title = !mac
+    ? 'no known MAC for this machine'
+    : !canWake
+      ? 'needs an online agent on the same LAN to broadcast'
+      : `wake via WoL (${mac})`
+
+  const fire = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (disabled || !mac) return
+    setState('sending')
+    setMsg('')
+    const res = await onWake(mac)
+    if (res.ok) {
+      setState('ok')
+      setMsg('magic packet sent')
+    } else {
+      setState('error')
+      setMsg(res.error || 'wake failed')
+    }
+    setTimeout(() => setState((s) => (s === 'sending' ? s : 'idle')), 4000)
+  }
+
+  return (
+    <div className="flex items-center gap-2 border-t border-zinc-800/70 pt-3" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        onClick={fire}
+        disabled={disabled}
+        title={title}
+        className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 font-display text-[11px] font-semibold uppercase tracking-wider text-amber-300 transition-colors hover:border-amber-400/70 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-600"
+      >
+        {state === 'sending' ? 'waking…' : 'wake'}
+      </button>
+      {state === 'idle' && mac && <span className="truncate font-mono text-[10px] text-zinc-600">{mac}</span>}
+      {state === 'ok' && <span className="font-mono text-[10px] text-emerald-400">{msg}</span>}
+      {state === 'error' && <span className="truncate font-mono text-[10px] text-red-400">{msg}</span>}
+    </div>
   )
 }
 

@@ -1,13 +1,29 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFleet, type ConnState } from './useFleet'
 import { FleetGrid } from './components/FleetGrid'
-import { CommandPanel } from './components/CommandPanel'
+import { ConsolePanel } from './components/ConsolePanel'
+import { wakeAgent } from './api'
 
 export default function App() {
   const { agents, health, loading, error, conn, runs, registerRun } = useFleet()
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const onlineCount = agents.filter((a) => a.online).length
+
+  // A sender for Wake-on-LAN: any online agent on the target's LAN broadcasts.
+  const firstOnlineId = useMemo(() => agents.find((a) => a.online)?.id ?? null, [agents])
+
+  const onWake = useCallback(
+    async (mac: string) => {
+      if (!firstOnlineId) return { ok: false, error: 'no online agent to broadcast from' }
+      try {
+        return await wakeAgent(firstOnlineId, mac)
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : 'wake failed' }
+      }
+    },
+    [firstOnlineId],
+  )
 
   // Auto-select the first online agent once the fleet lands.
   useEffect(() => {
@@ -31,12 +47,14 @@ export default function App() {
                 error={error}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                canWake={!!firstOnlineId}
+                onWake={onWake}
               />
             </div>
           </div>
 
           <div className="min-h-[420px] lg:min-h-0 lg:h-[calc(100vh-7rem)] lg:sticky lg:top-5">
-            <CommandPanel
+            <ConsolePanel
               agents={agents}
               selectedId={selectedId}
               onSelect={setSelectedId}

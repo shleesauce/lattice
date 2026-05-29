@@ -1,4 +1,4 @@
-import type { Agent } from '../types'
+import type { Agent, WakeResult } from '../types'
 import { AgentCard } from './AgentCard'
 
 interface Props {
@@ -7,9 +7,11 @@ interface Props {
   error: string | null
   selectedId: string | null
   onSelect: (id: string) => void
+  canWake: boolean
+  onWake: (mac: string) => Promise<WakeResult>
 }
 
-export function FleetGrid({ agents, loading, error, selectedId, onSelect }: Props) {
+export function FleetGrid({ agents, loading, error, selectedId, onSelect, canWake, onWake }: Props) {
   if (loading) return <SkeletonGrid />
   if (error) return <ErrorState message={error} />
   if (agents.length === 0) return <EmptyState />
@@ -22,7 +24,14 @@ export function FleetGrid({ agents, loading, error, selectedId, onSelect }: Prop
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       {sorted.map((a) => (
-        <AgentCard key={a.id} agent={a} selected={a.id === selectedId} onSelect={onSelect} />
+        <AgentCard
+          key={a.id}
+          agent={a}
+          selected={a.id === selectedId}
+          onSelect={onSelect}
+          canWake={canWake}
+          onWake={onWake}
+        />
       ))}
     </div>
   )

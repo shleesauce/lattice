@@ -25,7 +25,7 @@ func (h *Hub) handleDashboardWS(w http.ResponseWriter, r *http.Request) {
 	// Initial snapshot on connect.
 	if err := d.send(map[string]any{
 		"type":   "fleet",
-		"agents": h.registry.snapshot(offlineAfter),
+		"agents": h.fleet(),
 	}); err != nil {
 		return
 	}

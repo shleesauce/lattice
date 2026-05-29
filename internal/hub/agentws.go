@@ -157,6 +157,50 @@ func (h *Hub) readLoop(ac *agentConn) {
 				"error":    ex.Error,
 			})
 
+		case proto.TypeTermOutput:
+			var d proto.TermDataPayload
+			if err := proto.As(env, &d); err != nil {
+				continue
+			}
+			if t, ok := h.registry.getTerminal(d.TermID); ok {
+				if err := t.send(map[string]any{"type": "output", "data": d.Data}); err != nil {
+					t.close()
+					h.registry.removeTerminal(d.TermID)
+				}
+			}
+
+		case proto.TypeTermExit:
+			var c proto.TermControlPayload
+			if err := proto.As(env, &c); err != nil {
+				continue
+			}
+			if t, ok := h.registry.getTerminal(c.TermID); ok {
+				_ = t.send(map[string]any{"type": "exit"})
+				t.close()
+				h.registry.removeTerminal(c.TermID)
+			}
+
+		case proto.TypeFileListResult:
+			var res proto.FileListResultPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			h.registry.resolvePending(res.ReqID, env)
+
+		case proto.TypeFileGetResult:
+			var res proto.FileGetResultPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			h.registry.resolvePending(res.ReqID, env)
+
+		case proto.TypeWakeResult:
+			var res proto.WakeResultPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			h.registry.resolvePending(res.ReqID, env)
+
 		default:
 			// Ignore unknown / hub-bound types received from an agent.
 		}

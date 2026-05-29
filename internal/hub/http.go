@@ -31,6 +31,7 @@ func (h *Hub) routes() http.Handler {
 
 	mux.HandleFunc("/ws/agent", h.handleAgentWS)
 	mux.HandleFunc("/ws/dashboard", h.handleDashboardWS)
+	mux.HandleFunc("/ws/terminal", h.handleTerminalWS)
 
 	mux.Handle("/", h.staticHandler())
 	return mux
@@ -40,29 +41,53 @@ func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"version": h.version,
-		"agents":  len(h.registry.snapshot(offlineAfter)),
+		"agents":  len(h.fleet()),
 	})
 }
 
 func (h *Hub) handleFleet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"agents": h.registry.snapshot(offlineAfter),
+		"agents": h.fleet(),
 	})
 }
 
-// handleAgentSub routes /api/agents/{id}/exec.
+// handleAgentSub routes the /api/agents/{id}/{action} subtree.
 func (h *Hub) handleAgentSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 	id, action, ok := strings.Cut(rest, "/")
-	if !ok || action != "exec" || id == "" {
+	if !ok || id == "" {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+
+	switch action {
+	case "exec":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleExec(w, r, id)
+	case "files":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleFiles(w, r, id)
+	case "download":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleDownload(w, r, id)
+	case "wake":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleWake(w, r, id)
+	default:
+		http.NotFound(w, r)
 	}
-	h.handleExec(w, r, id)
 }
 
 func (h *Hub) handleExec(w http.ResponseWriter, r *http.Request, agentID string) {

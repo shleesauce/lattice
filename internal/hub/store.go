@@ -102,6 +102,50 @@ func (s *Store) UpdateMetrics(id string, m proto.HeartbeatPayload, seen time.Tim
 	return err
 }
 
+// ListAgents returns every persisted agent with its last-known metrics parsed
+// from metrics_json. A malformed/empty metrics blob yields zero-value metrics
+// rather than failing the whole listing. Used by the hub to keep offline
+// machines visible in the fleet view (and woken via WoL).
+func (s *Store) ListAgents() ([]AgentRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT id, name, hostname, os, arch, agent_version, first_seen, last_seen, metrics_json
+		FROM agents
+		ORDER BY id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AgentRecord
+	for rows.Next() {
+		var (
+			rec         AgentRecord
+			firstSeen   string
+			lastSeen    string
+			metricsJSON sql.NullString
+		)
+		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Hostname, &rec.OS, &rec.Arch,
+			&rec.AgentVersion, &firstSeen, &lastSeen, &metricsJSON); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse(time.RFC3339, firstSeen); err == nil {
+			rec.FirstSeen = t
+		}
+		if t, err := time.Parse(time.RFC3339, lastSeen); err == nil {
+			rec.LastSeen = t
+		}
+		if metricsJSON.Valid && metricsJSON.String != "" {
+			var m proto.HeartbeatPayload
+			if err := json.Unmarshal([]byte(metricsJSON.String), &m); err == nil {
+				rec.Metrics = m
+			}
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 // InsertCommandStarted records a dispatched command with no exit yet.
 func (s *Store) InsertCommandStarted(cmdID, agentID, command string, started time.Time) error {
 	_, err := s.db.Exec(`

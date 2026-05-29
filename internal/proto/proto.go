@@ -173,6 +173,10 @@ type HeartbeatPayload struct {
 	MemUsedPct  float64 `json:"memUsedPct"`  // 0..100
 	LoadAvg1    float64 `json:"loadAvg1"`    // 0 on platforms without loadavg
 	CPUCount    int     `json:"cpuCount"`
+	// MACs are the agent's physical-interface hardware addresses. The hub keeps
+	// the last-known set so an OFFLINE machine can still be woken (WoL) by a
+	// peer on its LAN — no manual MAC entry, which keeps Wake turnkey.
+	MACs []string `json:"macs,omitempty"`
 }
 
 // CommandOutputPayload is one streamed chunk of a running command's output.

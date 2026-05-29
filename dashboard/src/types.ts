@@ -16,6 +16,29 @@ export interface Agent {
   memUsedPct: number
   loadAvg1: number
   cpuCount: number
+  macs?: string[]
+}
+
+// File browser (mirrors hub FileListResultPayload / FileEntry).
+export interface FileEntry {
+  name: string
+  path: string
+  isDir: boolean
+  size: number
+  modTime: string // RFC3339
+}
+
+export interface FileListResult {
+  reqId: string
+  path: string
+  parent: string
+  entries: FileEntry[]
+  error?: string
+}
+
+export interface WakeResult {
+  ok: boolean
+  error?: string
 }
 
 export interface Health {

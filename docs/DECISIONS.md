@@ -71,6 +71,18 @@ so we use an unconnected socket + WriteTo, hitting the limited broadcast AND eac
 directed broadcast. Hub retains offline machines (persisted∪live) so a sleeping host stays
 visible/wakeable. **Verified:** slept + woke the real PC from the dashboard.
 
+## D14 — Hub-as-distribution: the hub serves binaries + rendered installers + enrollment
+**Why:** for a self-hosted, no-cloud, single-owner mesh the most packageable path is NOT GitHub
+Releases — it's the hub itself. Stand up `lattice hub`, then on each device run one command
+pointing at YOUR hub (`curl http://<hub>/install.sh | sh -s -- --token …`). No GitHub account,
+no third party. The hub renders installers from embedded templates with its own URL baked in
+(from the request Host, so tailnet names work) and serves the cross-compiled binaries from
+`--dist`. Installers install a persistent OS service (launchd / systemd --user / Scheduled Task).
+**Verified** on real mbp + pc. **Rejected (for now):** GitHub Releases/Homebrew/winget as the
+PRIMARY channel (adds a public dependency the private-mesh use case doesn't need) — keep as a
+later public-distribution add-on. Token is passed at install time, never baked into the served
+script (the tailnet is the outer gate; the token binds the device).
+
 ## D9 — Provisional name "Lattice"
 **Why:** mesh imagery, reasonably clear of big collisions (`helm`=k8s, `fleet`=fleetdm).
 **Status:** placeholder; finalize before any public/GitHub release.

@@ -6,8 +6,28 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 ---
 
 ## Current phase
-**Phases 1 & 2 COMPLETE & verified on the real fleet (2026-05-29).** → Next: Phase 4
-(packaging/installers — the success criterion) and/or Phase 3 (code-server). See ROADMAP.
+**Phases 1, 2 & 4 COMPLETE & verified on the real fleet (2026-05-29).** Only Phase 3
+(code-server workspace) remains. The SUCCESS CRITERION (packageable) is MET.
+
+## Phase 4 — what shipped and is VERIFIED (the success criterion)
+Self-hosted, no-cloud: **the hub is the distribution + enrollment point**.
+- Hub serves: `GET /dl/{name}` (agent binaries from `--dist`, default `dist/`; strict
+  basename allowlist + path.Base → traversal-safe), `GET /install.sh` + `GET /install.ps1`
+  (rendered from go:embed templates with the hub URL baked from the request `Host`),
+  `GET /api/enroll` → {hubUrl, token, unix one-liner, windows one-liner}.
+- Installers: detect OS/arch, download the agent from the hub, install a **persistent service**
+  — launchd LaunchAgent (macOS), systemd --user unit (Linux), per-user logon Scheduled Task
+  (Windows) — and enroll via token. Idempotent. Token passed at runtime, never baked in.
+- Dashboard "Add device" modal: copy-paste join command (macOS/Linux + Windows tabs).
+- **VERIFIED on real hardware:** re-provisioned mbp via `curl …/install.sh | sh -s -- --token …`
+  → launchd service installed, KeepAlive-respawn confirmed, rejoined mesh. Provisioned pc via
+  `install.ps1` → Scheduled Task `LatticeAgent` Running, rejoined mesh. One command per machine.
+- NOT done (deferred): GitHub Releases / Homebrew tap / winget manifest (the public-distribution
+  channel). The private-mesh story — hub-as-distribution — is complete and is the stronger
+  packageability proof. Windows-on-ARM build + detection deferred (amd64 runs under emulation).
+
+## Phase 3 — NOT started
+code-server workspace proxy through the hub. See ROADMAP.
 
 ## Phase 2 — what shipped and is VERIFIED
 - **Interactive terminal:** per-agent PTY via `github.com/aymanbagabas/go-pty` (unix + Windows

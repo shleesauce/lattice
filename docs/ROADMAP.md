@@ -7,7 +7,7 @@ earlier phase is structured so it doesn't have to be redone to get there.
 ## Phase 0 — Scaffold ✅ (done in the originating session)
 Repo, docs, fleet reference, kickoff prompt. No code yet.
 
-## Phase 1 — Heartbeat + Registry + Remote Exec  ← START HERE
+## Phase 1 — Heartbeat + Registry + Remote Exec  ✅ DONE & VERIFIED (2026-05-29)
 The proof the model works.
 - Go module; `lattice` binary with `hub` and `agent` subcommands.
 - Agent: dial hub over WebSocket, register, heartbeat {hostname, os, arch, uptime, disk, online}.
@@ -19,7 +19,7 @@ The proof the model works.
 - **DONE WHEN:** open `http://mini-ops.<tailnet>:7400` in a browser, see 4 machines live,
   run `uname -a` on the Macs and `ver` on the PC from the UI and watch output stream back.
 
-## Phase 2 — Interactive terminal + file browser + Wake-on-LAN
+## Phase 2 — Interactive terminal + file browser + Wake-on-LAN  ✅ DONE & VERIFIED (2026-05-29)
 - Per-agent PTY ↔ xterm.js full interactive terminal in the dashboard.
 - Scoped file-tree browse + download per agent.
 - `wake` action: agent on a LAN sends a magic packet to a sleeping peer (PC is the live
@@ -27,12 +27,16 @@ The proof the model works.
 - **DONE WHEN:** real shell session to any machine in the browser; browse a remote tree;
   wake the PC from sleep via the dashboard.
 
-## Phase 3 — Workspace
+## Phase 3 — Workspace  ⏳ NOT STARTED (only remaining phase)
 - Proxy code-server through the hub; open any machine's filesystem in a browser VS Code.
 - **DONE WHEN:** edit a file on studio from a browser tab on mini-ops, with file explorer +
   integrated terminal + doc preview.
 
-## Phase 4 — Packaging + onboarding  ← THE SUCCESS CRITERION
+## Phase 4 — Packaging + onboarding  ✅ DONE & VERIFIED (2026-05-29) — THE SUCCESS CRITERION
+Done via hub-as-distribution (no GitHub needed for a private mesh): hub serves binaries +
+rendered installers + /api/enroll; installers install a persistent OS service; dashboard
+"Add device" onboarding. Verified on real mbp (launchd) + pc (scheduled task). Public-channel
+distribution (GitHub Releases / Homebrew / winget) is the only deferred sub-item. Original text:
 - `install.sh` (mac/linux), `install.ps1` (windows), termux installer: detect OS/arch,
   fetch binary, install as a service, enroll via one-time token.
 - "Create your mesh" onboarding: run `lattice hub init` → get a join command → paste on each

@@ -26,8 +26,14 @@ Self-hosted, no-cloud: **the hub is the distribution + enrollment point**.
   channel). The private-mesh story — hub-as-distribution — is complete and is the stronger
   packageability proof. Windows-on-ARM build + detection deferred (amd64 runs under emulation).
 
-## Phase 3 — NOT started
-code-server workspace proxy through the hub. See ROADMAP.
+## NEXT: Workspace UX (expanded Phase 3) — DISCUSS-FIRST
+Dylan reframed Phase 3 from "proxy code-server" into the real product: a **Claude-Code / VS-Code
+desktop-app feel** — left sidebar Projects→Sessions, a Terminal tab + a Claude tab (auto-live
+Claude Code session), cross-machine sessions with smart hub machine-placement (auto, but visible +
+overridable), likely a distributable desktop app. Full capture: **docs/VISION-WORKSPACE.md**.
+**Next session is a DESIGN DISCUSSION before any build** — paste **docs/KICKOFF-WORKSPACE.md** and
+work the 7 open questions with Dylan, then plan + build. Do NOT start coding the workspace until
+the UX/architecture is agreed.
 
 ## Phase 2 — what shipped and is VERIFIED
 - **Interactive terminal:** per-agent PTY via `github.com/aymanbagabas/go-pty` (unix + Windows

@@ -29,7 +29,7 @@ func wake(ctx context.Context, p proto.WakePayload, outbound chan<- []byte) {
 	}
 
 	packet := magicPacket(mac)
-	if err := broadcastMagic(packet); err != nil {
+	if err := broadcastMagic(ctx, packet); err != nil {
 		result.Error = err.Error()
 		sendWakeResult(ctx, outbound, result)
 		return
@@ -65,11 +65,14 @@ func magicPacket(mac []byte) []byte {
 	return packet
 }
 
-// broadcastMagic UDP-broadcasts the packet to 255.255.255.255 on the WoL ports.
-// SO_BROADCAST must be set on the socket or the send fails with EACCES/
-// EADDRNOTAVAIL on Linux/macOS — exactly the platforms the sender runs on.
-func broadcastMagic(packet []byte) error {
-	dialer := net.Dialer{
+// broadcastMagic sends the packet to the limited broadcast (255.255.255.255)
+// AND every interface's directed broadcast, on each WoL port. An UNCONNECTED
+// socket + WriteTo is used because connecting a UDP socket to 255.255.255.255
+// fails on macOS ("broken pipe"). SO_BROADCAST is set via the Control hook or
+// the send is refused with EACCES on Linux/macOS — the platforms the sender
+// actually runs on.
+func broadcastMagic(ctx context.Context, packet []byte) error {
+	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			var serr error
 			if err := c.Control(func(fd uintptr) { serr = setSocketBroadcast(fd) }); err != nil {
@@ -78,22 +81,27 @@ func broadcastMagic(packet []byte) error {
 			return serr
 		},
 	}
+	pc, err := lc.ListenPacket(ctx, "udp4", "0.0.0.0:0")
+	if err != nil {
+		return fmt.Errorf("open broadcast socket: %w", err)
+	}
+	defer pc.Close()
+
+	// Targets: the limited broadcast plus each interface's directed broadcast,
+	// so the packet reaches the target's segment regardless of the sender's
+	// default route.
+	targets := append([]net.IP{net.IPv4bcast}, directedBroadcasts()...)
 
 	var lastErr error
 	sent := false
 	for _, port := range wolPorts {
-		conn, err := dialer.Dial("udp4", fmt.Sprintf("255.255.255.255:%d", port))
-		if err != nil {
-			lastErr = err
-			continue
+		for _, ip := range targets {
+			if _, err := pc.WriteTo(packet, &net.UDPAddr{IP: ip, Port: port}); err != nil {
+				lastErr = err
+				continue
+			}
+			sent = true
 		}
-		_, err = conn.Write(packet)
-		conn.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		sent = true
 	}
 	if !sent {
 		if lastErr != nil {
@@ -102,6 +110,39 @@ func broadcastMagic(packet []byte) error {
 		return fmt.Errorf("failed to send WoL packet")
 	}
 	return nil
+}
+
+// directedBroadcasts returns the directed-broadcast address of every up, non-
+// loopback IPv4 interface (e.g. 192.168.0.255 for 192.168.0.46/24).
+func directedBroadcasts() []net.IP {
+	var out []net.IP
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil {
+				continue
+			}
+			ip := ipnet.IP.To4()
+			mask := ipnet.Mask
+			bc := make(net.IP, 4)
+			for i := 0; i < 4; i++ {
+				bc[i] = ip[i] | ^mask[i]
+			}
+			out = append(out, bc)
+		}
+	}
+	return out
 }
 
 // sendWakeResult encodes and pushes a wake_result frame.

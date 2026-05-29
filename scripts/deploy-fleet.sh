@@ -28,10 +28,14 @@ deploy_mac() {
 
 deploy_win() {
   echo "==> pc (windows)"
-  # stop any prior, copy, start detached via PowerShell Start-Process
+  # Stop any prior, copy the fresh binary.
   ssh pc 'taskkill /IM lattice.exe /F 2>NUL & mkdir C:\\lattice 2>NUL & echo ok' >/dev/null 2>&1
   scp -q "$WIN" 'pc:C:/lattice/lattice.exe'
-  ssh pc "powershell -NoProfile -Command \"Start-Process -WindowStyle Hidden -FilePath 'C:\\lattice\\lattice.exe' -ArgumentList 'agent','--hub','$HUB','--token','$TOKEN','--name','pc'; Start-Sleep 1; 'started pc agent'\""
+  # Spawn FULLY DETACHED via WMI Win32_Process.Create so the agent survives the
+  # SSH session closing (a plain Start-Process dies with the ssh logon session).
+  # Redirect output to a logfile so it isn't tied to a console.
+  local cmdline="C:\\lattice\\lattice.exe agent --hub $HUB --token $TOKEN --name pc"
+  ssh pc "powershell -NoProfile -Command \"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd /c \\\"$cmdline > C:\\lattice\\agent.log 2>&1\\\"'} | Select-Object ProcessId,ReturnValue | Format-List\""
 }
 
 case "${1:-all}" in

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -169,6 +170,9 @@ func (r *Registry) snapshot(window time.Duration) []Agent {
 	for _, a := range r.agents {
 		out = append(out, a.view(window, now))
 	}
+	// Stable order so the dashboard grid + selector don't reshuffle on every
+	// heartbeat (map iteration is random).
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

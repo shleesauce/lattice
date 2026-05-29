@@ -55,6 +55,7 @@ const pendingTimeout = 10 * time.Second
 type Hub struct {
 	version  string
 	token    string
+	distDir  string
 	store    *Store
 	registry *Registry
 }
@@ -65,6 +66,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	addr := fs.String("addr", ":7400", "listen address")
 	dbPath := fs.String("db", "lattice.db", "sqlite database path")
 	token := fs.String("token", "", "enrollment token (random 8-char if empty)")
+	distDir := fs.String("dist", "dist", "directory of cross-compiled agent binaries served at /dl/")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,6 +84,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	h := &Hub{
 		version:  version,
 		token:    *token,
+		distDir:  *distDir,
 		store:    store,
 		registry: NewRegistry(),
 	}
@@ -94,6 +97,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	log.Printf("lattice hub %s starting", version)
 	log.Printf("  listen: %s", *addr)
 	log.Printf("  db:     %s", *dbPath)
+	log.Printf("  dist:   %s   (binaries served at /dl/)", *distDir)
 	log.Printf("  token:  %s   (enroll agents with --token %s)", *token, *token)
 
 	errCh := make(chan error, 1)

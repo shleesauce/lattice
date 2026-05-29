@@ -1,0 +1,65 @@
+# Lattice agent installer (Windows PowerShell). Self-hosted: served by the hub.
+# This is a text/template: the hub substitutes {{.HubURL}} / {{.HubHostPort}}
+# per request and serves the rendered script at GET /install.ps1.
+# Usage:  $env:LATTICE_TOKEN='CODE'; irm {{.HubURL}}/install.ps1 | iex
+#   or:   powershell -c "& { iwr {{.HubURL}}/install.ps1 -UseBasicParsing | iex } -Token CODE"
+[CmdletBinding()]
+param(
+  [string]$Token = $env:LATTICE_TOKEN,
+  [string]$Name  = $env:COMPUTERNAME
+)
+
+$ErrorActionPreference = 'Stop'
+$HubUrl = '{{.HubURL}}'
+$Hub    = '{{.HubHostPort}}'
+
+if ([string]::IsNullOrWhiteSpace($Token)) {
+  Write-Error "lattice: missing token. Set `$env:LATTICE_TOKEN or pass -Token CODE."
+  return
+}
+if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $env:COMPUTERNAME }
+
+# Lattice ships a single amd64 Windows build.
+$binName = 'lattice-windows-amd64.exe'
+$installDir = Join-Path $env:LOCALAPPDATA 'Lattice'
+$binPath = Join-Path $installDir 'lattice.exe'
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+$url = "$HubUrl/dl/$binName"
+Write-Host "lattice: downloading $url"
+$tmp = "$binPath.download"
+Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+
+# Replace any running binary cleanly. Use the native cmdlet (not schtasks.exe):
+# under $ErrorActionPreference='Stop', schtasks' stderr on a not-yet-existing
+# task becomes a terminating error. Stop-ScheduledTask respects -ErrorAction.
+Stop-ScheduledTask -TaskName 'LatticeAgent' -ErrorAction SilentlyContinue
+Get-Process -Name 'lattice' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 300
+Move-Item -Force -Path $tmp -Destination $binPath
+Write-Host "lattice: installed binary at $binPath"
+
+# Register a per-user logon scheduled task (no admin required) and start it now.
+$taskName = 'LatticeAgent'
+$agentArgs = "agent --hub $Hub --token $Token --name `"$Name`""
+$action  = New-ScheduledTaskAction -Execute $binPath -Argument $agentArgs
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+
+# Idempotent: drop any prior registration first.
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+try {
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
+    -Description 'Lattice agent' -Force | Out-Null
+  Start-ScheduledTask -TaskName $taskName
+  Write-Host "lattice: scheduled task '$taskName' installed (runs at logon) and started"
+}
+catch {
+  Write-Warning "lattice: scheduled task registration failed ($_); starting detached process instead"
+  Start-Process -FilePath $binPath -ArgumentList $agentArgs -WindowStyle Hidden
+}
+
+Write-Host ""
+Write-Host "lattice: done. Node '$Name' is enrolling with $Hub."
+Write-Host "lattice: check your dashboard at $HubUrl"

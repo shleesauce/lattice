@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFleet, type ConnState } from './useFleet'
 import { FleetGrid } from './components/FleetGrid'
 import { ConsolePanel } from './components/ConsolePanel'
+import { AddDevice } from './components/AddDevice'
 import { wakeAgent } from './api'
 
 export default function App() {
   const { agents, health, loading, error, conn, runs, registerRun } = useFleet()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
 
   const onlineCount = agents.filter((a) => a.online).length
 
@@ -35,7 +37,13 @@ export default function App() {
   return (
     <div className="lattice-bg min-h-full">
       <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <Header conn={conn} version={health?.version} online={onlineCount} total={agents.length} />
+        <Header
+          conn={conn}
+          version={health?.version}
+          online={onlineCount}
+          total={agents.length}
+          onAddDevice={() => setAdding(true)}
+        />
 
         <main className="mt-6 grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[1fr_minmax(360px,420px)]">
           <div className="min-w-0">
@@ -64,11 +72,25 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      {adding && <AddDevice onClose={() => setAdding(false)} />}
     </div>
   )
 }
 
-function Header({ conn, version, online, total }: { conn: ConnState; version?: string; online: number; total: number }) {
+function Header({
+  conn,
+  version,
+  online,
+  total,
+  onAddDevice,
+}: {
+  conn: ConnState
+  version?: string
+  online: number
+  total: number
+  onAddDevice: () => void
+}) {
   return (
     <header className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-zinc-800/80 pb-5">
       <div className="flex items-center gap-3">
@@ -81,12 +103,28 @@ function Header({ conn, version, online, total }: { conn: ConnState; version?: s
         </div>
       </div>
 
-      <div className="ml-auto flex items-center gap-5">
+      <div className="ml-auto flex items-center gap-4 sm:gap-5">
         <Stat value={online} label="online" tone="emerald" />
         <Stat value={total} label="agents" tone="zinc" />
         <HubStatus conn={conn} version={version} />
+        <button
+          type="button"
+          onClick={onAddDevice}
+          className="flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 font-display text-sm font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
+        >
+          <PlusIcon />
+          <span className="hidden sm:inline">Add device</span>
+        </button>
       </div>
     </header>
+  )
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+      <path d="M12 5v14m-7-7h14" strokeLinecap="round" />
+    </svg>
   )
 }
 

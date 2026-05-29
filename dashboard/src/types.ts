@@ -47,6 +47,14 @@ export interface Health {
   agents: number
 }
 
+// Enrollment payload (mirrors hub /api/enroll).
+export interface Enroll {
+  hubUrl: string
+  token: string
+  unix: string
+  windows: string
+}
+
 // Dashboard-WS events (hub -> browser).
 export type DashboardEvent =
   | { type: 'fleet'; agents: Agent[] }

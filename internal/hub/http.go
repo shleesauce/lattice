@@ -27,7 +27,13 @@ func (h *Hub) routes() http.Handler {
 
 	mux.HandleFunc("/api/health", h.handleHealth)
 	mux.HandleFunc("/api/fleet", h.handleFleet)
+	mux.HandleFunc("/api/enroll", h.handleEnroll)
 	mux.HandleFunc("/api/agents/", h.handleAgentSub)
+
+	// Packaging / enrollment (Phase 4): binary distribution + installers.
+	mux.HandleFunc("/dl/", h.handleDownloadBinary)
+	mux.HandleFunc("/install.sh", h.handleInstallSh)
+	mux.HandleFunc("/install.ps1", h.handleInstallPs1)
 
 	mux.HandleFunc("/ws/agent", h.handleAgentWS)
 	mux.HandleFunc("/ws/dashboard", h.handleDashboardWS)

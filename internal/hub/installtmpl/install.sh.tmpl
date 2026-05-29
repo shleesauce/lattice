@@ -1,0 +1,144 @@
+#!/bin/sh
+# Lattice agent installer (macOS + Linux). Self-hosted: served by the hub.
+# This is a text/template: the hub substitutes {{.HubURL}} / {{.HubHostPort}}
+# per request and serves the rendered script at GET /install.sh.
+# Usage:  curl -fsSL {{.HubURL}}/install.sh | sh -s -- --token CODE [--name NAME]
+#         LATTICE_TOKEN=CODE  curl -fsSL {{.HubURL}}/install.sh | sh
+set -eu
+
+HUB_URL="{{.HubURL}}"
+HUB="{{.HubHostPort}}"
+TOKEN="${LATTICE_TOKEN:-}"
+NAME=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --token) TOKEN="${2:-}"; shift 2 ;;
+    --token=*) TOKEN="${1#*=}"; shift ;;
+    --name) NAME="${2:-}"; shift 2 ;;
+    --name=*) NAME="${1#*=}"; shift ;;
+    *) echo "lattice: ignoring unknown arg: $1" >&2; shift ;;
+  esac
+done
+
+if [ -z "$TOKEN" ]; then
+  echo "lattice: missing token. Pass --token CODE or set LATTICE_TOKEN." >&2
+  exit 1
+fi
+[ -n "$NAME" ] || NAME="$(hostname 2>/dev/null || echo lattice-node)"
+
+# --- detect platform ---
+os="$(uname -s)"
+case "$os" in
+  Darwin) os="darwin" ;;
+  Linux)  os="linux" ;;
+  *) echo "lattice: unsupported OS: $os" >&2; exit 1 ;;
+esac
+arch="$(uname -m)"
+case "$arch" in
+  arm64|aarch64) arch="arm64" ;;
+  x86_64|amd64)  arch="amd64" ;;
+  *) echo "lattice: unsupported arch: $arch" >&2; exit 1 ;;
+esac
+
+BIN_NAME="lattice-${os}-${arch}"
+PREFIX="$HOME/.lattice"
+BIN_DIR="$PREFIX/bin"
+BIN="$BIN_DIR/lattice"
+mkdir -p "$BIN_DIR"
+
+# --- download ---
+URL="$HUB_URL/dl/$BIN_NAME"
+echo "lattice: downloading $URL"
+TMP="$BIN.download.$$"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$URL" -o "$TMP"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$TMP" "$URL"
+else
+  echo "lattice: need curl or wget to download the agent" >&2
+  exit 1
+fi
+chmod +x "$TMP"
+mv -f "$TMP" "$BIN"
+echo "lattice: installed binary at $BIN"
+
+# --- install + (re)start the service ---
+if [ "$os" = "darwin" ]; then
+  LABEL="sh.lattice.agent"
+  PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+  LOG_DIR="$PREFIX/log"
+  mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+  cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BIN</string>
+    <string>agent</string>
+    <string>--hub</string><string>$HUB</string>
+    <string>--token</string><string>$TOKEN</string>
+    <string>--name</string><string>$NAME</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG_DIR/agent.out.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/agent.err.log</string>
+</dict>
+</plist>
+PLIST_EOF
+
+  GUI="gui/$(id -u)"
+  # Idempotent: tear down any existing instance, then bootstrap fresh.
+  launchctl bootout "$GUI/$LABEL" >/dev/null 2>&1 || true
+  launchctl unload "$PLIST" >/dev/null 2>&1 || true
+  if launchctl bootstrap "$GUI" "$PLIST" >/dev/null 2>&1; then
+    launchctl kickstart -k "$GUI/$LABEL" >/dev/null 2>&1 || true
+  else
+    launchctl load "$PLIST" >/dev/null 2>&1 || true
+  fi
+  echo "lattice: launchd agent '$LABEL' installed and started"
+
+else
+  # Linux: prefer a systemd --user unit; fall back to nohup.
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    UNIT_DIR="$HOME/.config/systemd/user"
+    UNIT="$UNIT_DIR/lattice-agent.service"
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT" <<UNIT_EOF
+[Unit]
+Description=Lattice agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=$BIN agent --hub $HUB --token $TOKEN --name $NAME
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT_EOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now lattice-agent.service
+    # Ensure a config change is picked up on re-run.
+    systemctl --user restart lattice-agent.service
+    echo "lattice: systemd --user service 'lattice-agent' installed and started"
+    echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+  else
+    PIDFILE="$PREFIX/agent.pid"
+    LOG="$PREFIX/agent.log"
+    if [ -f "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" >/dev/null 2>&1 || true; fi
+    nohup "$BIN" agent --hub "$HUB" --token "$TOKEN" --name "$NAME" >"$LOG" 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "lattice: started agent via nohup (no systemd); logs at $LOG"
+    echo "lattice: note - nohup does not survive reboot; install systemd --user for persistence"
+  fi
+fi
+
+echo ""
+echo "lattice: done. Node '$NAME' is enrolling with $HUB."
+echo "lattice: check your dashboard at $HUB_URL"

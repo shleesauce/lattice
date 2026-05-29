@@ -1,4 +1,4 @@
-import type { Agent, FileListResult, Health, WakeResult } from './types'
+import type { Agent, Enroll, FileListResult, Health, WakeResult } from './types'
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -12,6 +12,10 @@ export async function fetchFleet(): Promise<Agent[]> {
 
 export async function fetchHealth(): Promise<Health> {
   return json<Health>(await fetch('/api/health'))
+}
+
+export async function fetchEnroll(): Promise<Enroll> {
+  return json<Enroll>(await fetch('/api/enroll'))
 }
 
 export async function execCommand(agentId: string, command: string): Promise<string> {

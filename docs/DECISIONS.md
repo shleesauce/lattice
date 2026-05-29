@@ -42,6 +42,20 @@ first means the phone and every OS get the UI with zero install.
 **Why:** faster to embed/proxy; mature; delivers the file-explorer + editor + terminal + doc
 view Dylan wants. Theia is the heavier "build a branded IDE" path — revisit if/when branding matters.
 
+## D10 — Pure-Go SQLite driver (`modernc.org/sqlite`), not `mattn/go-sqlite3`
+**Why:** the packageability promise is "build every target from one machine." `mattn/go-sqlite3`
+needs CGO → a C cross-toolchain per OS/arch (the exact Windows/Termux pain we're killing).
+`modernc.org/sqlite` is pure Go → `CGO_ENABLED=0` cross-compiles darwin/windows/linux × arm64/amd64
+from mini-ops with zero toolchain. Verified: 5 targets build clean. DSN sets WAL + busy_timeout.
+**Rejected:** mattn/go-sqlite3 (CGO), bolt/badger (SQL ergonomics + history queries wanted).
+
+## D11 — Phase-1 transport is plain `ws://` over the tailnet (not `wss://`)
+**Why:** WireGuard already encrypts everything on the tailnet, so app-level TLS is redundant for
+the dogfood and would add cert provisioning the agent can't self-serve yet. Agents dial
+`ws://mini-ops.tail3c8bee.ts.net:7400/ws/agent`. Revisit when `tsnet` embedding lands (D5) /
+for any non-tailnet exposure.
+**Rejected:** self-signed TLS now (cert distribution burden, no security gain inside WireGuard).
+
 ## D9 — Provisional name "Lattice"
 **Why:** mesh imagery, reasonably clear of big collisions (`helm`=k8s, `fleet`=fleetdm).
 **Status:** placeholder; finalize before any public/GitHub release.

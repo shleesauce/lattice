@@ -75,6 +75,17 @@ home (the hub can't — home paths differ per box; partially addresses D23). **V
 device terminal on mini-ops → `pwd`=`/Users/mini-ops`; device Claude on mbp → 400 "claude not installed";
 device Claude on studio → real "PONG" in its home. Schema: idempotent `sessions.scope` ALTER migration.
 
+### Right-side file explorer (IDE-style) — ADDED & VERIFIED (2026-05-29)
+3-column workspace layout: left Projects/Devices sidebar | center session panes | **right file rail**.
+Clicking a PROJECT label opens its file tree on the right (browsed via the hub's **local agent** —
+`Agent.local` — at the project's hub-host path, so no sync needed), with breadcrumb nav + a lazy Monaco
+read-only viewer (click a file → syntax-highlighted content; size-capped + download for big/binary).
+Clicking a DEVICE label opens that machine's home files via its own agent (bonus). The in-session Monaco
+panel was removed (the right rail is now the sole browser). Below md the rail overlays as a drawer.
+Verified: clicked `lattice` → tree rendered; clicked `.gitignore` → viewer showed it. Shared engine:
+`useFileBrowser.ts` + `FileViewer.tsx` + `ProjectFilesPanel.tsx`. Follow-up: write-back is not wired
+(read-only viewer); file edits still go through a Claude/terminal session.
+
 ### "Begin new project" onboarding wizard (D25) — ADDED & VERIFIED (2026-05-29)
 A `POST /api/projects` endpoint + a 4-step workspace wizard ("+ new project" in the PROJECTS header):
 name → folder (live kebab + collision check) → stack/port → connectors/MCPs/agents/related/envs →

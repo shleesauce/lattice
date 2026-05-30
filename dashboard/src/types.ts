@@ -7,6 +7,8 @@ export interface Agent {
   arch: string
   agentVersion: string
   online: boolean
+  // The hub's co-located agent (filesystem matches project paths exactly).
+  local?: boolean
   lastSeen: string // RFC3339
   uptimeSec: number
   diskTotal: number

@@ -9,12 +9,18 @@ interface Props {
   agents: Agent[]
   projectsState: LoadState
   activeSessionId: string | null
+  // Key of the browse target whose files are open in the right rail, so the
+  // matching row gets the emerald active treatment. Project rows use the
+  // project path; device rows use `device:<agentId>`.
+  activeFilesKey: string | null
   collapsed: boolean
   onToggleCollapse: () => void
   onSelectSession: (id: string) => void
   onNewSession: (project: Project) => void
   onNewDeviceSession: (agent: Agent) => void
   onBeginNewProject: () => void
+  onOpenProjectFiles: (project: Project) => void
+  onOpenDeviceFiles: (agent: Agent) => void
 }
 
 // Left rail: collapsible Projects → Sessions tree. Projects come from
@@ -25,12 +31,15 @@ export function Sidebar({
   agents,
   projectsState,
   activeSessionId,
+  activeFilesKey,
   collapsed,
   onToggleCollapse,
   onSelectSession,
   onNewSession,
   onNewDeviceSession,
   onBeginNewProject,
+  onOpenProjectFiles,
+  onOpenDeviceFiles,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [deviceExpanded, setDeviceExpanded] = useState<Record<string, boolean>>({})
@@ -139,17 +148,36 @@ export function Sidebar({
         {filtered.map((p) => {
           const ps = sessionsByProject.get(p.path) ?? []
           const open = isOpen(p.path)
+          const filesActive = activeFilesKey === p.path
           return (
             <div key={p.path} className="mb-0.5">
-              <div className="group flex items-center rounded-md hover:bg-zinc-900/70">
+              <div
+                className={`group flex items-center rounded-md ${
+                  filesActive ? 'bg-emerald-500/10' : 'hover:bg-zinc-900/70'
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => setExpanded((e) => ({ ...e, [p.path]: !open }))}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                  title={open ? 'collapse sessions' : 'expand sessions'}
+                  className="grid h-7 w-6 shrink-0 place-items-center rounded text-zinc-600 hover:text-zinc-300"
                 >
                   <Caret open={open} />
-                  <FolderIcon active={ps.length > 0} />
-                  <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">{p.name}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenProjectFiles(p)}
+                  title="browse files"
+                  className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
+                >
+                  <FolderIcon active={filesActive || ps.length > 0} />
+                  <span
+                    className={`min-w-0 flex-1 truncate font-display text-[13px] ${
+                      filesActive ? 'text-emerald-200' : 'text-zinc-200'
+                    }`}
+                  >
+                    {p.name}
+                  </span>
                   {ps.length > 0 && (
                     <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[10px] text-zinc-400">
                       {ps.length}
@@ -208,20 +236,36 @@ export function Sidebar({
             const ds = sessionsByAgent.get(a.id) ?? []
             const open = isDeviceOpen(a.id)
             const hasClaude = a.capabilities?.claudeInstalled ?? false
+            const filesActive = activeFilesKey === `device:${a.id}`
             return (
               <div key={a.id} className="mb-0.5">
                 <div
-                  className={`group flex items-center rounded-md hover:bg-zinc-900/70 ${a.online ? '' : 'opacity-50'}`}
+                  className={`group flex items-center rounded-md ${
+                    filesActive ? 'bg-emerald-500/10' : 'hover:bg-zinc-900/70'
+                  } ${a.online ? '' : 'opacity-50'}`}
                   title={a.online ? undefined : 'offline — start a session once it comes online'}
                 >
                   <button
                     type="button"
                     onClick={() => setDeviceExpanded((e) => ({ ...e, [a.id]: !open }))}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                    title={open ? 'collapse sessions' : 'expand sessions'}
+                    className="grid h-7 w-6 shrink-0 place-items-center rounded text-zinc-600 hover:text-zinc-300"
                   >
                     <Caret open={open} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => a.online && onOpenDeviceFiles(a)}
+                    disabled={!a.online}
+                    title={a.online ? 'browse files' : undefined}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left disabled:cursor-default"
+                  >
                     <DeviceDot online={a.online} />
-                    <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
+                    <span
+                      className={`min-w-0 flex-1 truncate font-display text-[13px] ${
+                        filesActive ? 'text-emerald-200' : 'text-zinc-200'
+                      }`}
+                    >
                       {a.hostname || a.name || a.id.slice(0, 8)}
                     </span>
                     {hasClaude && (

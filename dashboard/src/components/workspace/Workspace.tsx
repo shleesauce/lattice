@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { Agent, CreateProjectResult, Session, SessionWithPlacement } from '../../types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
 import { deleteSession, resumeSession } from '../../api'
 import { Sidebar } from './Sidebar'
 import { SessionPane } from './SessionPane'
+import { ProjectFilesPanel } from './ProjectFilesPanel'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionTarget } from './NewSessionDialog'
 import { NewProjectWizard } from './NewProjectWizard'
@@ -24,6 +25,47 @@ export function Workspace({ agents }: Props) {
   const [wizardOpen, setWizardOpen] = useState(false)
   // Below md the sidebar overlays the pane instead of sitting beside it.
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  // Right-rail explorer target. Project rows pass the real project; device rows
+  // pass a synthetic Project ({ name: hostname, path: '' }) that lists the
+  // agent's home dir. `filesAgentId` overrides the browse agent for devices.
+  const [filesProject, setFilesProject] = useState<Project | null>(null)
+  const [filesAgentId, setFilesAgentId] = useState<string | null>(null)
+  // Stable key for the active-files highlight in the sidebar.
+  const [filesKey, setFilesKey] = useState<string | null>(null)
+  // Collapse hides the rail while keeping the selection so it can be reopened.
+  const [filesCollapsed, setFilesCollapsed] = useState(false)
+
+  // The hub's co-located agent maps 1:1 to project paths; fall back to any
+  // online agent if the local one isn't reporting yet.
+  const localAgent = useMemo(
+    () => agents.find((a) => a.local && a.online) ?? agents.find((a) => a.online) ?? null,
+    [agents],
+  )
+
+  // For project browsing use the local agent; device browsing pins to that
+  // device. Closes the rail if the chosen agent drops offline.
+  const browseAgentId = filesAgentId ?? localAgent?.id ?? null
+  const browseAgentOnline = browseAgentId ? agents.some((a) => a.id === browseAgentId && a.online) : false
+
+  const openProjectFiles = useCallback((p: Project) => {
+    setFilesProject(p)
+    setFilesAgentId(null)
+    setFilesKey(p.path)
+    setFilesCollapsed(false)
+  }, [])
+
+  const openDeviceFiles = useCallback((a: Agent) => {
+    setFilesProject({ name: a.hostname || a.name || a.id.slice(0, 8), path: '' })
+    setFilesAgentId(a.id)
+    setFilesKey(`device:${a.id}`)
+    setFilesCollapsed(false)
+  }, [])
+
+  const closeFiles = useCallback(() => {
+    setFilesProject(null)
+    setFilesAgentId(null)
+    setFilesKey(null)
+  }, [])
 
   const sessionById = (id: string): Session | undefined => ws.sessions.find((s) => s.id === id)
 
@@ -121,12 +163,15 @@ export function Workspace({ agents }: Props) {
           agents={agents}
           projectsState={ws.projectsState}
           activeSessionId={activeId}
+          activeFilesKey={filesKey}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((c) => !c)}
           onSelectSession={openSession}
           onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
           onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
           onBeginNewProject={() => setWizardOpen(true)}
+          onOpenProjectFiles={openProjectFiles}
+          onOpenDeviceFiles={openDeviceFiles}
         />
       </div>
 
@@ -138,6 +183,7 @@ export function Workspace({ agents }: Props) {
             agents={agents}
             projectsState={ws.projectsState}
             activeSessionId={activeId}
+            activeFilesKey={filesKey}
             collapsed={false}
             onToggleCollapse={() => setMobileNavOpen(false)}
             onSelectSession={selectFromNav}
@@ -151,6 +197,14 @@ export function Workspace({ agents }: Props) {
             }}
             onBeginNewProject={() => {
               setWizardOpen(true)
+              setMobileNavOpen(false)
+            }}
+            onOpenProjectFiles={(p) => {
+              openProjectFiles(p)
+              setMobileNavOpen(false)
+            }}
+            onOpenDeviceFiles={(a) => {
+              openDeviceFiles(a)
               setMobileNavOpen(false)
             }}
           />
@@ -200,6 +254,83 @@ export function Workspace({ agents }: Props) {
           )}
         </div>
       </div>
+
+      {/* Right rail (md+): persistent file explorer driven by project/device
+          selection. Renders only when a target is chosen and a browse agent is
+          online. Below md it overlays the pane like the projects drawer. */}
+      {filesProject && browseAgentId && browseAgentOnline && !filesCollapsed && (
+        <>
+          <div className="hidden w-[clamp(320px,30vw,420px)] shrink-0 border-l border-zinc-800 md:block">
+            <ProjectFilesPanel
+              key={`${browseAgentId}:${filesProject.path}`}
+              project={filesProject}
+              agentId={browseAgentId}
+              onClose={() => setFilesCollapsed(true)}
+            />
+          </div>
+
+          <div className="absolute inset-0 z-40 flex md:hidden">
+            <button
+              type="button"
+              aria-label="close files"
+              onClick={() => setFilesCollapsed(true)}
+              className="flex-1 bg-black/50"
+            />
+            <div className="w-[min(88vw,420px)] border-l border-zinc-800 bg-zinc-950">
+              <ProjectFilesPanel
+                key={`m:${browseAgentId}:${filesProject.path}`}
+                project={filesProject}
+                agentId={browseAgentId}
+                onClose={() => setFilesCollapsed(true)}
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Collapsed-but-selected: a thin reopen tab on the right edge (md+). */}
+      {filesProject && filesCollapsed && (
+        <button
+          type="button"
+          onClick={() => setFilesCollapsed(false)}
+          title="show files panel"
+          className="absolute right-0 top-1/2 z-30 hidden -translate-y-1/2 items-center gap-1.5 rounded-l-md border border-r-0 border-zinc-800 bg-zinc-950/90 px-1.5 py-3 text-zinc-400 transition-colors hover:text-emerald-300 md:flex"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+            <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="font-display text-[10px] font-semibold uppercase tracking-[0.16em] [writing-mode:vertical-rl]">
+            files
+          </span>
+        </button>
+      )}
+
+      {!browseAgentOnline && filesProject && !filesCollapsed && (
+        <div className="hidden w-[clamp(320px,30vw,420px)] shrink-0 flex-col border-l border-zinc-800 bg-zinc-950/60 md:flex">
+          <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2.5">
+            <span className="min-w-0 flex-1 truncate font-display text-[13px] font-semibold text-zinc-100">
+              {filesProject.name}
+            </span>
+            <button
+              type="button"
+              onClick={closeFiles}
+              title="close files panel"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                <path d="M6 6l12 12M18 6 6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+          <div className="grid flex-1 place-items-center px-6 text-center">
+            <p className="font-mono text-[11px] leading-relaxed text-zinc-500">
+              // no local agent online
+              <br />
+              to browse files
+            </p>
+          </div>
+        </div>
+      )}
 
       {newTarget && (
         <NewSessionDialog

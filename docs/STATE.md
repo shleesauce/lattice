@@ -28,10 +28,33 @@ full spec/plan at `~/.claude/plans/rippling-wishing-candy.md`.
   extension** (Cmd-K, autocomplete, in-workbench chat) later.
 - **D30** Editor on **all four machines**; Windows runs **code-server inside WSL2** (`/mnt/c`).
 - **D31** The embedded VS Code **replaces the read-only Monaco rail**; the sidebar drives it.
+- **Mobile / same-URL (D7/D15):** every layer is reachable from a phone browser at the SAME hub URL
+  (`http://mini-ops.tail3c8bee.ts.net:7400`) over the tailnet — no app install, Tailscale is the only
+  prerequisite. The Lattice chrome (fleet, Claude chat, terminal, sessions, file nav) is already
+  mobile-responsive (drawer sidebar + `md:` breakpoints). The embedded editor (D27) renders through the
+  hub too (phone → hub only, never direct to the agent → works on CGNAT/mobile data), BUT code-server's
+  workbench is desktop-grade — usable on a phone, not optimized. Realistic split: phone = chat/terminal/
+  quick peeks; laptop = heavy editing. A mobile-friendly editor affordance is a P3/P4 nice-to-have.
+
+### P1 spike — code-server subpath proxy (2026-05-30): LIKELY-PASS, visual confirm still pending
+Installed **code-server 4.107.1** on mini-ops (brew, for the spike; hub-as-distribution should ship the
+**standalone tarball** ≈95 MB compressed / ≈320 MB unpacked — NOT the 430 MB brew cellar). Stood up a
+stdlib Go `httputil.ReverseProxy` (`/tmp/cs-spike/proxy.go`) mapping `/editor/test/*` → 127.0.0.1:9444.
+**Curl-level evidence:** code-server with `--auth none` serves `/` 200 directly when a folder is passed;
+its asset URLs are emitted **relative**, so they resolve under the subpath. **Verified recipe** (use in
+the hub): strip the `/editor/{id}` prefix, set `X-Forwarded-Host`=hub host + `X-Forwarded-Proto`, and
+**302-redirect `/editor/{id}` → `/editor/{id}/`** (the trailing slash is MANDATORY so relative assets
+resolve under the prefix). WebSockets (the extension host) forward automatically on Go ≥1.21. `--auth
+none` is fine — the tailnet + hub already gate access (D2/D3).
+**HONEST CAVEAT:** the agent's Playwright "workbench fully loaded, no console errors" screenshot came
+back as a **44-byte stub** → the *visual* render proof did NOT actually capture. The approach is
+consistent with code-server's documented subpath support + the curl evidence, so risk is LOW, but
+**confirm the workbench visually loads (assets + extension-host WS, no 404s) as the first P1 build step**
+before stacking the tunnel on it. Scratch left at `/tmp/cs-spike/`, `/tmp/cs-spike-proj/`.
 
 ### NEXT (P1) — build the embedded editor on the local agent (mini-ops)
-1. **Spike FIRST:** prove code-server serves correctly under the `/editor/{id}/` subpath (asset
-   base-path) — the #1 risk; everything else builds on it.
+1. **First: re-confirm the spike VISUALLY** (Playwright screenshot that's actually non-empty, console +
+   network clean) using the recipe above — then build on it.
 2. Add `go get github.com/hashicorp/yamux` + a gorilla-WS↔`net.Conn` adapter.
 3. Hub: `internal/hub/tunnel.go` (`/ws/tunnel`, yamux client, per-agent tunnel registry) +
    `internal/hub/editorproxy.go` (`/editor/{sessionId}/*` reverse proxy) + register routes in

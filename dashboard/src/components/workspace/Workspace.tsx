@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Agent, Session, SessionWithPlacement } from '../../types'
+import type { Agent, CreateProjectResult, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
 import { deleteSession, resumeSession } from '../../api'
 import { Sidebar } from './Sidebar'
 import { SessionPane } from './SessionPane'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionTarget } from './NewSessionDialog'
+import { NewProjectWizard } from './NewProjectWizard'
 import { statusDotClass, statusPulses } from './sessionMeta'
 
 interface Props {
@@ -20,6 +21,7 @@ export function Workspace({ agents }: Props) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
+  const [wizardOpen, setWizardOpen] = useState(false)
   // Below md the sidebar overlays the pane instead of sitting beside it.
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -53,6 +55,19 @@ export function Workspace({ agents }: Props) {
       setNewTarget(null)
       setMobileNavOpen(false)
       openSession(res.session.id)
+    },
+    [ws, openSession],
+  )
+
+  const onProjectCreated = useCallback(
+    (res: CreateProjectResult) => {
+      void ws.refreshProjects()
+      if (res.session) {
+        ws.upsertSession(res.session)
+        void ws.refreshSessions()
+        openSession(res.session.id)
+        setMobileNavOpen(false)
+      }
     },
     [ws, openSession],
   )
@@ -111,6 +126,7 @@ export function Workspace({ agents }: Props) {
           onSelectSession={openSession}
           onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
           onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
+          onBeginNewProject={() => setWizardOpen(true)}
         />
       </div>
 
@@ -131,6 +147,10 @@ export function Workspace({ agents }: Props) {
             }}
             onNewDeviceSession={(a) => {
               setNewTarget({ kind: 'device', agent: a })
+              setMobileNavOpen(false)
+            }}
+            onBeginNewProject={() => {
+              setWizardOpen(true)
               setMobileNavOpen(false)
             }}
           />
@@ -187,6 +207,14 @@ export function Workspace({ agents }: Props) {
           agents={agents}
           onClose={() => setNewTarget(null)}
           onCreated={onCreated}
+        />
+      )}
+
+      {wizardOpen && (
+        <NewProjectWizard
+          projects={ws.projects}
+          onClose={() => setWizardOpen(false)}
+          onCreated={onProjectCreated}
         />
       )}
     </div>

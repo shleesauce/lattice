@@ -75,6 +75,19 @@ home (the hub can't — home paths differ per box; partially addresses D23). **V
 device terminal on mini-ops → `pwd`=`/Users/mini-ops`; device Claude on mbp → 400 "claude not installed";
 device Claude on studio → real "PONG" in its home. Schema: idempotent `sessions.scope` ALTER migration.
 
+### "Begin new project" onboarding wizard (D25) — ADDED & VERIFIED (2026-05-29)
+A `POST /api/projects` endpoint + a 4-step workspace wizard ("+ new project" in the PROJECTS header):
+name → folder (live kebab + collision check) → stack/port → connectors/MCPs/agents/related/envs →
+review (register + auto-launch toggles). The hub scaffolds the AI-Hub skeleton (README, CLAUDE.md,
+docs/PROJECT_CONTEXT, **docs/ONBOARDING.md brief**, .env, .gitignore, .claude, git init) directly in
+projectsRoot (syncs everywhere), registers it (row in **~/AI-Hub/UNIVERSAL_RULES.md** — NOT CLAUDE.md —
++ regenerate PROJECT_INDEX.md + KB stub), and launches a Claude session on the **local agent** (loopback
+detection → `Agent.Local`, so files are co-located) **seeded** with the onboarding brief. Connectors/etc.
+are captured as intent for Claude to wire. **Verified end-to-end** (scaffold/register/launch/seed) on the
+fleet; test project fully reverted. Caveat: the onboarding session lands on mini-ops which can't auth
+claude WHILE this Claude-desktop session monopolizes it (the known local-agent contamination; works on a
+clean box). Follow-ups: auto-link the KB stub into wiki `_index`/`_map`; optional `/gsd:new-project` seed.
+
 ### Bugs found & fixed THIS session (via adversarial fleet verification)
 1. `claude --print --output-format=stream-json` **requires `--verbose`** — launcher omitted it (instant exit). FIXED.
 2. Launcher now **scrubs `ANTHROPIC_API_KEY`/`CLAUDECODE`/`CLAUDE_CODE_*`** from the child env → forces subscription auth (also the cost rule). FIXED.

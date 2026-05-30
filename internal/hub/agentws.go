@@ -2,6 +2,7 @@ package hub
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -87,6 +88,7 @@ func (h *Hub) register(conn *websocket.Conn) (*agentConn, error) {
 		version:  reg.AgentVersion,
 		caps:     reg.Capabilities,
 		conn:     conn,
+		local:    isLoopbackAddr(conn.RemoteAddr()),
 		lastSeen: now,
 		online:   true,
 	}
@@ -288,6 +290,21 @@ func ackReject(conn *websocket.Conn, msg string) {
 		return
 	}
 	conn.WriteMessage(websocket.TextMessage, b)
+}
+
+// isLoopbackAddr reports whether a connection's remote address is loopback
+// (127.0.0.1 / ::1), i.e. the agent runs on the hub host itself. Used to prefer
+// the co-located agent for project scaffolding (POST /api/projects).
+func isLoopbackAddr(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host := addr.String()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
 
 // agentID derives a stable, deterministic id from hostname+os so reconnects

@@ -14,6 +14,7 @@ interface Props {
   onSelectSession: (id: string) => void
   onNewSession: (project: Project) => void
   onNewDeviceSession: (agent: Agent) => void
+  onBeginNewProject: () => void
 }
 
 // Left rail: collapsible Projects → Sessions tree. Projects come from
@@ -29,6 +30,7 @@ export function Sidebar({
   onSelectSession,
   onNewSession,
   onNewDeviceSession,
+  onBeginNewProject,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [deviceExpanded, setDeviceExpanded] = useState<Record<string, boolean>>({})
@@ -101,9 +103,17 @@ export function Sidebar({
         <span className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-zinc-400">projects</span>
         <button
           type="button"
+          onClick={onBeginNewProject}
+          title="begin new project"
+          className="ml-auto flex items-center gap-1 rounded px-1.5 py-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-emerald-300"
+        >
+          <PlusIcon /> new project
+        </button>
+        <button
+          type="button"
           onClick={onToggleCollapse}
           title="collapse sidebar"
-          className="ml-auto grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-zinc-900 hover:text-zinc-300"
+          className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-zinc-900 hover:text-zinc-300"
         >
           <PanelIcon />
         </button>

@@ -12,10 +12,23 @@ import (
 	"github.com/dylanstoryyy/lattice/internal/proto"
 )
 
-// handleProjects answers GET /api/projects with the directories under the
+// handleProjects routes /api/projects: GET lists the workspace projects,
+// POST scaffolds and onboards a brand-new one (see projectcreate.go).
+func (h *Hub) handleProjects(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleListProjects(w, r)
+	case http.MethodPost:
+		h.handleCreateProject(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleListProjects answers GET /api/projects with the directories under the
 // configured projects root (the Syncthing-synced ~/AI-Hub/projects). Dotfiles
 // and plain files are skipped.
-func (h *Hub) handleProjects(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(h.projectsRoot)
 	if err != nil {
 		// An absent root is not an error to the caller — just no projects yet.

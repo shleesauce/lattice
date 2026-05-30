@@ -1,6 +1,8 @@
 import type {
   Agent,
   AuditEntry,
+  CreateProjectRequest,
+  CreateProjectResult,
   CreateSessionRequest,
   Enroll,
   FileListResult,
@@ -87,6 +89,19 @@ export async function fetchProjects(): Promise<Project[]> {
   const data = await json<{ projects: Project[] | null } | Project[]>(await fetch('/api/projects'))
   if (Array.isArray(data)) return data
   return data.projects ?? []
+}
+
+// Onboard a brand-new project. The hub scaffolds the folder, optionally
+// registers it in AI-Hub, and (when launchClaude) returns a ready Session.
+// On a 400 the hub returns a typed {error} body — json() throws it as
+// `${status}: ${body}` so callers can parse the message inline.
+export async function createProject(req: CreateProjectRequest): Promise<CreateProjectResult> {
+  const res = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<CreateProjectResult>(res)
 }
 
 export async function fetchSessions(): Promise<Session[]> {

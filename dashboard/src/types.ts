@@ -150,6 +150,33 @@ export interface PlacementRequest {
   pinAgentId?: string
 }
 
+// ───────── Begin-new-project onboarding (POST /api/projects) ─────────
+export interface CreateProjectEnvVar {
+  key: string
+  value: string
+}
+
+export interface CreateProjectRequest {
+  officialName: string
+  folderName: string
+  description: string
+  stack?: string
+  port?: number
+  connectors?: string[]
+  agents?: string[]
+  relatedProjects?: string[]
+  envVars?: CreateProjectEnvVar[]
+  register?: boolean
+  launchClaude?: boolean
+}
+
+export interface CreateProjectResult {
+  project: { name: string; path: string }
+  session: Session | null
+  registered: boolean
+  warnings: string[]
+}
+
 export interface AuditEntry {
   id: string
   sessionId: string

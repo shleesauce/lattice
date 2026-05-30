@@ -37,6 +37,12 @@ type Agent struct {
 	// Capabilities is what the agent can run (Phase 3, D19). Drives placement's
 	// hard filter and is shown in the fleet view.
 	Capabilities proto.Capabilities `json:"capabilities"`
+	// Local is true when the agent's WebSocket connects from loopback — i.e. it
+	// runs on the hub host itself. Project scaffolding (POST /api/projects) prefers
+	// the local agent so the freshly written files are already on disk at the exact
+	// projDir path, avoiding the Syncthing propagation delay and the D23 home-path
+	// divergence. Always false for persisted/offline agents.
+	Local bool `json:"local"`
 }
 
 // agentConn is a live agent WebSocket. gorilla connections are not safe for
@@ -49,6 +55,7 @@ type agentConn struct {
 	arch     string
 	version  string
 	conn     *websocket.Conn
+	local    bool // WS connected from loopback ⇒ co-located with the hub host
 	writeMu  sync.Mutex
 
 	mu       sync.Mutex
@@ -115,6 +122,7 @@ func (a *agentConn) view(window time.Duration, now time.Time) Agent {
 		CPUCount:     a.metrics.CPUCount,
 		MACs:         copyMACs(a.metrics.MACs),
 		Capabilities: a.caps,
+		Local:        a.local,
 	}
 }
 

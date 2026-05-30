@@ -218,3 +218,25 @@ is static (no override) for device sessions. **Verified on the fleet:** device t
 `pwd` = `/Users/mini-ops` (home); device Claude on mbp → 400 "claude not installed"; device Claude on
 studio → real "PONG" in its home. Schema: added `sessions.scope` (idempotent `ALTER … ADD COLUMN`
 migration, default `project`).
+
+## D25 — "Begin new project" onboarding wizard (hybrid scaffold → register → seeded Claude session)
+**Why (Dylan, 2026-05-29):** a guided way to spin up a brand-new project from the hub — name it,
+pick connectors/MCPs/agents/related-projects/envs, and have it ported to the right machine, scaffolded,
+Claude-configured, and ingested into the synced AI-Hub. **Design (chosen):** `POST /api/projects`
+(GET still lists). The HUB scaffolds the standard skeleton DIRECTLY in `projectsRoot/<folder>` (it lives
+on the hub host; Syncthing propagates everywhere): README, CLAUDE.md, docs/PROJECT_CONTEXT.md,
+**docs/ONBOARDING.md** (the brief — every wizard answer + a "Setup tasks for Claude" checklist),
+.env/.env.example, .gitignore, .claude/settings.json, + `git init` + initial commit. Connectors/MCPs/
+agents/related are captured as **intent in the brief** (the hub doesn't assemble MCP configs — Claude
+wires them). **Register** (best-effort, warnings not failures): append a row to the Project Registry
+table — which lives in **`~/AI-Hub/UNIVERSAL_RULES.md`** (CLAUDE.md only references it; the create logic
+tries UNIVERSAL_RULES.md first), run `build-project-index.sh` to regenerate PROJECT_INDEX.md, write a
+`knowledge-base/wiki/projects/<folder>.md` stub (manual `_index`/`_map` linking left as a warning).
+**Launch:** create a Claude session in the new project and **seed** it with a first turn pointing at
+docs/ONBOARDING.md. The session is **placed on the hub's LOCAL agent** (detected via the agent's
+**loopback WS RemoteAddr** → `Agent.Local`) so the just-written files are on disk at the exact path
+(dodges Syncthing delay + the D23 home-path divergence); falls back to placement with a "files may need
+to sync" warning. **Verified on the fleet:** scaffold (all files + git), register (UNIVERSAL_RULES row +
+PROJECT_INDEX regenerated + KB stub), launch on mini-ops (local detection), and the seed turn reached
+claude (the 401 was only this machine's local-agent contamination — proven to auth on studio). Test
+artifacts fully reverted afterward.

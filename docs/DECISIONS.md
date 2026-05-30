@@ -38,9 +38,12 @@ how the real product will ship prebuilt binaries.
 first means the phone and every OS get the UI with zero install.
 **Rejected:** native UI per OS first (huge surface before proving value); TUI (not the vision).
 
-## D8 — code-server for the workspace (phase 3), not Theia (yet)
+## D8 — code-server for the workspace (phase 3), not Theia (yet)  — SUPERSEDED by D16
 **Why:** faster to embed/proxy; mature; delivers the file-explorer + editor + terminal + doc
 view Dylan wants. Theia is the heavier "build a branded IDE" path — revisit if/when branding matters.
+**SUPERSEDED (2026-05-29):** the Phase-3 vision narrowed to a Claude-Code/VS-Code *feel* centered on
+Terminal + Claude tabs over a Projects→Sessions sidebar — narrower than a full IDE. code-server is a
+heavyweight per-agent server to install + proxy (anti-packageable) and duplicates Claude Code. See D16.
 
 ## D10 — Pure-Go SQLite driver (`modernc.org/sqlite`), not `mattn/go-sqlite3`
 **Why:** the packageability promise is "build every target from one machine." `mattn/go-sqlite3`
@@ -86,3 +89,114 @@ script (the tailnet is the outer gate; the token binds the device).
 ## D9 — Provisional name "Lattice"
 **Why:** mesh imagery, reasonably clear of big collisions (`helm`=k8s, `fleet`=fleetdm).
 **Status:** placeholder; finalize before any public/GitHub release.
+
+---
+
+# Phase 3 — Workspace (decided 2026-05-29 in a decision-first discussion with Dylan)
+
+The reframed Phase 3 (docs/VISION-WORKSPACE.md): a workspace that feels like the Claude Code / VS
+Code desktop app — Projects→Sessions sidebar, a Terminal tab + an already-live Claude tab,
+cross-machine sessions with smart-but-visible machine placement. Two findings reshaped it:
+Claude Code is NOT installed uniformly on the fleet (mbp lacks it), and today's PTY sessions die
+with the browser WebSocket (the core thing to fix).
+
+## D15 — App shell: browser-first SPA now, Tauri desktop wrapper later
+**Why:** the workspace is all web tech (sidebar, tabs, xterm, Monaco, chat) and the hub already
+serves the SPA over the tailnet — build it browser-first so it works everywhere day one and never
+blocks the mesh. Package later as a **Tauri** app (Rust core + system webview, ~10MB) wrapping the
+SAME frontend and **bundling the Go agent as a Tauri sidecar**, so the machine you sit at is a
+first-class, fully-privileged node (Dylan's steer: max local control = max mesh power). Holds the
+single-small-artifact north star (D1).
+**Rejected:** Electron (100MB+ Chromium runtime per install — anti-packageable; kept only as a
+fallback if the system webview misbehaves); building the desktop shell first (spends effort on the
+shell before the workspace function exists, and you can't iterate in a plain browser).
+
+## D16 — Editor: lean custom (file tree + Monaco + the two tabs), not code-server  (supersedes D8)
+**Why:** the vision centers on Terminal + Claude tabs over a Projects→Sessions sidebar — narrower
+than a full IDE. Reuse the existing Phase-2 file-browser plumbing for the tree; add **Monaco** (one
+npm dep, already in the React bundle) for quick file view/edit. Nothing heavyweight to install per
+agent.
+**Rejected:** full VS Code via code-server/OpenVSCode (a heavyweight server to install + proxy on
+every agent — anti-packageable — and it duplicates what Claude Code already does); no-editor-at-all
+(Monaco is cheap and worth having for quick edits).
+
+## D17 — Claude tab = the LOCAL `claude` binary headless in stream-json (subscription auth)
+**Why:** "exactly like the Claude Code desktop app" means driving Dylan's real Claude Max
+subscription against local synced files. Verified the local binary does it all:
+`claude -p --input-format stream-json --output-format stream-json --include-partial-messages
+--replay-user-messages --permission-mode bypassPermissions --session-id <uuid> [--resume <id>]`
+is a true long-lived BIDIRECTIONAL chat (realtime input + structured output: assistant text,
+tool_use/tool_result, usage). The Go agent spawns it with `cwd=projectPath` and frames stdin/stdout
+over the existing agent WS. `--session-id` lets the HUB assign the id, so the Lattice sessionId IS
+the Claude sessionId (no init-event scraping); transcripts land in the synced `~/.claude/projects/`.
+**Rejected:** the **Managed Agents API** (`@anthropic-ai/sdk`, Anthropic-hosted) — it's
+**pay-per-token** (violates the subscription-only cost rule) and runs in a remote sandbox with no
+local files. A research agent recommended it; rejected on cost + premise. The TS "Agent SDK" merely
+wraps the same local binary, so spawning the binary directly avoids a Node dependency too. Also
+rejected: PTY passthrough of the `claude` TUI (an ANSI box, no structured usage/tool/permission UI).
+
+## D18 — Persistence: a first-class Session entity; processes outlive the browser
+**Why:** "a session that's already live" is impossible while the PTY is born/killed with the browser
+WS (today: `internal/hub/terminal.go`, and the agent's `defer terms.closeAll()` on socket drop). So:
+a persisted hub-SQLite `sessions` row {id, projectPath, kind, agentId, claudeSessionId, title,
+status, pinned, …}; the AGENT owns long-lived PTY/Claude processes keyed by sessionId + a scrollback
+ring buffer; the browser attaches/detaches without killing them; on hub restart / agent reconnect
+the agent reports its live sessions and the hub re-adopts them. This is the core engineering work.
+**Rejected:** ephemeral sessions (current model — a refresh loses your session); metadata-only +
+rebuild-from-transcript (loses live terminal scrollback and true background-running terminals).
+
+## D19 — Smart placement: capability filter + headroom score + locality boost
+**Why:** the hub should pick the best machine without the user thinking about it, but visibly and
+overridably. Hard-filter to online agents that CAN run the kind (a Claude session requires `claude`
+present — mbp currently fails this), then rank by free RAM + inverse load + cores, with a boost for
+the machine the user is on; a manual pin always wins; the score breakdown is shown in the UI.
+Agents report capabilities (claude/node + versions) in register + heartbeat.
+**Rejected:** pure headroom with no locality (may push a session to a remote box when local is
+snappier + more directly controllable); manual-first (loses the "it just works" feel). Success-
+history "confidence/consistency" scoring deferred to v2 — no data yet.
+
+## D20 — Session portability = placed + resumable, NOT live-migrated
+**Why:** a running PTY/process can't be teleported across machines (let alone across OSes); live
+process migration is a research rabbit hole. But because files + `~/.claude` transcripts are
+Syncthing-synced fleet-wide, a session's IDENTITY (projectPath + claudeSessionId + transcript) is
+portable: a session is pinned to one agent while running, and if that agent drops the SAME logical
+Claude conversation resumes on another capable agent via `--resume`.
+**Rejected:** live migration (infeasible cross-OS, would sink the timeline); pinned-only with no
+resume (throws away the synced-mesh payoff).
+
+## D21 — Trust: skip-permissions default + audit log + per-machine approval kill switch
+**Why:** auto-launching `claude --dangerously-skip-permissions` across the mesh adds NO new risk
+floor — the fleet already has a full SSH mesh + passwordless sudo, so "tailnet access = full fleet
+control" is the existing bar (and Dylan already aliases claude to bypass on studio). Keep the gate =
+tailnet (WireGuard) + enrollment token. Guardrails: log every Claude session + its tool calls in
+hub SQLite (`audit_log`); a global + per-machine toggle forces approval mode
+(`--permission-mode default`), surfacing permission prompts to the UI.
+**Rejected:** approval-mode-by-default (contradicts the "already live, no setup" feel and Dylan's
+real posture); skip-perms with no audit (nothing to review after a destructive action).
+
+## D22 — Claude sessions require the agent to run as a GUI-session launchd LaunchAgent (not nohup)
+**Why (discovered during fleet verification 2026-05-29):** claude's subscription OAuth credentials
+live in the macOS **login Keychain** ("Claude Code-credentials"). A process can only read them when
+it runs inside the user's GUI/Aqua security session. The Phase-1 dogfood deploy (`deploy-fleet.sh`)
+starts agents via **nohup from an SSH session that then closes** → the orphaned daemon loses Keychain
+access → spawned `claude` returns **"Not logged in · Please run /login"**. The Phase-4 installer's
+**launchd LaunchAgent** (`sh.lattice.agent`, `launchctl bootstrap gui/<uid>`) runs in the GUI session
+and HAS Keychain access. **Verified:** the same Claude session that returned "Not logged in" under the
+nohup agent returned a real **"PONG"** (with real token usage: in 13700 / out 5 / cache 30028) once
+studio was reprovisioned as a launchd LaunchAgent. **Consequence:** the Phase-4 service install is a
+PREREQUISITE for the Claude tab on macOS, not just a persistence nicety — agents must be launchd-managed
+(not nohup) for Claude sessions to authenticate. Two related launcher fixes shipped the same session:
+(a) `claude --print --output-format=stream-json` **requires `--verbose`** (omitting it exits instantly);
+(b) the launcher **scrubs `ANTHROPIC_API_KEY` + `CLAUDECODE`/`CLAUDE_CODE_*`** from the child env so a
+claude spawned by an agent that itself runs inside a Claude session uses the subscription, not a
+poisoned/empty API key (also enforces the subscription-only cost rule). **Open:** Windows/Linux
+credential-store equivalents to verify; pc (Windows) Claude-session auth untested.
+
+## D23 — projectPath is currently an ABSOLUTE path — known cross-machine portability gap
+**Why noted:** sessions store `projectPath` as an absolute path, but home dirs differ across the fleet
+(`/Users/mini-ops/…` vs `/Users/dylanstory/…`), so a session placed/resumed on a different machine can
+`chdir`-fail even though the project is Syncthing-synced under `~/AI-Hub/projects/<name>` everywhere.
+**Decision (to implement next):** model projects by **name relative to `~/AI-Hub/projects`** and have the
+agent resolve `<home>/AI-Hub/projects/<name>` locally; keep the absolute path only as a display hint.
+This makes D20 portability (placed + resumable on any machine) actually hold. Tracked as a follow-up;
+the `/api/projects` endpoint already returns `{name, path}`, so the name is available.

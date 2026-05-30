@@ -54,6 +54,33 @@ const (
 	TypeWake MessageType = "wake" // send a magic packet on this agent's LAN
 	// Agent → Hub
 	TypeWakeResult MessageType = "wake_result"
+
+	// --- Phase 3: long-lived sessions (lifecycle; create/list correlated by ReqID) ---
+	// A session is a terminal OR claude process that lives on the agent and OUTLIVES
+	// the browser WebSocket. The hub persists a row; the agent owns the process + a
+	// scrollback buffer. Browsers attach/detach without killing it.
+	// Hub → Agent
+	TypeSessionCreate MessageType = "session_create" // start a long-lived terminal|claude session
+	TypeSessionAttach MessageType = "session_attach" // a browser attached → reply with replay
+	TypeSessionDetach MessageType = "session_detach" // the browser detached → keep the process alive
+	TypeSessionClose  MessageType = "session_close"  // terminate the session process for good
+	TypeSessionList   MessageType = "session_list"   // ask the agent to enumerate its live sessions
+	// Agent → Hub
+	TypeSessionCreated    MessageType = "session_created"     // ack of session_create (pid, claudeId)
+	TypeSessionReplay     MessageType = "session_replay"      // scrollback / event tail on attach
+	TypeSessionExit       MessageType = "session_exit"        // the session process ended
+	TypeSessionListResult MessageType = "session_list_result" // live sessions (also sent post-register)
+
+	// --- Phase 3: Claude session channel (streaming, keyed by SessionID) ---
+	// Hub → Agent
+	TypeClaudeInput      MessageType = "claude_input"      // a user turn written to the claude stdin
+	TypeClaudePermission MessageType = "claude_permission" // approve/deny a tool call (approval mode)
+	// Agent → Hub
+	TypeClaudeEvent MessageType = "claude_event" // one stream-json event from claude, verbatim
+
+	// --- Phase 3: agent capabilities (also folded into register + heartbeat) ---
+	// Agent → Hub
+	TypeCapabilities MessageType = "capabilities" // standalone capability refresh
 )
 
 // FileGetMaxBytes caps a single file_get response (base64 over the JSON WS).
@@ -143,6 +170,142 @@ type WakeResultPayload struct {
 	Error string `json:"error,omitempty"`
 }
 
+// --- Phase 3 payloads: long-lived sessions ---
+
+// SessionKind discriminates the two long-lived session types.
+type SessionKind string
+
+const (
+	SessionTerminal SessionKind = "terminal"
+	SessionClaude   SessionKind = "claude"
+)
+
+// Session status values persisted by the hub. Kept here so hub + (future) agent
+// agree on the vocabulary.
+const (
+	SessionStarting = "starting" // create dispatched, ack not yet received
+	SessionLive     = "live"     // process running, agent online
+	SessionDetached = "detached" // running, no browser attached (informational)
+	SessionExited   = "exited"   // process ended (natural or closed)
+	SessionOrphaned = "orphaned" // agent went offline; resumable elsewhere
+)
+
+// ClaudeEventRingMax bounds the per-claude-session replay tail (events).
+const ClaudeEventRingMax = 200
+
+// TermRingBytes bounds the per-terminal-session scrollback ring.
+const TermRingBytes = 256 << 10 // 256 KiB
+
+// SessionCreatePayload opens a long-lived session on the agent. The hub assigns
+// SessionID (a UUID) BEFORE dispatch so the DB row, re-discovery, and — for claude
+// sessions — the `claude --session-id` all agree on one identifier. For kind=claude,
+// ResumeID (when set) resumes a prior logical Claude conversation from the synced
+// transcript (D20). Cwd is the project path the session runs in.
+type SessionCreatePayload struct {
+	ReqID     string      `json:"reqId"`
+	SessionID string      `json:"sessionId"`
+	Kind      SessionKind `json:"kind"`
+	Cwd       string      `json:"cwd"`                // project path
+	Shell     string      `json:"shell,omitempty"`    // terminal only; empty ⇒ OS default
+	Cols      uint16      `json:"cols,omitempty"`     // terminal only
+	Rows      uint16      `json:"rows,omitempty"`     // terminal only
+	ResumeID  string      `json:"resumeId,omitempty"` // claude: prior claudeSessionId to --resume
+	SkipPerms bool        `json:"skipPerms"`          // claude: bypassPermissions (D21); false ⇒ approval mode
+}
+
+// SessionCreatedPayload acks a session_create.
+type SessionCreatedPayload struct {
+	ReqID           string `json:"reqId"`
+	SessionID       string `json:"sessionId"`
+	PID             int    `json:"pid,omitempty"`
+	ClaudeSessionID string `json:"claudeSessionId,omitempty"` // = SessionID for claude (hub-assigned)
+	Error           string `json:"error,omitempty"`
+}
+
+// SessionDescriptor describes one live session the agent owns. Reported in
+// session_list_result (and right after register, for re-discovery — F).
+type SessionDescriptor struct {
+	SessionID       string      `json:"sessionId"`
+	Kind            SessionKind `json:"kind"`
+	Cwd             string      `json:"cwd"`
+	ClaudeSessionID string      `json:"claudeSessionId,omitempty"`
+	PID             int         `json:"pid,omitempty"`
+	StartedAt       string      `json:"startedAt"` // RFC3339
+}
+
+// SessionListResultPayload answers session_list, and is also volunteered by the
+// agent immediately after registered (live-session re-discovery).
+type SessionListResultPayload struct {
+	ReqID    string              `json:"reqId,omitempty"`
+	Sessions []SessionDescriptor `json:"sessions"`
+}
+
+// SessionAttachPayload tells the agent a browser attached; the agent replies with
+// a session_replay carrying the current scrollback/event tail. Cols/Rows re-fit a
+// terminal on attach.
+type SessionAttachPayload struct {
+	SessionID string `json:"sessionId"`
+	Cols      uint16 `json:"cols,omitempty"`
+	Rows      uint16 `json:"rows,omitempty"`
+}
+
+// SessionReplayPayload dumps recent output so a re-attaching browser sees context.
+// terminal: Data is base64 PTY scrollback. claude: Events is the recent stream-json
+// event tail (each element is one verbatim event object).
+type SessionReplayPayload struct {
+	SessionID string            `json:"sessionId"`
+	Kind      SessionKind       `json:"kind"`
+	Data      string            `json:"data,omitempty"`   // terminal scrollback, base64
+	Events    []json.RawMessage `json:"events,omitempty"` // claude event tail
+	Truncated bool              `json:"truncated,omitempty"`
+}
+
+// SessionControlPayload references a session for detach / close / exit.
+type SessionControlPayload struct {
+	SessionID string `json:"sessionId"`
+	ExitCode  int    `json:"exitCode,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// --- Phase 3 payloads: Claude session channel ---
+
+// ClaudeInputPayload is a user turn sent to a claude session's stdin. The agent
+// wraps Text in the stream-json user-message envelope the CLI expects.
+type ClaudeInputPayload struct {
+	SessionID string `json:"sessionId"`
+	Text      string `json:"text"`
+}
+
+// ClaudeEventPayload carries ONE structured stream-json event verbatim from the
+// claude process stdout (assistant message, tool_use, tool_result, usage, result,
+// system/init…). The hub forwards Raw to dashboards untouched and inspects Subtype
+// for audit logging. Subtype is the event's top-level "type" field, lifted out for
+// cheap routing without re-parsing Raw.
+type ClaudeEventPayload struct {
+	SessionID string          `json:"sessionId"`
+	Subtype   string          `json:"subtype"`
+	Raw       json.RawMessage `json:"raw"`
+}
+
+// ClaudePermissionPayload answers a tool-permission prompt when approval mode is on.
+type ClaudePermissionPayload struct {
+	SessionID string `json:"sessionId"`
+	ToolUseID string `json:"toolUseId"`
+	Allow     bool   `json:"allow"`
+}
+
+// --- Phase 3 payloads: capabilities ---
+
+// Capabilities is what an agent can run — the placement hard filter (D19) reads it.
+// Embedded in RegisterPayload and refreshed via HeartbeatPayload, and sendable
+// standalone via TypeCapabilities.
+type Capabilities struct {
+	ClaudeInstalled bool   `json:"claudeInstalled"`
+	ClaudeVersion   string `json:"claudeVersion,omitempty"`
+	NodeInstalled   bool   `json:"nodeInstalled"`
+	NodeVersion     string `json:"nodeVersion,omitempty"`
+}
+
 // Envelope wraps every message. Payload is the type-specific body.
 type Envelope struct {
 	Type    MessageType     `json:"type"`
@@ -160,6 +323,8 @@ type RegisterPayload struct {
 	Arch         string `json:"arch"` // runtime.GOARCH: arm64|amd64
 	AgentVersion string `json:"agentVersion"`
 	Protocol     int    `json:"protocol"`
+	// Phase 3 (additive): what this agent can run, for placement (D19).
+	Capabilities Capabilities `json:"capabilities,omitempty"`
 }
 
 // HeartbeatPayload carries the live metrics rendered on the dashboard. Sent on
@@ -177,6 +342,9 @@ type HeartbeatPayload struct {
 	// the last-known set so an OFFLINE machine can still be woken (WoL) by a
 	// peer on its LAN — no manual MAC entry, which keeps Wake turnkey.
 	MACs []string `json:"macs,omitempty"`
+	// Phase 3 (additive): refresh capabilities without a reconnect so placement
+	// always scores fresh can-run state (D19).
+	Capabilities Capabilities `json:"capabilities,omitempty"`
 }
 
 // CommandOutputPayload is one streamed chunk of a running command's output.

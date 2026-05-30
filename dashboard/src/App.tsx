@@ -3,10 +3,14 @@ import { useFleet, type ConnState } from './useFleet'
 import { FleetGrid } from './components/FleetGrid'
 import { ConsolePanel } from './components/ConsolePanel'
 import { AddDevice } from './components/AddDevice'
+import { Workspace } from './components/workspace/Workspace'
 import { wakeAgent } from './api'
+
+type View = 'workspace' | 'fleet'
 
 export default function App() {
   const { agents, health, loading, error, conn, runs, registerRun } = useFleet()
+  const [view, setView] = useState<View>('workspace')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
 
@@ -35,9 +39,11 @@ export default function App() {
   }, [agents, selectedId])
 
   return (
-    <div className="lattice-bg min-h-full">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+    <div className="lattice-bg flex h-full min-h-screen flex-col">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col px-4 py-5 sm:px-6 lg:px-8">
         <Header
+          view={view}
+          onView={setView}
           conn={conn}
           version={health?.version}
           online={onlineCount}
@@ -45,32 +51,38 @@ export default function App() {
           onAddDevice={() => setAdding(true)}
         />
 
-        <main className="mt-6 grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[1fr_minmax(360px,420px)]">
-          <div className="min-w-0">
-            <SectionLabel>fleet</SectionLabel>
-            <div className="mt-3">
-              <FleetGrid
+        {view === 'workspace' ? (
+          <main className="mt-6 flex min-h-0 flex-1 flex-col">
+            <Workspace agents={agents} />
+          </main>
+        ) : (
+          <main className="mt-6 grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[1fr_minmax(360px,420px)]">
+            <div className="min-w-0">
+              <SectionLabel>fleet</SectionLabel>
+              <div className="mt-3">
+                <FleetGrid
+                  agents={agents}
+                  loading={loading}
+                  error={error}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  canWake={!!firstOnlineId}
+                  onWake={onWake}
+                />
+              </div>
+            </div>
+
+            <div className="min-h-[420px] lg:min-h-0 lg:h-[calc(100vh-7rem)] lg:sticky lg:top-5">
+              <ConsolePanel
                 agents={agents}
-                loading={loading}
-                error={error}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                canWake={!!firstOnlineId}
-                onWake={onWake}
+                runs={runs}
+                registerRun={registerRun}
               />
             </div>
-          </div>
-
-          <div className="min-h-[420px] lg:min-h-0 lg:h-[calc(100vh-7rem)] lg:sticky lg:top-5">
-            <ConsolePanel
-              agents={agents}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              runs={runs}
-              registerRun={registerRun}
-            />
-          </div>
-        </main>
+          </main>
+        )}
       </div>
 
       {adding && <AddDevice onClose={() => setAdding(false)} />}
@@ -79,12 +91,16 @@ export default function App() {
 }
 
 function Header({
+  view,
+  onView,
   conn,
   version,
   online,
   total,
   onAddDevice,
 }: {
+  view: View
+  onView: (v: View) => void
   conn: ConnState
   version?: string
   online: number
@@ -99,9 +115,13 @@ function Header({
         </div>
         <div>
           <h1 className="font-display text-xl font-bold tracking-tight text-zinc-50">lattice</h1>
-          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-zinc-500">fleet console</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-zinc-500">
+            {view === 'workspace' ? 'workspace' : 'fleet console'}
+          </p>
         </div>
       </div>
+
+      <ViewToggle view={view} onView={onView} />
 
       <div className="ml-auto flex items-center gap-4 sm:gap-5">
         <Stat value={online} label="online" tone="emerald" />
@@ -117,6 +137,32 @@ function Header({
         </button>
       </div>
     </header>
+  )
+}
+
+function ViewToggle({ view, onView }: { view: View; onView: (v: View) => void }) {
+  const items: { id: View; label: string }[] = [
+    { id: 'workspace', label: 'workspace' },
+    { id: 'fleet', label: 'fleet' },
+  ]
+  return (
+    <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-950 p-0.5">
+      {items.map((it) => {
+        const active = view === it.id
+        return (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onView(it.id)}
+            className={`rounded-md px-3.5 py-1.5 font-display text-xs font-semibold uppercase tracking-wider transition-colors ${
+              active ? 'bg-emerald-500/15 text-emerald-300' : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {it.label}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

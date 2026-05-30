@@ -50,6 +50,10 @@ func gatherMetrics(ctx context.Context) proto.HeartbeatPayload {
 
 	hb.MACs = hardwareMACs()
 
+	// Refresh capabilities so placement always scores fresh can-run state (D19)
+	// without waiting for a reconnect.
+	hb.Capabilities = detectCapabilities(ctx)
+
 	return hb
 }
 

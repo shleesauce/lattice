@@ -34,6 +34,11 @@ func (h *Hub) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.registry.removeAgent(ac)
 		conn.Close()
+		// Sessions on this agent are now unreachable: keep the rows but mark them
+		// orphaned so the UI shows them as resumable elsewhere (D20).
+		if err := h.store.MarkAgentSessionsOrphaned(ac.id); err != nil {
+			log.Printf("agent %s: orphan sessions failed: %v", ac.id, err)
+		}
 		h.broadcastFleet()
 		log.Printf("agent disconnect: id=%s", ac.id)
 	}()
@@ -80,6 +85,7 @@ func (h *Hub) register(conn *websocket.Conn) (*agentConn, error) {
 		os:       reg.OS,
 		arch:     reg.Arch,
 		version:  reg.AgentVersion,
+		caps:     reg.Capabilities,
 		conn:     conn,
 		lastSeen: now,
 		online:   true,
@@ -200,6 +206,74 @@ func (h *Hub) readLoop(ac *agentConn) {
 				continue
 			}
 			h.registry.resolvePending(res.ReqID, env)
+
+		// --- Phase 3: session lifecycle + claude channel ---
+		case proto.TypeSessionCreated:
+			var res proto.SessionCreatedPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			h.registry.resolvePending(res.ReqID, env)
+
+		case proto.TypeSessionListResult:
+			var res proto.SessionListResultPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			// Volunteered post-register list is re-discovery; a list with a reqId is
+			// an answer to a round-trip. Both reconcile the DB; the reqId case also
+			// resolves the waiter.
+			h.adoptSessions(ac.id, res.Sessions)
+			if res.ReqID != "" {
+				h.registry.resolvePending(res.ReqID, env)
+			}
+
+		case proto.TypeSessionReplay:
+			var p proto.SessionReplayPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			if t, ok := h.registry.getTerminal(p.SessionID); ok {
+				msg := map[string]any{"type": "replay", "kind": string(p.Kind), "truncated": p.Truncated}
+				if p.Kind == proto.SessionClaude {
+					msg["events"] = p.Events
+				} else {
+					msg["data"] = p.Data
+				}
+				if err := t.send(msg); err != nil {
+					t.close()
+					h.registry.removeTerminal(p.SessionID)
+				}
+			}
+
+		case proto.TypeClaudeEvent:
+			var p proto.ClaudeEventPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			h.auditClaudeEvent(ac.id, p)
+			if t, ok := h.registry.getTerminal(p.SessionID); ok {
+				if err := t.send(map[string]any{
+					"type": "claude_event", "subtype": p.Subtype, "raw": p.Raw,
+				}); err != nil {
+					t.close()
+					h.registry.removeTerminal(p.SessionID)
+				}
+			}
+
+		case proto.TypeSessionExit:
+			var p proto.SessionControlPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			if err := h.store.UpdateSessionStatus(p.SessionID, proto.SessionExited, time.Now()); err != nil {
+				log.Printf("agent %s: session exit persist failed: %v", ac.id, err)
+			}
+			if t, ok := h.registry.getTerminal(p.SessionID); ok {
+				_ = t.send(map[string]any{"type": "exit"})
+				t.close()
+				h.registry.removeTerminal(p.SessionID)
+			}
 
 		default:
 			// Ignore unknown / hub-bound types received from an agent.

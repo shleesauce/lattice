@@ -36,6 +36,16 @@ not a dashboard. Something Dylan would install, live in daily, and hand to other
 - This is likely where Lattice **becomes a downloadable desktop app** (so it can be shared and
   distributed as a product), rather than only a hub-served browser page. Decide the shell.
 
+## ✅ RESOLVED 2026-05-29 — see DECISIONS.md D15–D21
+The 7 questions below were worked through with Dylan in a decision-first discussion and are now
+locked: D15 (browser-first SPA → Tauri shell w/ agent sidecar) · D16 (lean editor: tree+Monaco+two
+tabs, code-server dropped) · D17 (Claude tab = local `claude` headless stream-json on the
+subscription, NOT the pay-per-token Managed Agents API) · D18 (first-class persisted Session;
+processes outlive the browser) · D19 (placement: capability filter + headroom + locality) · D20
+(placed + resumable, not live-migrated) · D21 (skip-perms default + audit + approval kill switch).
+Build plan: ROADMAP.md Phase 3 + `~/.claude/plans/stateful-watching-ripple.md`. The questions are
+kept below for the rationale trail.
+
 ## Open design questions to resolve WITH Dylan (next session)
 1. **App shell:** desktop app (Electron / Tauri) as the client you sit at, with agents staying
    headless per machine? Or keep browser-first (hub-served + PWA)? Distribution-as-a-product

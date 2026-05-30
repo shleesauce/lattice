@@ -27,10 +27,33 @@ The proof the model works.
 - **DONE WHEN:** real shell session to any machine in the browser; browse a remote tree;
   wake the PC from sleep via the dashboard.
 
-## Phase 3 — Workspace  ⏳ NOT STARTED (only remaining phase)
-- Proxy code-server through the hub; open any machine's filesystem in a browser VS Code.
-- **DONE WHEN:** edit a file on studio from a browser tab on mini-ops, with file explorer +
-  integrated terminal + doc preview.
+## Phase 3 — Workspace  🔨 BUILDING (reframed 2026-05-29; the real product)
+**Reframed** from "proxy code-server" (old D8) into a Claude-Code/VS-Code-style mesh workspace —
+see docs/VISION-WORKSPACE.md + decisions D15–D21. A Projects→Sessions sidebar over the synced
+`~/AI-Hub/projects/*`; per session a **Terminal** tab and an already-live **Claude** tab (local
+`claude` headless stream-json on Dylan's subscription); cross-machine sessions with smart-but-
+visible/overridable hub placement; sessions that outlive the browser; later a Tauri desktop app.
+
+Build order (parallel workstreams; proto gates):
+- **WS-1 proto** (gate): session lifecycle + claude channel + capabilities + re-discovery messages.
+- **WS-2 store**: `sessions` / `audit_log` / `settings` tables + methods.
+- **WS-3 terminal decoupling**: process-global agent registry, scrollback ring, swappable sink,
+  `handleSessionWS` (attach/detach/replay) — sever PTY lifetime from the browser WS.
+- **WS-4 claude runner** (`internal/agent/claude.go`): spawn + supervise the local `claude` binary
+  in stream-json; frame stdin/stdout over the agent WS; resume-by-session-id.
+- **WS-5 placement** (`internal/hub/placement.go`): capability filter + headroom + locality scorer;
+  `/api/placement` (preview) + `/api/sessions` (create).
+- **WS-6 re-discovery + audit**: register/heartbeat capabilities + live-session re-adoption; orphan
+  reconciliation; audit-log writes + approval kill switch.
+- **WS-7 capabilities probe** (`internal/agent/capabilities.go`).
+- **WS-8 frontend**: sidebar, tabs, Claude chat renderer + token-usage HUD, machine chip, Monaco.
+- **WS-9 Tauri** packaging (after the SPA is verified): wrap the SPA + bundle the agent sidecar.
+
+- **DONE WHEN:** from a browser on mini-ops, open a project, start an already-live Claude session
+  (auto-placed on a capable machine, mbp excluded; machine visible + overridable), chat with tool
+  calls + live token usage; open a Terminal tab; refresh the browser and the sessions are still
+  live with replayed scrollback; restart the hub and sessions are re-adopted. Tauri app installs as
+  a single artifact carrying its own agent.
 
 ## Phase 4 — Packaging + onboarding  ✅ DONE & VERIFIED (2026-05-29) — THE SUCCESS CRITERION
 Done via hub-as-distribution (no GitHub needed for a private mesh): hub serves binaries +

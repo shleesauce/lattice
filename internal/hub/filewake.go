@@ -18,6 +18,10 @@ import (
 // request within pendingTimeout.
 var errRoundTripTimeout = errors.New("agent did not respond in time")
 
+// errFromAgent wraps an error string an agent returned in a payload (e.g. a
+// failed session_create) so callers get a plain error value.
+func errFromAgent(msg string) error { return errors.New(msg) }
+
 // roundTrip sends a request frame to an online agent and waits (bounded by
 // pendingTimeout) for the matching result, routed back by the agentws read loop
 // via the pending-request map keyed by reqId. The registry lock is never held

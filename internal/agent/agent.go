@@ -52,13 +52,18 @@ func Run(ctx context.Context, args []string, version string) error {
 
 	log.Printf("agent %s starting: name=%q hub=%s os=%s/%s", version, cfg.name, wsURL, runtime.GOOS, runtime.GOARCH)
 
+	// Process-global session registry (D18): created once, survives every
+	// reconnect so terminal + claude processes outlive the WebSocket. Rooted at
+	// the process-lifetime ctx so sessions are NOT killed on a hub reconnect.
+	state := newAgentState(ctx)
+
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		stop, connected, err := session(ctx, wsURL, cfg, version)
+		stop, connected, err := session(ctx, wsURL, cfg, version, state)
 		if stop {
 			// Bad token (or another non-retryable rejection): give up cleanly.
 			return nil
@@ -148,7 +153,9 @@ func resolveURL(hub string) (string, error) {
 
 // session runs a single connection lifecycle. It returns stop=true only for a
 // non-retryable rejection (e.g. bad token); otherwise the caller reconnects.
-func session(ctx context.Context, wsURL string, cfg config, version string) (stop bool, connected bool, err error) {
+// The process-global state is shared across reconnects; this connection only
+// swaps the output sink and drives the read loop.
+func session(ctx context.Context, wsURL string, cfg config, version string, state *agentState) (stop bool, connected bool, err error) {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return false, false, fmt.Errorf("dial %s: %w", wsURL, err)
@@ -168,7 +175,8 @@ func session(ctx context.Context, wsURL string, cfg config, version string) (sto
 		writer(sessCtx, conn, outbound)
 	}()
 
-	// Register first.
+	// Register first. Capabilities ride the register frame so the hub can score
+	// placement (D19) immediately, and are refreshed on every heartbeat.
 	regFrame, err := proto.Encode(proto.TypeRegister, proto.RegisterPayload{
 		Token:        cfg.token,
 		Hostname:     cfg.name,
@@ -176,6 +184,7 @@ func session(ctx context.Context, wsURL string, cfg config, version string) (sto
 		Arch:         runtime.GOARCH,
 		AgentVersion: version,
 		Protocol:     proto.ProtocolVersion,
+		Capabilities: detectCapabilities(sessCtx),
 	})
 	if err != nil {
 		return false, false, err
@@ -211,19 +220,45 @@ func session(ctx context.Context, wsURL string, cfg config, version string) (sto
 	}
 	log.Printf("agent: registered as %s", reg.AgentID)
 
+	// Point every pump at THIS connection's outbound channel. On disconnect the
+	// sink is cleared (nil) so live sessions buffer to their rings until a new
+	// connection swaps the sink back in — processes never restart on reconnect.
+	state.setSink(outbound)
+	defer state.setSink(nil)
+
 	// Heartbeat loop.
 	go heartbeatLoop(sessCtx, outbound)
 
-	// Per-session PTY registry; torn down with the connection.
-	terms := newTerminals()
-	defer terms.closeAll()
+	// Re-discovery (F): volunteer the live sessions right after registered so the
+	// hub re-adopts them. Sent as a follow-up frame (not inline in register) to
+	// keep the register frame lean.
+	sendSessionList(sessCtx, outbound, state, "")
 
 	// Read loop drives the session; it returns when the connection drops.
-	readErr := readLoop(sessCtx, conn, outbound, terms)
+	readErr := readLoop(sessCtx, conn, outbound, state)
 
 	cancel()
 	<-writerDone
 	return false, true, readErr
+}
+
+// sendSessionList enumerates the live terminal + claude sessions and emits a
+// session_list_result. reqID is empty for the post-register volunteer and set
+// when answering a session_list request.
+func sendSessionList(ctx context.Context, outbound chan<- []byte, state *agentState, reqID string) {
+	descs := append(state.terms.descriptors(), state.claudes.descriptors()...)
+	frame, err := proto.Encode(proto.TypeSessionListResult, proto.SessionListResultPayload{
+		ReqID:    reqID,
+		Sessions: descs,
+	})
+	if err != nil {
+		log.Printf("agent: encode session_list_result: %v", err)
+		return
+	}
+	select {
+	case outbound <- frame:
+	case <-ctx.Done():
+	}
 }
 
 // writer is the sole goroutine permitted to write to conn. It drains outbound
@@ -280,7 +315,7 @@ func heartbeatLoop(ctx context.Context, outbound chan<- []byte) {
 
 // readLoop consumes frames from the hub and dispatches them. It returns when
 // the connection produces an error (drop, deadline, ctx cancel).
-func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte, terms *terminals) error {
+func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte, state *agentState) error {
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -308,32 +343,81 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 			// Keepalive: nothing to do. Control pings are handled by gorilla.
 
 		case proto.TypeTermStart:
+			// Back-compat: the legacy /ws/terminal endpoint opens an ephemeral PTY
+			// via term_start. Map it onto the long-lived terminal machinery keyed by
+			// TermID (treated as a sessionId). It survives reconnect like any session.
 			var p proto.TermStartPayload
 			if err := proto.As(env, &p); err != nil {
 				log.Printf("agent: bad term_start: %v", err)
 				continue
 			}
-			terms.startTerm(ctx, p, outbound)
+			if _, err := state.terms.start(ctx, proto.SessionCreatePayload{
+				SessionID: p.TermID, Kind: proto.SessionTerminal, Shell: p.Shell,
+				Cols: p.Cols, Rows: p.Rows,
+			}); err != nil {
+				state.terms.sendLegacyExit(ctx, outbound, p.TermID, -1, err.Error())
+			}
 		case proto.TypeTermInput:
 			var p proto.TermDataPayload
 			if err := proto.As(env, &p); err != nil {
 				continue
 			}
-			terms.input(p)
+			state.terms.input(p)
 		case proto.TypeTermResize:
 			var p proto.TermResizePayload
 			if err := proto.As(env, &p); err != nil {
 				continue
 			}
-			terms.resize(p)
+			state.terms.resize(p)
 		case proto.TypeTermClose:
 			var p proto.TermControlPayload
 			if err := proto.As(env, &p); err != nil {
 				continue
 			}
-			if terms.close(p.TermID) {
-				terms.sendExit(ctx, outbound, p.TermID, 0, "")
+			if state.terms.close(p.TermID) {
+				state.terms.sendLegacyExit(ctx, outbound, p.TermID, 0, "")
 			}
+
+		// --- Phase 3: long-lived sessions ---
+		case proto.TypeSessionCreate:
+			var p proto.SessionCreatePayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad session_create: %v", err)
+				continue
+			}
+			go handleSessionCreate(ctx, outbound, state, p)
+		case proto.TypeSessionAttach:
+			var p proto.SessionAttachPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			handleSessionAttach(ctx, outbound, state, p)
+		case proto.TypeSessionDetach:
+			// Keep the process running; the hub stops forwarding. Nothing to do.
+		case proto.TypeSessionClose:
+			var p proto.SessionControlPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			closeSession(state, p.SessionID)
+		case proto.TypeSessionList:
+			var p proto.SessionListResultPayload // carries only an optional reqId
+			_ = proto.As(env, &p)
+			sendSessionList(ctx, outbound, state, p.ReqID)
+
+		// --- Phase 3: claude channel ---
+		case proto.TypeClaudeInput:
+			var p proto.ClaudeInputPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			state.claudes.input(p)
+		case proto.TypeClaudePermission:
+			var p proto.ClaudePermissionPayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			state.claudes.permission(p)
 
 		case proto.TypeFileList:
 			var p proto.FileReqPayload
@@ -361,5 +445,73 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 		default:
 			log.Printf("agent: ignoring unexpected frame %q", env.Type)
 		}
+	}
+}
+
+// handleSessionCreate starts a terminal or claude session keyed by SessionID and
+// acks with session_created (carrying pid + claudeSessionId, or an error).
+func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *agentState, p proto.SessionCreatePayload) {
+	ack := proto.SessionCreatedPayload{ReqID: p.ReqID, SessionID: p.SessionID}
+
+	switch p.Kind {
+	case proto.SessionClaude:
+		pid, err := state.claudes.start(ctx, p)
+		if err != nil {
+			ack.Error = err.Error()
+		} else {
+			ack.PID = pid
+			ack.ClaudeSessionID = p.SessionID // hub-assigned via --session-id
+		}
+	default: // terminal
+		pid, err := state.terms.start(ctx, p)
+		if err != nil {
+			ack.Error = err.Error()
+		} else {
+			ack.PID = pid
+		}
+	}
+
+	frame, err := proto.Encode(proto.TypeSessionCreated, ack)
+	if err != nil {
+		log.Printf("agent: encode session_created: %v", err)
+		return
+	}
+	select {
+	case outbound <- frame:
+	case <-ctx.Done():
+	}
+}
+
+// handleSessionAttach replies with a session_replay for the attached session.
+func handleSessionAttach(ctx context.Context, outbound chan<- []byte, state *agentState, p proto.SessionAttachPayload) {
+	var (
+		replay proto.SessionReplayPayload
+		ok     bool
+	)
+	if replay, ok = state.terms.attach(p); !ok {
+		replay, ok = state.claudes.attach(p)
+	}
+	if !ok {
+		return
+	}
+	frame, err := proto.Encode(proto.TypeSessionReplay, replay)
+	if err != nil {
+		log.Printf("agent: encode session_replay: %v", err)
+		return
+	}
+	select {
+	case outbound <- frame:
+	case <-ctx.Done():
+	}
+}
+
+// closeSession terminates a session of either kind and emits one session_exit.
+func closeSession(state *agentState, sessionID string) {
+	if state.terms.close(sessionID) {
+		state.terms.sendExit(sessionID, 0, "")
+		return
+	}
+	if state.claudes.close(sessionID) {
+		state.claudes.sendExit(sessionID, 0, "")
 	}
 }

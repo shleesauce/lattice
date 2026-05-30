@@ -26,14 +26,17 @@ type Agent struct {
 	DiskTotal    uint64  `json:"diskTotal"`
 	DiskFree     uint64  `json:"diskFree"`
 	MemTotal     uint64  `json:"memTotal"`
-	DiskUsedPct  float64  `json:"diskUsedPct"`
-	MemUsedPct   float64  `json:"memUsedPct"`
-	LoadAvg1     float64  `json:"loadAvg1"`
-	CPUCount     int      `json:"cpuCount"`
+	DiskUsedPct  float64 `json:"diskUsedPct"`
+	MemUsedPct   float64 `json:"memUsedPct"`
+	LoadAvg1     float64 `json:"loadAvg1"`
+	CPUCount     int     `json:"cpuCount"`
 	// MACs are the agent's last-known physical-interface hardware addresses,
 	// surfaced so an OFFLINE machine can still be woken (WoL) by a peer on its
 	// LAN. Filled from the most recent heartbeat (live or persisted).
 	MACs []string `json:"macs"`
+	// Capabilities is what the agent can run (Phase 3, D19). Drives placement's
+	// hard filter and is shown in the fleet view.
+	Capabilities proto.Capabilities `json:"capabilities"`
 }
 
 // agentConn is a live agent WebSocket. gorilla connections are not safe for
@@ -50,6 +53,7 @@ type agentConn struct {
 
 	mu       sync.Mutex
 	metrics  proto.HeartbeatPayload
+	caps     proto.Capabilities
 	lastSeen time.Time
 	online   bool
 }
@@ -80,6 +84,12 @@ func (a *agentConn) updateHeartbeat(m proto.HeartbeatPayload, now time.Time) {
 	a.metrics = m
 	a.lastSeen = now
 	a.online = true
+	// Heartbeats refresh capabilities so placement scores fresh can-run state.
+	// Only overwrite when the heartbeat carried them (zero-value claude+node
+	// could be a probe miss; keep the last good value if so).
+	if m.Capabilities.ClaudeInstalled || m.Capabilities.NodeInstalled {
+		a.caps = m.Capabilities
+	}
 }
 
 // view builds the dashboard Agent shape, computing online liveness live.
@@ -104,6 +114,7 @@ func (a *agentConn) view(window time.Duration, now time.Time) Agent {
 		LoadAvg1:     a.metrics.LoadAvg1,
 		CPUCount:     a.metrics.CPUCount,
 		MACs:         copyMACs(a.metrics.MACs),
+		Capabilities: a.caps,
 	}
 }
 

@@ -11,12 +11,18 @@ import (
 )
 
 // browserTermMsg is the JSON framing the browser sends to the hub over the
-// terminal WebSocket.
+// terminal/session WebSocket. It is a superset covering both terminal frames
+// (input/resize) and claude frames (claude_input/claude_permission).
 type browserTermMsg struct {
-	Type string `json:"type"` // "input" | "resize"
+	Type string `json:"type"` // "input" | "resize" | "claude_input" | "claude_permission"
 	Data string `json:"data"` // base64, for "input"
 	Cols uint16 `json:"cols"` // for "resize"
 	Rows uint16 `json:"rows"` // for "resize"
+	// claude_input
+	Text string `json:"text"`
+	// claude_permission
+	ToolUseID string `json:"toolUseId"`
+	Allow     bool   `json:"allow"`
 }
 
 // handleTerminalWS bridges a browser interactive terminal to an agent PTY.
@@ -100,6 +106,125 @@ func (h *Hub) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		case "resize":
 			if err := ac.send(proto.TypeTermResize, proto.TermResizePayload{
 				TermID: termID, Cols: msg.Cols, Rows: msg.Rows,
+			}); err != nil {
+				return
+			}
+		default:
+			// Ignore unknown browser frame types.
+		}
+	}
+}
+
+// handleSessionWS bridges a browser to a long-lived session (terminal OR claude)
+// that already runs on an agent. Unlike /ws/terminal it does NOT create or close
+// the process — it attaches, forwards live I/O, and on browser close DETACHES
+// (the process keeps running). Create/close are REST (D18).
+//
+//	GET /ws/session?session=<id>&cols=<n>&rows=<n>
+//
+// Browser→hub framing: {"type":"input","data":b64} / {"type":"resize",cols,rows}
+// for terminal; {"type":"claude_input","text":…} / {"type":"claude_permission",
+// "toolUseId":…,"allow":bool} for claude. Hub→browser: {"type":"replay",…} then
+// {"type":"output","data":b64} (terminal) or {"type":"claude_event",…} (claude),
+// and {"type":"exit"}.
+func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" {
+		http.Error(w, "session is required", http.StatusBadRequest)
+		return
+	}
+
+	rec, ok, err := h.store.GetSession(sessionID)
+	if err != nil {
+		http.Error(w, "session lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+
+	ac, online := h.registry.getAgent(rec.AgentID)
+	if !online || !ac.isLive(offlineAfter) {
+		http.Error(w, "session agent offline", http.StatusNotFound)
+		return
+	}
+
+	cols := parseDim(r.URL.Query().Get("cols"), 80)
+	rows := parseDim(r.URL.Query().Get("rows"), 24)
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("session ws: upgrade failed: %v", err)
+		return
+	}
+
+	// Reuse the terminal bridge machinery, keyed by sessionId. Only one browser
+	// bridge per session at a time; a new attach replaces the old.
+	t := &terminalConn{conn: conn, agentID: rec.AgentID}
+	h.registry.putTerminal(sessionID, t)
+
+	// Ask the agent to replay scrollback / event tail, then stream live frames.
+	if err := ac.send(proto.TypeSessionAttach, proto.SessionAttachPayload{
+		SessionID: sessionID, Cols: cols, Rows: rows,
+	}); err != nil {
+		_ = t.send(map[string]any{"type": "exit"})
+		h.registry.removeTerminal(sessionID)
+		t.close()
+		return
+	}
+
+	log.Printf("session attach: session=%s agent=%s kind=%s", sessionID, rec.AgentID, rec.Kind)
+
+	defer func() {
+		// Browser closed → DETACH (keep the process running). Only drop the bridge.
+		if cur, ok := h.registry.getAgent(rec.AgentID); ok {
+			_ = cur.send(proto.TypeSessionDetach, proto.SessionControlPayload{SessionID: sessionID})
+		}
+		// Remove only if we are still the registered bridge (a newer attach may
+		// have replaced us).
+		if cur, ok := h.registry.getTerminal(sessionID); ok && cur == t {
+			h.registry.removeTerminal(sessionID)
+		}
+		t.close()
+		log.Printf("session detach: session=%s agent=%s", sessionID, rec.AgentID)
+	}()
+
+	conn.SetReadLimit(1 << 20)
+	for {
+		conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		var msg browserTermMsg
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+
+		switch msg.Type {
+		case "input":
+			if err := ac.send(proto.TypeTermInput, proto.TermDataPayload{
+				TermID: sessionID, Data: msg.Data,
+			}); err != nil {
+				return
+			}
+		case "resize":
+			if err := ac.send(proto.TypeTermResize, proto.TermResizePayload{
+				TermID: sessionID, Cols: msg.Cols, Rows: msg.Rows,
+			}); err != nil {
+				return
+			}
+		case "claude_input":
+			if err := ac.send(proto.TypeClaudeInput, proto.ClaudeInputPayload{
+				SessionID: sessionID, Text: msg.Text,
+			}); err != nil {
+				return
+			}
+		case "claude_permission":
+			if err := ac.send(proto.TypeClaudePermission, proto.ClaudePermissionPayload{
+				SessionID: sessionID, ToolUseID: msg.ToolUseID, Allow: msg.Allow,
 			}); err != nil {
 				return
 			}

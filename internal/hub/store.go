@@ -28,6 +28,35 @@ type AgentRecord struct {
 	Metrics      proto.HeartbeatPayload
 }
 
+// SessionRecord is a persisted long-lived session row (Phase 3 / D18). The hub
+// owns the row; the agent owns the live process. claude_session_id mirrors id
+// for claude sessions (the hub assigns it as --session-id) and is empty for
+// terminals.
+type SessionRecord struct {
+	ID              string
+	ProjectPath     string
+	Kind            string
+	AgentID         string
+	ClaudeSessionID string
+	Title           string
+	Status          string
+	Pinned          bool
+	CreatedAt       time.Time
+	LastActiveAt    time.Time
+}
+
+// AuditEntry is one logged Claude tool event (D21). detail_json is a capped
+// slice of the verbatim stream-json event for after-the-fact review.
+type AuditEntry struct {
+	ID         int64  `json:"id"`
+	SessionID  string `json:"sessionId"`
+	AgentID    string `json:"agentId"`
+	EventType  string `json:"eventType"`
+	ToolName   string `json:"toolName"`
+	DetailJSON string `json:"detailJson"`
+	At         string `json:"at"`
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS agents (
 	id            TEXT PRIMARY KEY,
@@ -48,6 +77,33 @@ CREATE TABLE IF NOT EXISTS command_history (
 	finished_at TEXT,
 	exit_code   INTEGER,
 	error       TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+	id                TEXT PRIMARY KEY,
+	project_path      TEXT,
+	kind              TEXT,
+	agent_id          TEXT,
+	claude_session_id TEXT,
+	title             TEXT,
+	status            TEXT,
+	pinned            INTEGER DEFAULT 0,
+	created_at        TEXT,
+	last_active_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON sessions(agent_id);
+CREATE TABLE IF NOT EXISTS audit_log (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id  TEXT,
+	agent_id    TEXT,
+	event_type  TEXT,
+	tool_name   TEXT,
+	detail_json TEXT,
+	at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_session_id ON audit_log(session_id);
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT
 );
 `
 
@@ -160,5 +216,180 @@ func (s *Store) FinishCommand(cmdID string, exitCode int, errMsg string, finishe
 	_, err := s.db.Exec(`
 		UPDATE command_history SET finished_at=?, exit_code=?, error=? WHERE cmd_id=?
 	`, finished.UTC().Format(time.RFC3339), exitCode, errMsg, cmdID)
+	return err
+}
+
+// --- Phase 3: sessions, audit, settings ---
+
+// UpsertSession inserts or updates a session row. created_at is preserved on
+// conflict; the mutable fields (agent, status, identity, activity) are refreshed
+// so this serves both initial create and re-discovery self-heal.
+func (s *Store) UpsertSession(rec SessionRecord) error {
+	created := rec.CreatedAt.UTC().Format(time.RFC3339)
+	active := rec.LastActiveAt.UTC().Format(time.RFC3339)
+	pinned := 0
+	if rec.Pinned {
+		pinned = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			project_path=excluded.project_path,
+			kind=excluded.kind,
+			agent_id=excluded.agent_id,
+			claude_session_id=excluded.claude_session_id,
+			title=excluded.title,
+			status=excluded.status,
+			pinned=excluded.pinned,
+			last_active_at=excluded.last_active_at
+	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
+		rec.Title, rec.Status, pinned, created, active)
+	return err
+}
+
+// UpdateSessionStatus sets a session's status and bumps last_active_at.
+func (s *Store) UpdateSessionStatus(id, status string, at time.Time) error {
+	_, err := s.db.Exec(`UPDATE sessions SET status=?, last_active_at=? WHERE id=?`,
+		status, at.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// SetSessionAgent rebinds a session to an agent and records its claude session
+// id. Used on (re-)placement and re-discovery so an orphaned session can resume
+// on a different machine under the same row id (D20).
+func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET agent_id=?, claude_session_id=? WHERE id=?`,
+		agentID, claudeSessionID, id)
+	return err
+}
+
+// ListSessions returns every session row, newest activity first.
+func (s *Store) ListSessions() ([]SessionRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at
+		FROM sessions
+		ORDER BY last_active_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SessionRecord
+	for rows.Next() {
+		rec, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// GetSession returns one session row by id. ok=false when no row exists.
+func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
+	row := s.db.QueryRow(`
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at
+		FROM sessions WHERE id=?
+	`, id)
+	rec, err := scanSession(row)
+	if err == sql.ErrNoRows {
+		return SessionRecord{}, false, nil
+	}
+	if err != nil {
+		return SessionRecord{}, false, err
+	}
+	return rec, true, nil
+}
+
+// MarkAgentSessionsOrphaned flips every live/starting session on an agent to
+// orphaned when that agent disconnects. Rows are kept so the session stays
+// visible and resumable elsewhere (D20).
+func (s *Store) MarkAgentSessionsOrphaned(agentID string) error {
+	_, err := s.db.Exec(`
+		UPDATE sessions SET status=? WHERE agent_id=? AND status IN (?, ?, ?)
+	`, proto.SessionOrphaned, agentID, proto.SessionStarting, proto.SessionLive, proto.SessionDetached)
+	return err
+}
+
+// scanRow is the read interface shared by *sql.Row and *sql.Rows.
+type scanRow interface {
+	Scan(dest ...any) error
+}
+
+// scanSession reads one session row, parsing RFC3339 times leniently.
+func scanSession(r scanRow) (SessionRecord, error) {
+	var (
+		rec       SessionRecord
+		pinned    int
+		createdAt string
+		activeAt  string
+	)
+	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &createdAt, &activeAt); err != nil {
+		return SessionRecord{}, err
+	}
+	rec.Pinned = pinned != 0
+	if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+		rec.CreatedAt = t
+	}
+	if t, err := time.Parse(time.RFC3339, activeAt); err == nil {
+		rec.LastActiveAt = t
+	}
+	return rec, nil
+}
+
+// InsertAudit records one Claude tool event for after-the-fact review (D21).
+func (s *Store) InsertAudit(sessionID, agentID, eventType, toolName, detailJSON string, at time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO audit_log (session_id, agent_id, event_type, tool_name, detail_json, at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, sessionID, agentID, eventType, toolName, detailJSON, at.UTC().Format(time.RFC3339))
+	return err
+}
+
+// ListAudit returns the audit trail for a session, oldest first.
+func (s *Store) ListAudit(sessionID string) ([]AuditEntry, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_id, agent_id, event_type, tool_name, detail_json, at
+		FROM audit_log WHERE session_id=? ORDER BY id ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.AgentID, &e.EventType,
+			&e.ToolName, &e.DetailJSON, &e.At); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// GetSetting returns a settings value. ok=false when the key is unset.
+func (s *Store) GetSetting(key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+// SetSetting upserts a settings key/value.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value
+	`, key, value)
 	return err
 }

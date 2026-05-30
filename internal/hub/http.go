@@ -30,6 +30,14 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/enroll", h.handleEnroll)
 	mux.HandleFunc("/api/agents/", h.handleAgentSub)
 
+	// Phase 3: workspace (projects → sessions, placement, audit, settings).
+	mux.HandleFunc("/api/projects", h.handleProjects)
+	mux.HandleFunc("/api/sessions", h.handleSessions)
+	mux.HandleFunc("/api/sessions/", h.handleSessions)
+	mux.HandleFunc("/api/placement", h.handlePlacement)
+	mux.HandleFunc("/api/audit", h.handleAudit)
+	mux.HandleFunc("/api/settings", h.handleSettings)
+
 	// Packaging / enrollment (Phase 4): binary distribution + installers.
 	mux.HandleFunc("/dl/", h.handleDownloadBinary)
 	mux.HandleFunc("/install.sh", h.handleInstallSh)
@@ -38,6 +46,7 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/ws/agent", h.handleAgentWS)
 	mux.HandleFunc("/ws/dashboard", h.handleDashboardWS)
 	mux.HandleFunc("/ws/terminal", h.handleTerminalWS)
+	mux.HandleFunc("/ws/session", h.handleSessionWS)
 
 	mux.Handle("/", h.staticHandler())
 	return mux

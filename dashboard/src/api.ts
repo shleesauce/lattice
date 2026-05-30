@@ -1,7 +1,25 @@
-import type { Agent, Enroll, FileListResult, Health, WakeResult } from './types'
+import type {
+  Agent,
+  AuditEntry,
+  CreateSessionRequest,
+  Enroll,
+  FileListResult,
+  Health,
+  PlacementRequest,
+  PlacementResult,
+  Project,
+  Session,
+  SessionWithPlacement,
+  Settings,
+  WakeResult,
+} from './types'
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    // Surface a parsed error message when the hub returns one.
+    const body = await res.text().catch(() => '')
+    throw new Error(body ? `${res.status}: ${body}` : `${res.status} ${res.statusText}`)
+  }
   return res.json() as Promise<T>
 }
 
@@ -61,4 +79,84 @@ export function terminalWsUrl(agentId: string, cols: number, rows: number): stri
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const qs = new URLSearchParams({ agent: agentId, cols: String(cols), rows: String(rows) })
   return `${proto}://${location.host}/ws/terminal?${qs}`
+}
+
+// ───────────────────────────── Workspace (Phase 3) ─────────────────────────────
+
+export async function fetchProjects(): Promise<Project[]> {
+  const data = await json<{ projects: Project[] | null } | Project[]>(await fetch('/api/projects'))
+  if (Array.isArray(data)) return data
+  return data.projects ?? []
+}
+
+export async function fetchSessions(): Promise<Session[]> {
+  const data = await json<{ sessions: Session[] | null } | Session[]>(await fetch('/api/sessions'))
+  if (Array.isArray(data)) return data
+  return data.sessions ?? []
+}
+
+export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {
+  const res = await fetch('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<SessionWithPlacement>(res)
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 404) {
+    const body = await res.text().catch(() => '')
+    throw new Error(body || `${res.status} ${res.statusText}`)
+  }
+}
+
+export async function resumeSession(
+  id: string,
+  opts: { userAgentId?: string; pinAgentId?: string } = {},
+): Promise<SessionWithPlacement> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  })
+  return json<SessionWithPlacement>(res)
+}
+
+export async function previewPlacement(req: PlacementRequest): Promise<PlacementResult> {
+  const res = await fetch('/api/placement', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<PlacementResult>(res)
+}
+
+export async function fetchAudit(sessionId: string): Promise<AuditEntry[]> {
+  const qs = new URLSearchParams({ session: sessionId })
+  const data = await json<{ entries: AuditEntry[] | null } | AuditEntry[]>(
+    await fetch(`/api/audit?${qs}`),
+  )
+  if (Array.isArray(data)) return data
+  return data.entries ?? []
+}
+
+export async function fetchSettings(): Promise<Settings> {
+  return json<Settings>(await fetch('/api/settings'))
+}
+
+export async function saveSettings(s: Settings): Promise<Settings> {
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(s),
+  })
+  return json<Settings>(res)
+}
+
+export function sessionWsUrl(sessionId: string, cols: number, rows: number): string {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const qs = new URLSearchParams({ session: sessionId, cols: String(cols), rows: String(rows) })
+  return `${proto}://${location.host}/ws/session?${qs}`
 }

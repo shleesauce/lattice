@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
 
@@ -20,16 +21,25 @@ import (
 // enough to feel interactive, large enough to avoid frame spam.
 const ptyReadChunk = 4096
 
-// ptySession is one live interactive shell attached to a pseudo-terminal.
+// ptySession is one live interactive shell attached to a pseudo-terminal. Phase
+// 3 (D18): the process is keyed by sessionId and OUTLIVES the browser/hub link.
+// pumpOutput writes raw bytes to ring (always) + the swappable sink (when a
+// connection is live), so a re-attaching browser is replayed the scrollback.
 type ptySession struct {
-	id     string
+	id        string
+	kind      proto.SessionKind
+	cwd       string
+	startedAt time.Time
+	pid       int
+
 	pty    pty.Pty
 	cmd    *pty.Cmd
 	cancel context.CancelFunc
 
+	ring *byteRing
+
 	// explicitClose marks that the hub asked to close this session, so the
-	// waiter goroutine suppresses its own term_exit (the close path emits it).
-	// Atomic: written by close()/closeAll() and read by the waiter goroutine.
+	// waiter goroutine suppresses its own session_exit (the close path emits it).
 	explicitClose atomic.Bool
 	closeOnce     sync.Once
 }
@@ -46,16 +56,23 @@ func (s *ptySession) release() {
 	})
 }
 
-// terminals is the per-session registry of live PTYs, keyed by termId. It is
-// owned by one agent connection and torn down when that connection ends.
+// terminals is the process-global registry of live PTYs, keyed by sessionId.
+// Unlike Phase 2 it is NOT torn down on disconnect — sessions survive reconnect.
 type terminals struct {
 	mu       sync.Mutex
 	sessions map[string]*ptySession
+	sink     sink
+	// baseCtx is the PROCESS-GLOBAL context (from Run), NOT a per-connection
+	// context. PTYs are spawned from it so they survive a hub reconnect (D18) —
+	// binding them to the connection context would kill every session whenever
+	// the agent↔hub link drops (e.g. a hub restart).
+	baseCtx context.Context
 }
 
-// newTerminals builds an empty per-session PTY registry.
-func newTerminals() *terminals {
-	return &terminals{sessions: make(map[string]*ptySession)}
+// newTerminals builds an empty process-global PTY registry rooted at the
+// process-lifetime context.
+func newTerminals(baseCtx context.Context) *terminals {
+	return &terminals{sessions: make(map[string]*ptySession), baseCtx: baseCtx}
 }
 
 func (t *terminals) put(s *ptySession) {
@@ -77,24 +94,25 @@ func (t *terminals) remove(id string) {
 	delete(t.sessions, id)
 }
 
-// closeAll tears down every live session — used on connection end so a hub
-// reconnect does not leave orphaned shells running.
-func (t *terminals) closeAll() {
+// descriptors snapshots the live terminal sessions for re-discovery (F).
+func (t *terminals) descriptors() []proto.SessionDescriptor {
 	t.mu.Lock()
-	live := make([]*ptySession, 0, len(t.sessions))
+	defer t.mu.Unlock()
+	out := make([]proto.SessionDescriptor, 0, len(t.sessions))
 	for _, s := range t.sessions {
-		s.explicitClose.Store(true)
-		live = append(live, s)
+		out = append(out, proto.SessionDescriptor{
+			SessionID: s.id,
+			Kind:      proto.SessionTerminal,
+			Cwd:       s.cwd,
+			PID:       s.pid,
+			StartedAt: s.startedAt.UTC().Format(time.RFC3339),
+		})
 	}
-	t.sessions = make(map[string]*ptySession)
-	t.mu.Unlock()
-	for _, s := range live {
-		s.release()
-	}
+	return out
 }
 
 // close marks a session for explicit teardown and releases it. Returns true if
-// the session was live (so the caller can emit a single term_exit).
+// the session was live (so the caller can emit a single session_exit).
 func (t *terminals) close(id string) bool {
 	t.mu.Lock()
 	s, ok := t.sessions[id]
@@ -110,41 +128,61 @@ func (t *terminals) close(id string) bool {
 	return true
 }
 
-// startTerm spawns a PTY running the OS default shell and streams its output
-// back as term_output frames. On natural shell exit it emits term_exit and
-// cleans up. The reader and waiter run as goroutines; this call returns fast.
-func (t *terminals) startTerm(parent context.Context, p proto.TermStartPayload, outbound chan<- []byte) {
-	if _, exists := t.get(p.TermID); exists {
-		log.Printf("agent: term_start ignored, termId %s already live", p.TermID)
-		return
+// start spawns a long-lived PTY keyed by SessionID running the OS default shell,
+// streaming output to the ring + current sink. On natural shell exit it emits
+// session_exit and cleans up. Returns the pid (0 on failure) and any start error.
+//
+// The process is rooted at the registry's PROCESS-GLOBAL baseCtx (set in Run),
+// NOT at any per-connection context, so the shell survives hub reconnects (D18).
+// The `parent` arg is accepted for call-site symmetry but intentionally not used
+// to bound the process lifetime.
+func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) (int, error) {
+	_ = parent
+	if _, exists := t.get(p.SessionID); exists {
+		// Already live (e.g. duplicate create): treat as success, idempotent.
+		s, _ := t.get(p.SessionID)
+		return s.pid, nil
 	}
 
 	pt, err := pty.New()
 	if err != nil {
-		t.sendExit(parent, outbound, p.TermID, -1, err.Error())
-		return
+		return 0, err
 	}
 
 	name, args := shellForTerminal()
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancel(t.baseCtx)
 	cmd := pt.CommandContext(ctx, name, args...)
+	if p.Cwd != "" {
+		cmd.Dir = p.Cwd
+	}
 
 	cols, rows := normalizeWinsize(p.Cols, p.Rows)
 	if err := pt.Resize(int(cols), int(rows)); err != nil {
-		log.Printf("agent: term %s initial resize: %v", p.TermID, err)
+		log.Printf("agent: term %s initial resize: %v", p.SessionID, err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		pt.Close()
-		t.sendExit(parent, outbound, p.TermID, -1, err.Error())
-		return
+		return 0, err
 	}
 
-	sess := &ptySession{id: p.TermID, pty: pt, cmd: cmd, cancel: cancel}
+	sess := &ptySession{
+		id:        p.SessionID,
+		kind:      proto.SessionTerminal,
+		cwd:       p.Cwd,
+		startedAt: time.Now(),
+		pty:       pt,
+		cmd:       cmd,
+		cancel:    cancel,
+		ring:      newByteRing(proto.TermRingBytes),
+	}
+	if cmd.Process != nil {
+		sess.pid = cmd.Process.Pid
+	}
 	t.put(sess)
 
-	go t.pumpOutput(ctx, sess, outbound)
+	go t.pumpOutput(sess)
 
 	go func() {
 		waitErr := cmd.Wait()
@@ -159,20 +197,24 @@ func (t *terminals) startTerm(parent context.Context, p proto.TermStartPayload, 
 		sess.release()
 		t.remove(sess.id)
 		// If the hub explicitly closed this session, the close path already
-		// emitted term_exit — don't double-send.
+		// emitted session_exit — don't double-send.
 		if !sess.explicitClose.Load() {
-			t.sendExit(parent, outbound, sess.id, exitCode, "")
+			t.sendExit(sess.id, exitCode, "")
 		}
 	}()
+
+	return sess.pid, nil
 }
 
-// pumpOutput reads the PTY and pushes base64 term_output frames until the PTY
-// closes (shell exit) or the session ctx is cancelled.
-func (t *terminals) pumpOutput(ctx context.Context, sess *ptySession, outbound chan<- []byte) {
+// pumpOutput reads the PTY and writes raw bytes to the scrollback ring (always)
+// and a base64 term_output frame to the current sink (when a connection is live)
+// until the PTY closes or the session ctx is cancelled.
+func (t *terminals) pumpOutput(sess *ptySession) {
 	buf := make([]byte, ptyReadChunk)
 	for {
 		n, err := sess.pty.Read(buf)
 		if n > 0 {
+			sess.ring.write(buf[:n])
 			frame, encErr := proto.Encode(proto.TypeTermOutput, proto.TermDataPayload{
 				TermID: sess.id,
 				Data:   base64.StdEncoding.EncodeToString(buf[:n]),
@@ -180,11 +222,7 @@ func (t *terminals) pumpOutput(ctx context.Context, sess *ptySession, outbound c
 			if encErr != nil {
 				log.Printf("agent: encode term_output: %v", encErr)
 			} else {
-				select {
-				case outbound <- frame:
-				case <-ctx.Done():
-					return
-				}
+				t.sink.send(frame)
 			}
 		}
 		if err != nil {
@@ -194,6 +232,28 @@ func (t *terminals) pumpOutput(ctx context.Context, sess *ptySession, outbound c
 			return
 		}
 	}
+}
+
+// attach answers session_attach for a terminal: refit the window and reply with
+// a session_replay carrying the base64 scrollback snapshot.
+func (t *terminals) attach(p proto.SessionAttachPayload) (proto.SessionReplayPayload, bool) {
+	sess, ok := t.get(p.SessionID)
+	if !ok {
+		return proto.SessionReplayPayload{}, false
+	}
+	if p.Cols != 0 || p.Rows != 0 {
+		cols, rows := normalizeWinsize(p.Cols, p.Rows)
+		if err := sess.pty.Resize(int(cols), int(rows)); err != nil {
+			log.Printf("agent: term %s attach resize: %v", p.SessionID, err)
+		}
+	}
+	data, truncated := sess.ring.snapshot()
+	return proto.SessionReplayPayload{
+		SessionID: p.SessionID,
+		Kind:      proto.SessionTerminal,
+		Data:      base64.StdEncoding.EncodeToString(data),
+		Truncated: truncated,
+	}, true
 }
 
 // input writes decoded keystrokes to a live PTY.
@@ -224,8 +284,23 @@ func (t *terminals) resize(p proto.TermResizePayload) {
 	}
 }
 
-// sendExit emits a term_exit frame for the given session.
-func (t *terminals) sendExit(ctx context.Context, outbound chan<- []byte, termID string, code int, errMsg string) {
+// sendExit emits a session_exit frame for the given terminal session.
+func (t *terminals) sendExit(sessionID string, code int, errMsg string) {
+	frame, err := proto.Encode(proto.TypeSessionExit, proto.SessionControlPayload{
+		SessionID: sessionID,
+		ExitCode:  code,
+		Error:     errMsg,
+	})
+	if err != nil {
+		log.Printf("agent: encode session_exit: %v", err)
+		return
+	}
+	t.sink.send(frame)
+}
+
+// sendLegacyExit emits a Phase-2 term_exit frame, used only by the back-compat
+// /ws/terminal path which still listens for term_exit (not session_exit).
+func (t *terminals) sendLegacyExit(ctx context.Context, outbound chan<- []byte, termID string, code int, errMsg string) {
 	frame, err := proto.Encode(proto.TypeTermExit, proto.TermControlPayload{
 		TermID:   termID,
 		ExitCode: code,

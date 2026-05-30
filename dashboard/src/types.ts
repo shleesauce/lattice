@@ -76,3 +76,158 @@ export interface CommandRun {
   error: string
   startedAt: number
 }
+
+// ───────────────────────────── Workspace (Phase 3) ─────────────────────────────
+
+export interface Project {
+  name: string
+  path: string
+}
+
+export type SessionKind = 'terminal' | 'claude'
+export type SessionStatus = 'starting' | 'live' | 'detached' | 'orphaned' | 'exited'
+
+// Mirrors the hub `sessions` row (D18).
+export interface Session {
+  id: string
+  projectPath: string
+  kind: SessionKind
+  agentId: string
+  claudeSessionId?: string
+  title?: string
+  status: SessionStatus
+  pinned: boolean
+  createdAt: string // RFC3339
+  lastActiveAt: string // RFC3339
+}
+
+// Placement scoring breakdown (D19). `reasons` is intentionally open — the hub
+// owns the weight keys and we render them generically.
+export interface PlacementReasons {
+  [factor: string]: number | string | boolean
+}
+
+export interface PlacementCandidate {
+  agentId: string
+  score: number
+  eligible: boolean
+  reasons: PlacementReasons
+  excluded?: string
+}
+
+export interface PlacementResult {
+  chosen: string | null
+  candidates: PlacementCandidate[]
+}
+
+export interface CreateSessionRequest {
+  kind: SessionKind
+  projectPath: string
+  title?: string
+  userAgentId?: string
+  pinAgentId?: string
+}
+
+export interface SessionWithPlacement {
+  session: Session
+  placement: PlacementResult
+}
+
+export interface PlacementRequest {
+  kind: SessionKind
+  projectPath: string
+  userAgentId?: string
+  pinAgentId?: string
+}
+
+export interface AuditEntry {
+  id: string
+  sessionId: string
+  agentId: string
+  eventType: string
+  toolName?: string
+  detail?: string
+  at: string // RFC3339
+}
+
+export interface Settings {
+  globalApproval?: boolean
+  perMachineApproval?: Record<string, boolean>
+}
+
+// ───────── /ws/session wire frames (hub → browser) ─────────
+export type SessionInbound =
+  | { type: 'replay'; kind: 'terminal'; data: string } // base64 scrollback
+  | { type: 'replay'; kind: 'claude'; events: ClaudeRaw[] }
+  | { type: 'output'; data: string } // base64 terminal frame
+  | { type: 'claude_event'; subtype?: string; raw: ClaudeRaw }
+  | { type: 'exit' }
+
+// ───────── /ws/session wire frames (browser → hub) ─────────
+export type SessionOutbound =
+  | { type: 'input'; data: string } // base64 keystrokes
+  | { type: 'resize'; cols: number; rows: number }
+  | { type: 'claude_input'; text: string }
+  | { type: 'claude_permission'; toolUseId: string; allow: boolean }
+
+// ───────── Claude Code stream-json events (rendered defensively) ─────────
+export interface ClaudeContentBlock {
+  type: string
+  text?: string
+  // tool_use
+  id?: string
+  name?: string
+  input?: unknown
+  // tool_result
+  tool_use_id?: string
+  content?: unknown
+  is_error?: boolean
+}
+
+export interface ClaudeMessage {
+  role?: string
+  model?: string
+  content?: ClaudeContentBlock[] | string
+  usage?: ClaudeUsage
+  stop_reason?: string
+}
+
+export interface ClaudeUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+}
+
+export interface ClaudeStreamDelta {
+  type?: string
+  text?: string
+  partial_json?: string
+}
+
+export interface ClaudeStreamEvent {
+  type?: string
+  delta?: ClaudeStreamDelta
+  content_block?: ClaudeContentBlock
+  index?: number
+}
+
+// Top-level stream-json event. Fields are optional because we branch on `type`.
+export interface ClaudeRaw {
+  type: string
+  subtype?: string
+  session_id?: string
+  model?: string
+  message?: ClaudeMessage
+  event?: ClaudeStreamEvent
+  usage?: ClaudeUsage
+  total_cost_usd?: number
+  duration_ms?: number
+  num_turns?: number
+  is_error?: boolean
+  result?: string
+  // permission requests surfaced in approval mode
+  tool_use_id?: string
+  tool_name?: string
+  [extra: string]: unknown
+}

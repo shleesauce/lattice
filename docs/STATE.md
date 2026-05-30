@@ -6,8 +6,25 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 ---
 
 ## Current phase
-**Phases 1, 2 & 4 COMPLETE & verified on the real fleet (2026-05-29).** Only Phase 3
-(code-server workspace) remains. The SUCCESS CRITERION (packageable) is MET.
+**Phases 1, 2 & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS CRITERION
+(packageable) is MET. **Phase 3 (Workspace) is now BUILDING** — reframed from "proxy code-server"
+into the Claude-Code/VS-Code-style mesh workspace. UX/architecture DISCUSSED & DECIDED with Dylan
+(2026-05-29): decisions **D15–D21** recorded; reframed plan in ROADMAP.md Phase 3; full spec/plan
+at `~/.claude/plans/stateful-watching-ripple.md`.
+
+## Phase 3 — DECIDED (D15–D21), now building
+- **D15** shell: browser-first SPA now → **Tauri** wrapper later (bundles the Go agent as a
+  sidecar). **D16** editor: lean (file tree + Monaco + the two tabs), code-server dropped.
+  **D17** Claude tab: the LOCAL `claude` binary headless in stream-json (subscription; verified
+  flags) — NOT the pay-per-token Managed Agents API. **D18** persistence: first-class Session
+  entity, processes outlive the browser (the core fix — today PTYs die with the browser WS).
+  **D19** placement: capability filter (Claude needs `claude` present — mbp lacks it) + headroom +
+  locality boost, visible/overridable. **D20** portability: placed + resumable (not live-migrated).
+  **D21** trust: skip-perms default + audit log + per-machine approval kill switch.
+- **Build = parallel workstreams (WS-1 proto gates):** see ROADMAP.md Phase 3 for WS-1…WS-9.
+- **Fleet facts that drive the build:** claude installed on mini-ops/studio/pc, NOT mbp; node
+  everywhere; studio already aliases `claude --dangerously-skip-permissions --permission-mode
+  bypassPermissions`; AI-Hub + ~/.claude are Syncthing-synced fleet-wide.
 
 ## Phase 4 — what shipped and is VERIFIED (the success criterion)
 Self-hosted, no-cloud: **the hub is the distribution + enrollment point**.
@@ -26,14 +43,53 @@ Self-hosted, no-cloud: **the hub is the distribution + enrollment point**.
   channel). The private-mesh story — hub-as-distribution — is complete and is the stronger
   packageability proof. Windows-on-ARM build + detection deferred (amd64 runs under emulation).
 
-## NEXT: Workspace UX (expanded Phase 3) — DISCUSS-FIRST
-Dylan reframed Phase 3 from "proxy code-server" into the real product: a **Claude-Code / VS-Code
-desktop-app feel** — left sidebar Projects→Sessions, a Terminal tab + a Claude tab (auto-live
-Claude Code session), cross-machine sessions with smart hub machine-placement (auto, but visible +
-overridable), likely a distributable desktop app. Full capture: **docs/VISION-WORKSPACE.md**.
-**Next session is a DESIGN DISCUSSION before any build** — paste **docs/KICKOFF-WORKSPACE.md** and
-work the 7 open questions with Dylan, then plan + build. Do NOT start coding the workspace until
-the UX/architecture is agreed.
+## Workspace UX — DECIDED (D15–D21) + Phase 3 BACKEND/FRONTEND BUILT & VERIFIED on the fleet (2026-05-29)
+The 7 questions resolved as D15–D21. Backend (proto + sessions + claude runner + placement +
+re-discovery + audit) and frontend (workspace shell: Projects→Sessions sidebar, Terminal + Claude
+tabs, machine chip, Monaco) are BUILT, building green (`go build/vet/test`, `npm run build`), and
+**verified against the real fleet**. Build plan: ROADMAP Phase 3 + `~/.claude/plans/stateful-
+watching-ripple.md`. New decisions from verification: **D22** (Claude needs a launchd LaunchAgent for
+Keychain auth), **D23** (projectPath portability gap — follow-up).
+
+### VERIFIED working (exercised the running system, not just code)
+- **Placement (D19):** `/api/placement` + `/api/sessions` score correctly — mini-ops/studio eligible
+  with RAM/load/cores breakdown + locality; **mbp hard-excluded "claude not installed"**; pc "offline";
+  pin override works. `/api/projects` returns the 24 synced projects.
+- **Claude tab (D17) — END TO END:** a Claude session on studio's launchd agent returned a real
+  **"PONG"** over `/ws/session` with real token usage (in 13700 / out 5 / cache 30028); full
+  stream-json (`system→stream_event→user→assistant→result`) replayed + streamed live. Uses the **Max
+  subscription** (no API key). Hub-assigned `--session-id` ⇒ Lattice sessionId == Claude sessionId.
+- **Persistence (D18) — END TO END:** terminal process outlives browser detach; **scrollback replays
+  on reattach**; session + process **survive a HUB RESTART**, are re-adopted (status live), scrollback
+  intact (1053 B), and **live I/O still works** after the restart.
+- **Frontend:** workspace shell renders (WORKSPACE|FLEET toggle, Projects→Sessions sidebar, empty-state),
+  matches the dark emerald/zinc aesthetic. Screenshot: /tmp/lattice-workspace.png.
+
+### Bugs found & fixed THIS session (via adversarial fleet verification)
+1. `claude --print --output-format=stream-json` **requires `--verbose`** — launcher omitted it (instant exit). FIXED.
+2. Launcher now **scrubs `ANTHROPIC_API_KEY`/`CLAUDECODE`/`CLAUDE_CODE_*`** from the child env → forces subscription auth (also the cost rule). FIXED.
+3. **D18 core bug:** long-lived PTY/claude were spawned from the **per-connection context**, so a hub
+   restart (agent↔hub link drop) KILLED every session. Now rooted at the **process-global base context**
+   (newAgentState(ctx) → registries' baseCtx). FIXED + re-verified across a hub restart.
+4. **D22 (operational):** macOS Claude auth needs a **launchd LaunchAgent** (GUI-session Keychain), not
+   a nohup daemon — studio reprovisioned via the hub installer; "Not logged in" → real "PONG".
+
+### Fleet state after this session
+- mini-ops: hub + local agent under PM2 (new binary, claude=true). studio: **launchd LaunchAgent**
+  (`sh.lattice.agent`, new binary, claude=true) — reprovisioned from nohup. mbp: launchd (new binary,
+  claude=false — correct, no claude installed). pc: OFFLINE (asleep) — still on old binary, redeploy when awake.
+- Cosmetic: a stale offline `studio` agent record (old `--name studio`) coexists with the launchd
+  `Dylans-Mac-Studio.local` record — agentID = hostname+os, and the installer uses the real hostname
+  while deploy-fleet used `studio`. Harmless dup; clean up by removing the offline row.
+
+### NOT YET DONE (follow-ups)
+- **D23 projectPath portability** (name-relative resolution) — needed for true cross-machine resume.
+- **Cross-machine Claude resume** (orphan on A → `--resume` on B) not yet exercised end-to-end (needs D23 + Syncthing-timing retry).
+- **Audit log + approval kill switch** wired in backend but not yet exercised/verified.
+- **Interactive frontend QA** (click into a session, drive the Claude chat UI in-browser) — only the empty-state was screenshotted.
+- **pc (Windows)** redeploy + Claude-session auth on Windows (credential store) untested.
+- **WS-9 Tauri** desktop packaging — not started (deferred sub-phase).
+- Monaco write-back, projects served per-machine vs hub-only listing.
 
 ## Phase 2 — what shipped and is VERIFIED
 - **Interactive terminal:** per-agent PTY via `github.com/aymanbagabas/go-pty` (unix + Windows

@@ -11,8 +11,12 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Registration errors.
@@ -53,11 +57,12 @@ const pendingTimeout = 10 * time.Second
 
 // Hub holds the shared runtime state for a running controller.
 type Hub struct {
-	version  string
-	token    string
-	distDir  string
-	store    *Store
-	registry *Registry
+	version      string
+	token        string
+	distDir      string
+	projectsRoot string
+	store        *Store
+	registry     *Registry
 }
 
 // Run parses flags, opens the store, and serves until ctx is cancelled.
@@ -67,6 +72,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	dbPath := fs.String("db", "lattice.db", "sqlite database path")
 	token := fs.String("token", "", "enrollment token (random 8-char if empty)")
 	distDir := fs.String("dist", "dist", "directory of cross-compiled agent binaries served at /dl/")
+	projectsRoot := fs.String("projects-root", defaultProjectsRoot(), "directory scanned by /api/projects for workspace projects")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,11 +88,12 @@ func Run(ctx context.Context, args []string, version string) error {
 	defer store.Close()
 
 	h := &Hub{
-		version:  version,
-		token:    *token,
-		distDir:  *distDir,
-		store:    store,
-		registry: NewRegistry(),
+		version:      version,
+		token:        *token,
+		distDir:      *distDir,
+		projectsRoot: *projectsRoot,
+		store:        store,
+		registry:     NewRegistry(),
 	}
 
 	mux := h.routes()
@@ -98,6 +105,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	log.Printf("  listen: %s", *addr)
 	log.Printf("  db:     %s", *dbPath)
 	log.Printf("  dist:   %s   (binaries served at /dl/)", *distDir)
+	log.Printf("  projects: %s   (scanned by /api/projects)", *projectsRoot)
 	log.Printf("  token:  %s   (enroll agents with --token %s)", *token, *token)
 
 	errCh := make(chan error, 1)
@@ -223,6 +231,21 @@ func newTermID() string {
 // newReqID returns a random request-correlation id for file/wake round-trips.
 func newReqID() string {
 	return randomID("req")
+}
+
+// newSessionID returns a UUIDv4 used as the session row id AND the claude
+// --session-id, so the Lattice sessionId IS the claudeSessionId (D17).
+func newSessionID() string {
+	return uuid.NewString()
+}
+
+// defaultProjectsRoot is $HOME/AI-Hub/projects — the Syncthing-synced workspace.
+func defaultProjectsRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "projects"
+	}
+	return filepath.Join(home, "AI-Hub", "projects")
 }
 
 // randomID returns a random 16-char hex id with a fallback prefix.

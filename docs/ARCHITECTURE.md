@@ -54,10 +54,31 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
   registers the agent. Device identity bound to its Tailscale node identity.
 - No passwords, no API keys in the happy path.
 
-### 7. Workspace (phase 3)
-- Embed/proxy **code-server** (VS Code in the browser) behind the hub — simpler to ship than
-  Theia for v1. Gives file explorer, editor, panels, integrated terminal, doc preview — the
-  "Cursor-like workspace" Dylan wants — reachable from any device's browser over the tailnet.
+### 7. Workspace (phase 3) — DONE
+The Phase-3 workspace shipped as a Claude-Code/VS-Code-style mesh workspace (NOT a code-server
+proxy — see D16): a Projects→Sessions + Devices sidebar over the synced `~/AI-Hub/projects/*`; per
+session a **Terminal** tab (PTY) and an already-live **Claude** tab (the local `claude` binary
+headless in stream-json on the Max subscription, D17); long-lived sessions that survive browser
+detach AND hub restart (first-class Session entity, agent owns the process + scrollback ring, D18);
+capability+headroom+locality placement (D19); device-scoped sessions (D24); a new-project onboarding
+wizard (D25). The session lifecycle runs over the single dial-out agent WS as JSON envelopes
+(`internal/proto`), the hub bridging the browser via `/ws/session`.
+
+### 8. IDE milestone (M2) — embed code-server, proxied over a yamux tunnel
+The IDE milestone (D26–D31) makes Lattice a real IDE by **embedding code-server** (full VS Code in
+the browser) as a new on-demand **`editor`** session kind — NOT forking VS Code. Key pieces:
+- **Editor core:** code-server, distributed by **hub-as-distribution** (D14/D28): the hub serves the
+  release, the agent fetches+caches on first use and launches it per-session scoped to the project
+  dir, reusing the D18 lifecycle + D19 placement. On Windows it runs inside **WSL2** (`/mnt/c`, D30).
+- **Transport (the key new piece, D27):** the agent opens a **second outbound WS** to the hub
+  `/ws/tunnel` and runs `yamux` over it; the hub reverse-proxies `/editor/{sessionId}/*` →
+  `yamux.OpenStream()` → agent → local code-server. This preserves the **agents-dial-OUT-only** rule
+  (D2) — no inbound listener on any leaf — while carrying the workbench's many parallel HTTP/WS
+  connections over one multiplexed socket.
+- **AI (D29):** the Phase-3 Claude runner stays in OUR React chrome beside the editor first; a Lattice
+  VS Code extension (Chat/LM/inline-completion APIs) adds in-editor Cmd-K + autocomplete later.
+- **Shell:** browser-first now; the Tauri desktop app (D15) bundling the agent sidecar is the P4
+  packaging step. The embedded VS Code replaces the read-only Monaco file rail (D31).
 
 ## End-to-end flow (Phase 1 proof)
 1. `lattice hub` starts on mini-ops, listens on tailnet :7400, opens SQLite, serves dashboard.

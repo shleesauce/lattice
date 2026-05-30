@@ -240,3 +240,86 @@ to sync" warning. **Verified on the fleet:** scaffold (all files + git), registe
 PROJECT_INDEX regenerated + KB stub), launch on mini-ops (local detection), and the seed turn reached
 claude (the 401 was only this machine's local-agent contamination — proven to auth on studio). Test
 artifacts fully reverted afterward.
+
+---
+
+# IDE Milestone (M2) — turn the workspace into a real IDE (discussed & decided 2026-05-29 with Dylan)
+
+Goal: an IDE that competes with Cursor / VS Code / Claude Code desktop / Codex desktop / T3 Code —
+deep editor abilities (edit/save, search, git, LSP/intellisense, debugging, extensions) + a
+Cursor-grade AI experience, all over the mesh, as a distributable product. Strategy: **EMBED a VS Code
+server as the editor core; do NOT fork VS Code.** Keep the Claude chat + sessions + placement +
+onboarding as OUR chrome around the embedded editor. Spec/plan: `~/.claude/plans/rippling-wishing-candy.md`.
+In-repo next milestone (`dylanstoryyy/lattice`, master); browser-first now, Tauri shell at P4 (D15).
+
+## D26 — Embed code-server (Coder) as the editor core; do NOT fork VS Code  (supersedes D16)
+**Why:** the full VS Code workbench (multi-file edit/save, search, git, LSP/intellisense, debugging,
+integrated terminal, extensions via Open VSX) for ~free, with **zero fork-maintenance** — the
+upstream-rebase tax of a fork (Cursor/Windsurf's path) is unrealistic solo. code-server is the most
+turnkey server build ("run a binary → VS Code on a port", built-in auth, mature). The AI-IDE
+experience comes from VS Code's mature **Chat / Language-Model / inline-completion extension APIs**
+(D29), not a fork. D16 ("lean Monaco editor, drop code-server") was right for a *workspace*; the
+*IDE-competitor* goal flips it back — this reversal is scoped to the IDE milestone.
+**Rejected:** fork VS Code (perpetual rebase tax — reserve only if an API gap provably forces it);
+keep extending the lean Monaco workspace (re-invents LSP/debug/git/extensions — years of work);
+be a VS Code/Cursor extension only (you're a *plugin*, not "the IDE" — abandons the mesh + distribution).
+
+## D27 — Expose the per-agent editor via a SECOND dial-out WS tunnel, multiplexed with yamux
+**Why:** preserves **D2** fully (agents dial OUT only, **zero inbound listener on leaves**) — Dylan
+chose the pure path over tailnet-direct. The agent opens a second outbound WS to the hub `/ws/tunnel`
+(token + agentID auth, mirrors the `/ws/agent` handshake), wrapped as an `io.ReadWriteCloser` running
+`yamux.Server`; the hub runs `yamux.Client` on it (tracked per-agent in the registry). The hub
+reverse-proxies `/editor/{sessionId}/*` → `yamuxSession.OpenStream()` (via a `httputil.ReverseProxy`
+whose `Transport.DialContext` returns the stream; Go ≥1.21 forwards `Connection: Upgrade` so WS
+upgrades work) → agent `AcceptStream` reads a sessionId prefix → `net.Dial 127.0.0.1:<code-server
+port>` → `io.Copy`. **Why yamux:** a VS Code workbench opens many concurrent HTTP/WS connections, so a
+single un-muxed pipe won't do; one tunnel per agent, each editor session = a prefixed stream.
+**Rejected:** tailnet-direct (binds an inbound listener on the leaf — breaks D2's purity; Dylan
+declined the shortcut); a separate outbound WS per editor session (no multiplexing → can't carry the
+workbench's parallel conns). **#1 build risk:** code-server must serve correctly under the
+`/editor/{id}/` subpath (asset base-path) — spike + prove FIRST in P1.
+
+## D28 — Distribute code-server via hub-as-distribution; an on-demand "editor" session kind  (extends D14)
+**Why:** no per-machine manual install — fits the mesh + single-owner model. The hub serves the
+code-server release (reuse `handleDownloadBinary`'s `path.Base` allowlist + `h.distDir`); the agent
+fetches + **caches on first editor use**, then launches code-server per-session scoped to the project
+dir as a new **`editor`** session kind that **reuses the D18 lifecycle** (process-global registry,
+survives browser detach + hub restart, re-adopted on reconnect) and **D19 placement** (capability
+filter now also requires `codeServerInstalled`). Torn down with the session.
+**Rejected:** pre-bundle code-server in the agent (bloats every agent build per OS/arch); npm/script
+install per machine (reintroduces a node/runtime + per-OS install step — the packageability pain
+D1/D10 kill). Cost: ~100–200 MB binary per platform → fetch only on first editor use, cache locally.
+
+## D29 — AI experience: chrome-first, then a Lattice VS Code extension
+**Why:** fastest path to a working IDE that reuses ALL of Phase 3. P1–P2 keep the Phase-3 Claude
+stream-json chat (Max subscription, D17) in OUR React chrome beside the embedded editor — runner,
+sessions, placement, token HUD all reused. P3 adds a **Lattice VS Code extension** for in-editor Cmd-K
+edits + tab autocomplete + in-workbench chat (VS Code Chat / Language-Model / inline-completion APIs),
+talking to the same Claude runner → the "Cursor experience" WITHOUT a fork.
+**Rejected:** extension-first (wires the extension↔runner bridge before the editor is even embedded —
+slower, re-treads less of Phase 3); both in parallel (widest surface at once, higher half-finished
+risk). **Rule:** start at extension-API level; only fork if a must-have interaction provably can't be
+done via the API.
+
+## D30 — Editor on all four machines; Windows serves code-server inside WSL2
+**Why (Dylan):** the moat is "a full VS Code on ANY fleet machine" — so pc (Windows) is in scope NOW,
+not later. code-server ships no native Windows build, so keep ONE editor core everywhere by launching
+code-server **inside WSL2** on the Windows agent, reaching the Syncthing'd project via `/mnt/c`. The
+capability probe reports `codeServerInstalled`/version + `wslAvailable`.
+**Rejected:** OpenVSCode Server / `code serve-web` on Windows only (two server flavors to manage);
+Macs-first/Windows-later (Dylan wants the full "any machine" proof in this milestone). Cost: a WSL2
+dependency on pc (agent bootstrap may need to install it) + cross-filesystem (`/mnt/c`) perf — spike
+in P2.
+
+## D31 — Retire the read-only Monaco file rail; code-server becomes the editor surface  (with D26)
+**Why:** one editor, no split-brain. The embedded VS Code is THE editor; the Lattice Projects/Devices
+sidebar stays as navigation that drives it (click a file → opens a VS Code tab). Remove the workspace
+rail trio `ProjectFilesPanel.tsx` / `FileViewer.tsx` / `MonacoPanel.tsx` / `useFileBrowser.ts`. The
+Phase-2 `/api/agents/{id}/files` endpoints + the FLEET-tab `FileBrowser` stay (still used there).
+**Rejected:** keep Monaco as a quick-peek fallback (UX overlap + extra surface to maintain).
+
+## Open / deferred for the IDE milestone
+- **D9** product name — still provisional ("Lattice"); finalize before any public release (target P4).
+- **Tauri packaging** (D15) — P4: wrap the SPA + bundle the agent sidecar; then a public distribution channel.
+- Cross-machine editor resume parity with the Claude `--resume` story (D20) — editor is placed+restartable,
+  not live-migrated; the project tree is synced so re-opening on another box is cheap.

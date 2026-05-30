@@ -6,13 +6,63 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 ---
 
 ## Current phase
-**Phases 1, 2 & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS CRITERION
-(packageable) is MET. **Phase 3 (Workspace) is now BUILDING** — reframed from "proxy code-server"
-into the Claude-Code/VS-Code-style mesh workspace. UX/architecture DISCUSSED & DECIDED with Dylan
-(2026-05-29): decisions **D15–D21** recorded; reframed plan in ROADMAP.md Phase 3; full spec/plan
-at `~/.claude/plans/stateful-watching-ripple.md`.
+**Phases 1, 2, 3 (Workspace) & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS
+CRITERION (packageable) is MET and the workspace is built + verified (D15–D25).
 
-## Phase 3 — DECIDED (D15–D21), now building
+**NOW: IDE Milestone (M2) — architecture DISCUSSED & DECIDED with Dylan (2026-05-29), ready to build.**
+Turn the workspace into a real IDE (compete with Cursor / VS Code / Claude Code desktop / Codex /
+T3 Code): deep editor abilities + a Cursor-grade AI experience, all over the mesh, as a distributable
+product. **Decisions D26–D31 recorded** (docs/DECISIONS.md); roadmap **P1–P4** in docs/ROADMAP.md;
+full spec/plan at `~/.claude/plans/rippling-wishing-candy.md`.
+
+### IDE architecture (ratified D26–D31)
+- **D26** EMBED **code-server** as the editor core; do NOT fork VS Code (supersedes D16). Keep the
+  Claude chat + sessions + placement + onboarding as OUR chrome around it.
+- **D27** Expose the per-agent editor via a **second dial-out WS tunnel multiplexed with yamux** (hub
+  reverse-proxies `/editor/{sessionId}/*` → `yamux.OpenStream` → agent → local code-server) —
+  preserves D2 (zero inbound on leaves). **Biggest technical piece; build/spike first.**
+- **D28** Distribute code-server via **hub-as-distribution** (extends D14); a new on-demand **`editor`**
+  session kind reusing the D18 lifecycle + D19 placement; fetched+cached on first use, torn down with
+  the session.
+- **D29** AI **chrome-first** (reuse the Phase-3 Claude runner beside the editor) → a **Lattice VS Code
+  extension** (Cmd-K, autocomplete, in-workbench chat) later.
+- **D30** Editor on **all four machines**; Windows runs **code-server inside WSL2** (`/mnt/c`).
+- **D31** The embedded VS Code **replaces the read-only Monaco rail**; the sidebar drives it.
+
+### NEXT (P1) — build the embedded editor on the local agent (mini-ops)
+1. **Spike FIRST:** prove code-server serves correctly under the `/editor/{id}/` subpath (asset
+   base-path) — the #1 risk; everything else builds on it.
+2. Add `go get github.com/hashicorp/yamux` + a gorilla-WS↔`net.Conn` adapter.
+3. Hub: `internal/hub/tunnel.go` (`/ws/tunnel`, yamux client, per-agent tunnel registry) +
+   `internal/hub/editorproxy.go` (`/editor/{sessionId}/*` reverse proxy) + register routes in
+   `routes()` (http.go) + serve the code-server release (install.go) + `kind=editor` in
+   sessionapi.go/placement.go.
+4. Agent: `editor` session kind — `internal/agent/editor.go` (spawn/supervise code-server, WSL2 on
+   Windows) + 3rd registry in state.go (`editors`, extend `setSink`) + 2nd `/ws/tunnel` dial-out +
+   yamux Accept loop in agent.go + `SessionEditor` cases in handleSessionCreate/Attach/closeSession +
+   probe code-server/WSL in capabilities.go + `internal/agent/codeserver.go` (fetch/cache from hub).
+5. Proto: `SessionEditor` kind + `Capabilities.CodeServerInstalled/Version` + `WSLAvailable`.
+6. Frontend: `SessionEditor.tsx` (iframe to `/editor/{id}/`) in SessionPane; Workspace right rail →
+   editor surface; Sidebar click-file → open-in-editor; remove ProjectFilesPanel/FileViewer/
+   MonacoPanel/useFileBrowser from the workspace; types.ts + api.ts add the `editor` kind.
+- **DONE WHEN:** open a project on mini-ops → code-server loads in the Lattice shell → edit+save
+  (verify on disk via SSH) → search + git work → no new inbound listener on the agent → hub restart
+  re-adopts the editor session.
+
+### Build approach (unchanged from prior phases)
+Parallel subagents per phase, **adversarially verified against the real fleet** (mini-ops/studio/mbp/pc)
+— never trust an implementer agent's self-report. Rebuild `bash scripts/build.sh` → `pm2 restart
+lattice-hub`; deploy agents via the hub installer (launchd LaunchAgents — D22 / Windows Scheduled Task);
+token in `.lattice-token`; push to `origin/master`.
+
+---
+
+## Prior milestone (Phase 3 Workspace) — DONE & VERIFIED, kept for reference below
+The reframed Phase 3 shipped: Projects→Sessions + Devices sidebar, long-lived Terminal + Claude
+(stream-json, Max subscription) sessions surviving browser detach + hub restart, smart placement, the
+onboarding wizard, and the (now-to-be-retired) read-only Monaco file rail. Full detail follows.
+
+## Phase 3 (Workspace) — DECIDED (D15–D25), BUILT & VERIFIED  [D16 superseded by D26 for the IDE milestone]
 - **D15** shell: browser-first SPA now → **Tauri** wrapper later (bundles the Go agent as a
   sidecar). **D16** editor: lean (file tree + Monaco + the two tabs), code-server dropped.
   **D17** Claude tab: the LOCAL `claude` binary headless in stream-json (subscription; verified

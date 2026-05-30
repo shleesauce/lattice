@@ -27,7 +27,7 @@ The proof the model works.
 - **DONE WHEN:** real shell session to any machine in the browser; browse a remote tree;
   wake the PC from sleep via the dashboard.
 
-## Phase 3 — Workspace  🔨 BUILDING (reframed 2026-05-29; the real product)
+## Phase 3 — Workspace  ✅ DONE & VERIFIED (reframed 2026-05-29; the real product)
 **Reframed** from "proxy code-server" (old D8) into a Claude-Code/VS-Code-style mesh workspace —
 see docs/VISION-WORKSPACE.md + decisions D15–D21. A Projects→Sessions sidebar over the synced
 `~/AI-Hub/projects/*`; per session a **Terminal** tab and an already-live **Claude** tab (local
@@ -68,7 +68,48 @@ distribution (GitHub Releases / Homebrew / winget) is the only deferred sub-item
 - **DONE WHEN:** on a fresh machine that has never seen this project, a single documented
   command installs the agent and it appears in the dashboard — no manual per-OS steps.
 
+---
+
+# IDE Milestone (M2) — compete with Cursor / VS Code / Claude Code desktop  🔨 NEXT (decided 2026-05-29)
+
+Turn the workspace into a real IDE: deep editor abilities (edit/save, search, git, LSP/intellisense,
+debugging, extensions) + a Cursor-grade AI experience, all over the mesh, as a distributable product.
+**Architecture (ratified, D26–D31):** embed **code-server** as the editor core (no VS Code fork);
+expose it via a **second dial-out WS tunnel multiplexed with yamux** (preserves D2 — zero inbound on
+leaves); ship it via **hub-as-distribution** as an on-demand **`editor`** session kind reusing the D18
+lifecycle + D19 placement; AI stays in OUR chrome first, then a Lattice VS Code extension; editor on
+all four machines (Windows via **code-server in WSL2**); the embedded VS Code replaces the read-only
+Monaco rail. Spec/plan: `~/.claude/plans/rippling-wishing-candy.md`.
+
+## P1 — Embed a real editor (local agent, mini-ops)
+code-server `editor` session kind + lifecycle; hub serves the binary; the yamux tunnel + `/editor`
+reverse proxy; rendered embedded in the shell scoped to a project; real edit/save/search/git. Retire
+the Monaco rail. **Spike the `/editor/{id}/` subpath concern FIRST.**
+- **DONE WHEN:** open a project on mini-ops → code-server loads in the Lattice shell → edit + save
+  (verify on disk via SSH) → search + git work → the agent shows **no new inbound listener** (netstat)
+  → restart the hub → the editor session is re-adopted.
+
+## P2 — Mesh editor
+Open code-server on ANY placed agent: studio + mbp natively, **pc via WSL2** (`/mnt/c`); placement
+visible/overridable; sessions persist across browser refresh + hub restart (extend D18 to editor).
+- **DONE WHEN:** editor verified on studio, mbp, and pc(WSL2); machine chip shows placement + override;
+  survives refresh + hub restart on each.
+
+## P3 — AI-native
+Weave the Claude runner beside the editor (chat aware of the open file/project); then the **Lattice VS
+Code extension**: Cmd-K inline edits, tab autocomplete, in-workbench chat → the Claude runner on the
+Max subscription.
+- **DONE WHEN:** Cursor-grade in-editor AI works over the mesh (a Cmd-K edit applies; a completion
+  appears) on the subscription.
+
+## P4 — Package
+Tauri desktop app (D15) bundling the agent sidecar → the installable IDE; finalize a product name (D9);
+optional public distribution channel (GitHub Releases / Homebrew / winget).
+
+---
+
 ## Explicitly deferred / non-goals (for now)
 - iOS agent (no good sideload-free path) — phone story is Android/Termux only, last.
 - Multi-user / teams / sharing someone else's mesh — single-owner first.
 - Auth beyond tailnet + enrollment token — don't gold-plate before Phase 4.
+- Fork VS Code — only if a must-have interaction provably can't be done via the extension APIs (D26/D29).

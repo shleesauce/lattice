@@ -36,25 +36,41 @@ full spec/plan at `~/.claude/plans/rippling-wishing-candy.md`.
   workbench is desktop-grade — usable on a phone, not optimized. Realistic split: phone = chat/terminal/
   quick peeks; laptop = heavy editing. A mobile-friendly editor affordance is a P3/P4 nice-to-have.
 
-### P1 spike — code-server subpath proxy (2026-05-30): LIKELY-PASS, visual confirm still pending
-Installed **code-server 4.107.1** on mini-ops (brew, for the spike; hub-as-distribution should ship the
-**standalone tarball** ≈95 MB compressed / ≈320 MB unpacked — NOT the 430 MB brew cellar). Stood up a
-stdlib Go `httputil.ReverseProxy` (`/tmp/cs-spike/proxy.go`) mapping `/editor/test/*` → 127.0.0.1:9444.
-**Curl-level evidence:** code-server with `--auth none` serves `/` 200 directly when a folder is passed;
-its asset URLs are emitted **relative**, so they resolve under the subpath. **Verified recipe** (use in
-the hub): strip the `/editor/{id}` prefix, set `X-Forwarded-Host`=hub host + `X-Forwarded-Proto`, and
-**302-redirect `/editor/{id}` → `/editor/{id}/`** (the trailing slash is MANDATORY so relative assets
-resolve under the prefix). WebSockets (the extension host) forward automatically on Go ≥1.21. `--auth
-none` is fine — the tailnet + hub already gate access (D2/D3).
-**HONEST CAVEAT:** the agent's Playwright "workbench fully loaded, no console errors" screenshot came
-back as a **44-byte stub** → the *visual* render proof did NOT actually capture. The approach is
-consistent with code-server's documented subpath support + the curl evidence, so risk is LOW, but
-**confirm the workbench visually loads (assets + extension-host WS, no 404s) as the first P1 build step**
-before stacking the tunnel on it. Scratch left at `/tmp/cs-spike/`, `/tmp/cs-spike-proj/`.
+### P1 spike — code-server subpath proxy (2026-05-30): ✅ PASS (visually verified)
+**code-server 4.112.0** (Code 1.112.0) on mini-ops. Stood up a stdlib Go reverse proxy
+(`/tmp/cs-spike/proxy.go`, v3 ~180 lines) mapping `/editor/test/*` → 127.0.0.1:9444. **Playwright
+loaded the full VS Code workbench through the subpath** — file tree showed `hello.js`, extension host
+connected, WS stayed alive, no blocking console errors. Screenshot `/tmp/cs-spike-shot.png` (101 KB,
+1280×720, valid PNG — I viewed it). code-server emits **relative** asset URLs, so a trailing slash
+makes everything resolve under the prefix.
+
+**Verified recipe the hub MUST implement** (more than the trailing-slash redirect — two extra pieces):
+1. **Director:** strip the `/editor/{id}` prefix; set `X-Forwarded-Host`=hub host, `X-Forwarded-Proto`,
+   `X-Forwarded-Prefix=/editor/{id}/`; set the upstream `Host` to code-server.
+2. **302 redirect** `/editor/{id}` → `/editor/{id}/` (trailing slash MANDATORY).
+3. **ModifyResponse:** rewrite `Location` headers — code-server 302s with a RELATIVE `./?folder=…`;
+   resolve it against the prefix so the browser stays under `/editor/{id}/` (else infinite redirect loop).
+4. **WebSocket tunnel:** `httputil.ReverseProxy` strips hop-by-hop `Upgrade`/`Connection`, so the
+   extension-host WS never upgrades. Detect `Upgrade: websocket` → bypass ReverseProxy → `net.Dial` the
+   backend + `http.Hijack` the client + bidirectional `io.Copy`.
+5. **code-server flag `--trusted-origins`** = the hub host (use `*` for dev) — its `authenticateOrigin()`
+   compares the browser `Origin` to the backend `Host` and **403s the WS** without this. Plus `--auth
+   none` (tailnet + hub already gate access, D2/D3) + `--disable-telemetry`.
+Harmless non-blockers: a 404 on optional `vsda.js` (code-signing WASM, absent in this build) + an
+ERR_ABORTED on the webview iframe (browser sandbox) — workbench fully functional.
+
+**Footprint / D28 note to settle in P1:** the brew cellar is ~384 MB (full VS Code + Node runtime). The
+standalone release tarball is ~95 MB compressed — viable for hub-as-distribution (D28), but the simpler
+alternative is **per-node install** (brew / official `install.sh`) with the hub just spawning+proxying.
+Decide in P1: hub-served tarball (keeps D28's "no per-machine install") vs per-node install (simpler,
+heavier per box). The WSL2 Windows path (D30) likely wants the Linux tarball inside WSL regardless.
+
+Reference impl + evidence: `/tmp/cs-spike/proxy.go`, `/tmp/cs-spike-shot.png`, `/tmp/cs-server.log`.
 
 ### NEXT (P1) — build the embedded editor on the local agent (mini-ops)
-1. **First: re-confirm the spike VISUALLY** (Playwright screenshot that's actually non-empty, console +
-   network clean) using the recipe above — then build on it.
+1. **Spike is PASS** — lift the proven proxy recipe (above) into the hub's `editorproxy.go` over the
+   yamux stream (Director + ModifyResponse + the WS hijack tunnel); launch code-server with
+   `--trusted-origins`/`--auth none`. Settle the D28 distribution choice (tarball vs per-node install).
 2. Add `go get github.com/hashicorp/yamux` + a gorilla-WS↔`net.Conn` adapter.
 3. Hub: `internal/hub/tunnel.go` (`/ws/tunnel`, yamux client, per-agent tunnel registry) +
    `internal/hub/editorproxy.go` (`/editor/{sessionId}/*` reverse proxy) + register routes in

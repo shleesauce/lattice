@@ -31,6 +31,12 @@ func detectCapabilities(ctx context.Context) proto.Capabilities {
 		c.NodeInstalled = true
 		c.NodeVersion = probeVersion(ctx, path, "--version")
 	}
+	// IDE milestone (D28/D30): can this agent host an embedded editor?
+	if path := resolveCodeServer(); path != "" {
+		c.CodeServerInstalled = true
+		c.CodeServerVersion = probeCodeServerVersion(ctx, path)
+	}
+	c.WSLAvailable = detectWSL()
 	return c
 }
 

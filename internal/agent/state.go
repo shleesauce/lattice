@@ -13,6 +13,7 @@ import (
 type agentState struct {
 	terms   *terminals
 	claudes *claudeSessions
+	editors *editorSessions
 }
 
 // newAgentState builds the empty process-global registries, rooting every
@@ -22,6 +23,7 @@ func newAgentState(baseCtx context.Context) *agentState {
 	return &agentState{
 		terms:   newTerminals(baseCtx),
 		claudes: newClaudeSessions(baseCtx),
+		editors: newEditorSessions(baseCtx),
 	}
 }
 
@@ -31,6 +33,7 @@ func newAgentState(baseCtx context.Context) *agentState {
 func (s *agentState) setSink(outbound chan []byte) {
 	s.terms.sink.set(outbound)
 	s.claudes.sink.set(outbound)
+	s.editors.sink.set(outbound)
 }
 
 // sink is the swappable destination shared by all pumps of one kind. A nil boxed

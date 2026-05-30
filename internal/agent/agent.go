@@ -58,6 +58,11 @@ func Run(ctx context.Context, args []string, version string) error {
 	// the process-lifetime ctx so sessions are NOT killed on a hub reconnect.
 	state := newAgentState(ctx)
 
+	// Second dial-out (D27): the editor tunnel. Its own persistent connection +
+	// reconnect loop, independent of the main /ws/agent link, so code-server
+	// traffic is multiplexed over yamux without a new inbound listener (D2).
+	go runTunnel(ctx, wsURL, cfg, state)
+
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -248,6 +253,7 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 // when answering a session_list request.
 func sendSessionList(ctx context.Context, outbound chan<- []byte, state *agentState, reqID string) {
 	descs := append(state.terms.descriptors(), state.claudes.descriptors()...)
+	descs = append(descs, state.editors.descriptors()...)
 	frame, err := proto.Encode(proto.TypeSessionListResult, proto.SessionListResultPayload{
 		ReqID:    reqID,
 		Sessions: descs,
@@ -468,6 +474,13 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 			ack.PID = pid
 			ack.ClaudeSessionID = p.SessionID // hub-assigned via --session-id
 		}
+	case proto.SessionEditor:
+		pid, err := state.editors.start(ctx, p)
+		if err != nil {
+			ack.Error = err.Error()
+		} else {
+			ack.PID = pid
+		}
 	default: // terminal
 		pid, err := state.terms.start(ctx, p)
 		if err != nil {
@@ -514,7 +527,9 @@ func handleSessionAttach(ctx context.Context, outbound chan<- []byte, state *age
 		ok     bool
 	)
 	if replay, ok = state.terms.attach(p); !ok {
-		replay, ok = state.claudes.attach(p)
+		if replay, ok = state.claudes.attach(p); !ok {
+			replay, ok = state.editors.attach(p) // editors have no replay (ok=false)
+		}
 	}
 	if !ok {
 		return
@@ -538,5 +553,9 @@ func closeSession(state *agentState, sessionID string) {
 	}
 	if state.claudes.close(sessionID) {
 		state.claudes.sendExit(sessionID, 0, "")
+		return
+	}
+	if state.editors.close(sessionID) {
+		state.editors.sendExit(sessionID, 0, "")
 	}
 }

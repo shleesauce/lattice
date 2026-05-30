@@ -81,6 +81,16 @@ const (
 	// --- Phase 3: agent capabilities (also folded into register + heartbeat) ---
 	// Agent → Hub
 	TypeCapabilities MessageType = "capabilities" // standalone capability refresh
+
+	// --- IDE milestone (M2): embedded editor (code-server) over a yamux tunnel ---
+	// An editor session is a code-server process bound to 127.0.0.1 on the agent.
+	// Its HTTP/WS traffic never crosses the wire directly: the hub reverse-proxies
+	// /editor/{sessionId}/* over a SECOND dial-out WebSocket multiplexed with yamux
+	// (D27) — preserving D2 (zero inbound on leaves). Lifecycle reuses the Phase-3
+	// session machinery above (session_create/attach/close with Kind=editor); the
+	// only editor-specific wire piece is the tunnel transport, which carries raw
+	// yamux streams, NOT proto Envelopes. So there are no new MessageTypes here —
+	// just the SessionEditor kind and the Capabilities fields added below.
 )
 
 // FileGetMaxBytes caps a single file_get response (base64 over the JSON WS).
@@ -178,6 +188,10 @@ type SessionKind string
 const (
 	SessionTerminal SessionKind = "terminal"
 	SessionClaude   SessionKind = "claude"
+	// SessionEditor is an embedded code-server instance (IDE milestone, D28). It
+	// reuses the long-lived session lifecycle; the agent spawns code-server bound
+	// to loopback and the hub proxies it over the yamux tunnel.
+	SessionEditor SessionKind = "editor"
 )
 
 // Session status values persisted by the hub. Kept here so hub + (future) agent
@@ -304,6 +318,12 @@ type Capabilities struct {
 	ClaudeVersion   string `json:"claudeVersion,omitempty"`
 	NodeInstalled   bool   `json:"nodeInstalled"`
 	NodeVersion     string `json:"nodeVersion,omitempty"`
+	// IDE milestone (D28/D30): can this agent host an embedded editor? code-server
+	// must be installed (per-node install, P1 decision). On Windows it runs inside
+	// WSL2, so WSLAvailable gates the editor there.
+	CodeServerInstalled bool   `json:"codeServerInstalled"`
+	CodeServerVersion   string `json:"codeServerVersion,omitempty"`
+	WSLAvailable        bool   `json:"wslAvailable,omitempty"`
 }
 
 // Envelope wraps every message. Payload is the type-specific body.

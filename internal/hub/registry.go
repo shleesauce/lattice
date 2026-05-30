@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/hashicorp/yamux"
 
 	"github.com/dylanstoryyy/lattice/internal/proto"
 )
@@ -200,6 +201,12 @@ type Registry struct {
 
 	pendMu  sync.Mutex
 	pending map[string]chan proto.Envelope
+
+	// tunnels holds the live yamux session per agent for the editor tunnel (D27),
+	// keyed by agentId. The hub OPENS streams over it to reach an agent's
+	// loopback-bound code-server; the agent never opens streams.
+	tunMu   sync.Mutex
+	tunnels map[string]*yamux.Session
 }
 
 // NewRegistry builds an empty registry.
@@ -209,6 +216,39 @@ func NewRegistry() *Registry {
 		dashboards: make(map[*dashboardConn]struct{}),
 		terms:      make(map[string]*terminalConn),
 		pending:    make(map[string]chan proto.Envelope),
+		tunnels:    make(map[string]*yamux.Session),
+	}
+}
+
+// putTunnel registers an agent's editor tunnel session, closing any prior one so
+// a reconnecting agent's stale session can't linger and serve dead streams.
+func (r *Registry) putTunnel(agentID string, s *yamux.Session) {
+	r.tunMu.Lock()
+	old := r.tunnels[agentID]
+	r.tunnels[agentID] = s
+	r.tunMu.Unlock()
+	if old != nil && old != s {
+		_ = old.Close()
+	}
+}
+
+// getTunnel returns the live editor tunnel for an agent, if any (and not closed).
+func (r *Registry) getTunnel(agentID string) (*yamux.Session, bool) {
+	r.tunMu.Lock()
+	defer r.tunMu.Unlock()
+	s, ok := r.tunnels[agentID]
+	if !ok || s.IsClosed() {
+		return nil, false
+	}
+	return s, true
+}
+
+// removeTunnel drops an agent's tunnel mapping only if it is still the current one.
+func (r *Registry) removeTunnel(agentID string, s *yamux.Session) {
+	r.tunMu.Lock()
+	defer r.tunMu.Unlock()
+	if cur, ok := r.tunnels[agentID]; ok && cur == s {
+		delete(r.tunnels, agentID)
 	}
 }
 

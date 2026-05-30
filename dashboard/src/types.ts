@@ -24,6 +24,9 @@ export interface Agent {
     claudeVersion?: string
     nodeInstalled: boolean
     nodeVersion?: string
+    codeServerInstalled: boolean
+    codeServerVersion?: string
+    wslAvailable?: boolean
   }
 }
 
@@ -92,7 +95,7 @@ export interface Project {
   path: string
 }
 
-export type SessionKind = 'terminal' | 'claude'
+export type SessionKind = 'terminal' | 'claude' | 'editor'
 export type SessionStatus = 'starting' | 'live' | 'detached' | 'orphaned' | 'exited'
 export type SessionScope = 'project' | 'device'
 

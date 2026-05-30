@@ -58,6 +58,8 @@ func ScorePlacement(req PlacementRequest, agents []Agent, now time.Time) Placeme
 			c.Excluded = "offline"
 		case req.Kind == proto.SessionClaude && !a.Capabilities.ClaudeInstalled:
 			c.Excluded = "claude not installed"
+		case req.Kind == proto.SessionEditor && !a.Capabilities.CodeServerInstalled:
+			c.Excluded = "code-server not installed"
 		default:
 			c.Eligible = true
 		}

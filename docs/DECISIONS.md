@@ -289,6 +289,13 @@ filter now also requires `codeServerInstalled`). Torn down with the session.
 **Rejected:** pre-bundle code-server in the agent (bloats every agent build per OS/arch); npm/script
 install per machine (reintroduces a node/runtime + per-OS install step — the packageability pain
 D1/D10 kill). Cost: ~100–200 MB binary per platform → fetch only on first editor use, cache locally.
+**P1 REFINEMENT (2026-05-30, Dylan):** ship **per-node install / detect-local** FIRST — the agent
+resolves an already-installed `code-server` (`resolveCodeServer`) and spawns+proxies it; placement
+excludes machines without it. This unblocked P1 verification immediately (code-server was brew-installed
+on mini-ops) and keeps the agent tiny. The hub-served-tarball path above is NOT abandoned — it's a clean
+future add: the resolver is the single seam that would grow a "fetch from `/dl/code-server-…` + cache"
+fallback when `resolveCodeServer()` returns empty. So D28's "no per-machine install" goal is deferred,
+not dropped.
 
 ## D29 — AI experience: chrome-first, then a Lattice VS Code extension
 **Why:** fastest path to a working IDE that reuses ALL of Phase 3. P1–P2 keep the Phase-3 Claude

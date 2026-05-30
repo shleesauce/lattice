@@ -47,6 +47,11 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/ws/dashboard", h.handleDashboardWS)
 	mux.HandleFunc("/ws/terminal", h.handleTerminalWS)
 	mux.HandleFunc("/ws/session", h.handleSessionWS)
+	mux.HandleFunc("/ws/tunnel", h.handleTunnelWS) // IDE: agent's 2nd dial-out (yamux editor tunnel, D27)
+
+	// IDE: reverse-proxy an agent's embedded code-server over the tunnel (D27).
+	// /editor/{sessionId}/* — the trailing wildcard captures all workbench assets.
+	mux.HandleFunc("/editor/", h.handleEditorProxy)
 
 	mux.Handle("/", h.staticHandler())
 	return mux

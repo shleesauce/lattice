@@ -9,7 +9,13 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 **Phases 1, 2, 3 (Workspace) & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS
 CRITERION (packageable) is MET and the workspace is built + verified (D15–D25).
 
-**NOW: IDE Milestone (M2) — architecture DISCUSSED & DECIDED with Dylan (2026-05-29), ready to build.**
+**IDE Milestone (M2) — P1 BUILT & VERIFIED END-TO-END on mini-ops (2026-05-30).** The embedded editor
+works: real VS Code (code-server 4.112.0) renders inside Lattice through the hub, proxied over the
+yamux tunnel (D27), with file tree + git + extension-host WebSocket all live. Every DONE-WHEN met
+(see "### P1 — DONE & VERIFIED" below). **NEXT: P2** (Monaco-rail retirement D31 in the workspace UI +
+multi-machine code-server install/verify on studio/mbp/pc + the Cursor-grade AI chrome D29).
+
+**IDE Milestone (M2) — architecture DISCUSSED & DECIDED with Dylan (2026-05-29).**
 Turn the workspace into a real IDE (compete with Cursor / VS Code / Claude Code desktop / Codex /
 T3 Code): deep editor abilities + a Cursor-grade AI experience, all over the mesh, as a distributable
 product. **Decisions D26–D31 recorded** (docs/DECISIONS.md); roadmap **P1–P4** in docs/ROADMAP.md;
@@ -67,26 +73,54 @@ heavier per box). The WSL2 Windows path (D30) likely wants the Linux tarball ins
 
 Reference impl + evidence: `/tmp/cs-spike/proxy.go`, `/tmp/cs-spike-shot.png`, `/tmp/cs-server.log`.
 
-### NEXT (P1) — build the embedded editor on the local agent (mini-ops)
-1. **Spike is PASS** — lift the proven proxy recipe (above) into the hub's `editorproxy.go` over the
-   yamux stream (Director + ModifyResponse + the WS hijack tunnel); launch code-server with
-   `--trusted-origins`/`--auth none`. Settle the D28 distribution choice (tarball vs per-node install).
-2. Add `go get github.com/hashicorp/yamux` + a gorilla-WS↔`net.Conn` adapter.
-3. Hub: `internal/hub/tunnel.go` (`/ws/tunnel`, yamux client, per-agent tunnel registry) +
-   `internal/hub/editorproxy.go` (`/editor/{sessionId}/*` reverse proxy) + register routes in
-   `routes()` (http.go) + serve the code-server release (install.go) + `kind=editor` in
-   sessionapi.go/placement.go.
-4. Agent: `editor` session kind — `internal/agent/editor.go` (spawn/supervise code-server, WSL2 on
-   Windows) + 3rd registry in state.go (`editors`, extend `setSink`) + 2nd `/ws/tunnel` dial-out +
-   yamux Accept loop in agent.go + `SessionEditor` cases in handleSessionCreate/Attach/closeSession +
-   probe code-server/WSL in capabilities.go + `internal/agent/codeserver.go` (fetch/cache from hub).
-5. Proto: `SessionEditor` kind + `Capabilities.CodeServerInstalled/Version` + `WSLAvailable`.
-6. Frontend: `SessionEditor.tsx` (iframe to `/editor/{id}/`) in SessionPane; Workspace right rail →
-   editor surface; Sidebar click-file → open-in-editor; remove ProjectFilesPanel/FileViewer/
-   MonacoPanel/useFileBrowser from the workspace; types.ts + api.ts add the `editor` kind.
-- **DONE WHEN:** open a project on mini-ops → code-server loads in the Lattice shell → edit+save
-  (verify on disk via SSH) → search + git work → no new inbound listener on the agent → hub restart
-  re-adopts the editor session.
+### P1 — DONE & VERIFIED END-TO-END on mini-ops (2026-05-30) ✅
+The embedded editor is built and proven on the real fleet. **D28 distribution decision (settled):
+per-node install** for P1 — the agent detects an existing `code-server` (`resolveCodeServer`: PATH →
+brew/`/usr/local` → `~/.local/bin`) and just spawns+proxies it; placement excludes machines without it.
+Hub-served tarball stays a clean future add (the resolver is the only seam that'd grow a fetch path).
+
+**Architecture as built (Arch-1: hub terminates HTTP, agent is a dumb per-session pipe):**
+- **Shared** `internal/tunnel/` — `WSConn` (gorilla `*websocket.Conn` → `net.Conn`, binary frames),
+  `Config()` (yamux keepalive 30s / write-timeout 10s), and the stream handshake (`WriteStreamHeader`/
+  `ReadStreamHeader`: the hub writes `sessionId\n` as the first bytes of every stream so the agent
+  routes it). yamux = `github.com/hashicorp/yamux v0.1.2`.
+- **Hub** — `tunnel.go` (`/ws/tunnel?token&agent`: token-gated, `yamux.Server`, per-agent session in a
+  registry that closes a stale prior session on reconnect). `editorproxy.go` (`/editor/{sessionId}/*`:
+  the proven spike recipe verbatim — prefix strip + `X-Forwarded-*`, relative-`Location` rewrite, the
+  trailing-slash 302, manual WS hijack — but `Transport.DialContext` opens a yamux stream + writes the
+  handshake instead of a TCP dial). Routes in http.go; `kind=editor` accepted in sessionapi.go +
+  `code-server not installed` exclusion in placement.go.
+- **Agent** — `editor.go` (`editorSessions` registry mirroring claude/terminal: spawns code-server on a
+  free `127.0.0.1:PORT`, per-session `--user-data-dir` + shared `--extensions-dir`, waits for the port,
+  supervises, tears down on close). `codeserver.go` (resolver + WSL probe). `tunnel.go` (2nd dial-out to
+  `/ws/tunnel` with its own reconnect/backoff; `yamux.Client`; Accept loop reads the handshake →
+  `addrFor(sessionId)` → `net.Dial` loopback → bidirectional `io.Copy`). `state.go` 3rd registry +
+  `setSink`; `capabilities.go` probes code-server/WSL; `SessionEditor` cases in agent.go.
+- **code-server argv:** `--bind-addr 127.0.0.1:PORT --auth none --trusted-origins * --disable-telemetry
+  --disable-update-check --disable-workspace-trust --user-data-dir <base>/<sid> [--extensions-dir
+  <shared>] <cwd>`.
+- **Frontend** — `SessionEditor.tsx` (iframe `src=/editor/{id}/`, loading overlay), `editor` tab in
+  SessionPane (TAB_ORDER), `editor` kind in NewSessionDialog (gated on `codeServerInstalled` for device
+  sessions), types.ts `SessionKind`+`Capabilities`. *(Monaco rail NOT yet retired — that's P2/D31.)*
+- **Proto** — `SessionEditor` kind + `Capabilities.CodeServerInstalled/Version` + `WSLAvailable`.
+
+**DONE-WHEN — all verified (real browser via Playwright + lsof + on-disk):**
+1. ✅ open a project on mini-ops → full VS Code workbench renders through the hub (screenshot: lattice
+   file tree, `master*`, 21-change SCM badge). 2. ✅ edit+save → marker written to disk via the editor.
+   3. ✅ git works (M markers / SCM badge); search panel present. 4. ✅ **no new inbound listener on the
+   agent** — agent has ZERO listening sockets (`lsof -a -p AGENT -iTCP -sTCP:LISTEN` empty), only two
+   outbound loopback conns to :7400 (`/ws/agent`+`/ws/tunnel`); code-server bound `127.0.0.1` only.
+   5. ✅ **hub restart re-adopts** — session stays `live`, tunnel re-establishes, `/editor/{id}/` serves
+   200, SAME code-server pid survives. Editor close tears code-server down cleanly.
+
+### NEXT (P2)
+- Retire the read-only Monaco rail in the workspace (D31): remove ProjectFilesPanel/FileViewer/
+  MonacoPanel/useFileBrowser; Sidebar click-file → open-in-embedded-editor.
+- Install code-server on studio/mbp/pc and verify the editor cross-machine (Windows = code-server inside
+  WSL2, D30 — `codeserver.go`/`detectWSL` already gate this; the spawn path needs a WSL `wsl.exe -e`
+  wrapper).
+- Cursor-grade AI chrome beside the editor (D29): reuse the Phase-3 Claude runner; later a Lattice VS
+  Code extension (Cmd-K / autocomplete / in-workbench chat).
 
 ### Build approach (unchanged from prior phases)
 Parallel subagents per phase, **adversarially verified against the real fleet** (mini-ops/studio/mbp/pc)

@@ -110,8 +110,8 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := proto.SessionKind(strings.TrimSpace(body.Kind))
-	if kind != proto.SessionTerminal && kind != proto.SessionClaude {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal or claude"})
+	if kind != proto.SessionTerminal && kind != proto.SessionClaude && kind != proto.SessionEditor {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal, claude, or editor"})
 		return
 	}
 	scope := strings.TrimSpace(body.Scope)
@@ -341,8 +341,8 @@ func (h *Hub) handlePlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := proto.SessionKind(strings.TrimSpace(body.Kind))
-	if kind != proto.SessionTerminal && kind != proto.SessionClaude {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal or claude"})
+	if kind != proto.SessionTerminal && kind != proto.SessionClaude && kind != proto.SessionEditor {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal, claude, or editor"})
 		return
 	}
 	result := ScorePlacement(PlacementRequest{

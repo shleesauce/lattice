@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -453,6 +454,11 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *agentState, p proto.SessionCreatePayload) {
 	ack := proto.SessionCreatedPayload{ReqID: p.ReqID, SessionID: p.SessionID}
 
+	// Resolve the working directory locally. A device session sends an empty (or
+	// "~") cwd meaning "this machine's home" — the hub can't know the home path
+	// because it differs per box (/Users/mini-ops vs /Users/dylanstory vs C:\Users\…).
+	p.Cwd = resolveCwd(p.Cwd)
+
 	switch p.Kind {
 	case proto.SessionClaude:
 		pid, err := state.claudes.start(ctx, p)
@@ -479,6 +485,25 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 	select {
 	case outbound <- frame:
 	case <-ctx.Done():
+	}
+}
+
+// resolveCwd maps an empty or "~"-rooted working directory to the agent's home
+// directory (device sessions), leaving absolute paths untouched (project sessions).
+// On home-lookup failure it returns the input unchanged so the OS default applies.
+func resolveCwd(cwd string) string {
+	if cwd != "" && cwd != "~" && !strings.HasPrefix(cwd, "~/") {
+		return cwd
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return cwd
+	}
+	switch {
+	case cwd == "" || cwd == "~":
+		return home
+	default: // "~/sub/dir"
+		return filepath.Join(home, cwd[2:])
 	}
 }
 

@@ -122,6 +122,7 @@ type sessionView struct {
 	Title           string `json:"title"`
 	Status          string `json:"status"`
 	Pinned          bool   `json:"pinned"`
+	Scope           string `json:"scope"`
 	CreatedAt       string `json:"createdAt"`
 	LastActiveAt    string `json:"lastActiveAt"`
 }
@@ -137,6 +138,7 @@ func toSessionView(r SessionRecord) sessionView {
 		Title:           r.Title,
 		Status:          r.Status,
 		Pinned:          r.Pinned,
+		Scope:           r.Scope,
 		CreatedAt:       r.CreatedAt.UTC().Format(time.RFC3339),
 		LastActiveAt:    r.LastActiveAt.UTC().Format(time.RFC3339),
 	}

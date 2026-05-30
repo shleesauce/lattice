@@ -200,3 +200,21 @@ credential-store equivalents to verify; pc (Windows) Claude-session auth unteste
 agent resolve `<home>/AI-Hub/projects/<name>` locally; keep the absolute path only as a display hint.
 This makes D20 portability (placed + resumable on any machine) actually hold. Tracked as a follow-up;
 the `/api/projects` endpoint already returns `{name, path}`, so the name is available.
+**Partially addressed by D24:** the agent now resolves an empty/`~` cwd to its own home, so the home-path
+divergence is handled for device sessions and the `~/...` form; named-project resolution is still TODO.
+
+## D24 — "Device projects": sessions scoped to a specific machine (machine-local work)
+**Why (Dylan, 2026-05-29):** besides the synced AI-Hub projects, Dylan wants to open a Claude/terminal
+session bound to a SPECIFIC box to do machine-local work — set up programs, organize files, admin that
+device. **Model:** a session has a `scope` of `project` (synced worktree, auto-placeable) or `device`
+(pinned to one machine, cwd = that machine's **home**). A device session sets `scope:"device"` +
+`pinAgentId:<device>`, omits projectPath; the **agent resolves empty/`~` cwd to its own home** (the hub
+can't — home paths differ per box). Device sessions are **strict**: they run on their device or fail —
+NEVER fall back to another machine (defeats the point). The capability filter still applies, so a Claude
+device session on a box without claude returns a clear `"this device can't host the session: claude not
+installed"`. UI: a **DEVICES** section under PROJECTS listing the fleet (online-first, CLAUDE capability
+chip, offline dimmed), each device expanding to its device sessions + "+ new session"; the machine chip
+is static (no override) for device sessions. **Verified on the fleet:** device terminal on mini-ops →
+`pwd` = `/Users/mini-ops` (home); device Claude on mbp → 400 "claude not installed"; device Claude on
+studio → real "PONG" in its home. Schema: added `sessions.scope` (idempotent `ALTER … ADD COLUMN`
+migration, default `project`).

@@ -96,10 +96,18 @@ export async function fetchSessions(): Promise<Session[]> {
 }
 
 export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {
+  // Device sessions carry no project path — the agent resolves its home dir.
+  // Strip an empty/undefined projectPath so the hub treats it as device-local.
+  const body: CreateSessionRequest = { kind: req.kind }
+  if (req.scope) body.scope = req.scope
+  if (req.projectPath) body.projectPath = req.projectPath
+  if (req.title) body.title = req.title
+  if (req.userAgentId) body.userAgentId = req.userAgentId
+  if (req.pinAgentId) body.pinAgentId = req.pinAgentId
   const res = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
   })
   return json<SessionWithPlacement>(res)
 }

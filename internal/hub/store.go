@@ -3,6 +3,7 @@ package hub
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -41,8 +42,11 @@ type SessionRecord struct {
 	Title           string
 	Status          string
 	Pinned          bool
-	CreatedAt       time.Time
-	LastActiveAt    time.Time
+	// Scope is "project" (a synced ~/AI-Hub/projects/* worktree, auto-placeable)
+	// or "device" (machine-local work pinned to one box, cwd = that box's home).
+	Scope        string
+	CreatedAt    time.Time
+	LastActiveAt time.Time
 }
 
 // AuditEntry is one logged Claude tool event (D21). detail_json is a capped
@@ -87,6 +91,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	title             TEXT,
 	status            TEXT,
 	pinned            INTEGER DEFAULT 0,
+	scope             TEXT DEFAULT 'project',
 	created_at        TEXT,
 	last_active_at    TEXT
 );
@@ -119,6 +124,16 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// Idempotent column migrations for DBs created before a column was added.
+	// SQLite has no "ADD COLUMN IF NOT EXISTS"; a duplicate-column error is benign.
+	for _, mig := range []string{
+		`ALTER TABLE sessions ADD COLUMN scope TEXT DEFAULT 'project'`,
+	} {
+		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -231,9 +246,13 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 	if rec.Pinned {
 		pinned = 1
 	}
+	scope := rec.Scope
+	if scope == "" {
+		scope = "project"
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project_path=excluded.project_path,
 			kind=excluded.kind,
@@ -242,9 +261,10 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 			title=excluded.title,
 			status=excluded.status,
 			pinned=excluded.pinned,
+			scope=excluded.scope,
 			last_active_at=excluded.last_active_at
 	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
-		rec.Title, rec.Status, pinned, created, active)
+		rec.Title, rec.Status, pinned, scope, created, active)
 	return err
 }
 
@@ -267,7 +287,7 @@ func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
 // ListSessions returns every session row, newest activity first.
 func (s *Store) ListSessions() ([]SessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at
 		FROM sessions
 		ORDER BY last_active_at DESC
 	`)
@@ -290,7 +310,7 @@ func (s *Store) ListSessions() ([]SessionRecord, error) {
 // GetSession returns one session row by id. ok=false when no row exists.
 func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at
 		FROM sessions WHERE id=?
 	`, id)
 	rec, err := scanSession(row)
@@ -327,10 +347,13 @@ func scanSession(r scanRow) (SessionRecord, error) {
 		activeAt  string
 	)
 	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
-		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &createdAt, &activeAt); err != nil {
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &createdAt, &activeAt); err != nil {
 		return SessionRecord{}, err
 	}
 	rec.Pinned = pinned != 0
+	if rec.Scope == "" {
+		rec.Scope = "project"
+	}
 	if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
 		rec.CreatedAt = t
 	}

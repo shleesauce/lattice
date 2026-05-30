@@ -1,17 +1,19 @@
 import { useMemo, useState } from 'react'
 import type { LoadState } from '../../useWorkspace'
-import type { Project, Session, SessionKind } from '../../types'
+import type { Agent, Project, Session, SessionKind } from '../../types'
 import { statusDotClass, statusPulses } from './sessionMeta'
 
 interface Props {
   projects: Project[]
   sessions: Session[]
+  agents: Agent[]
   projectsState: LoadState
   activeSessionId: string | null
   collapsed: boolean
   onToggleCollapse: () => void
   onSelectSession: (id: string) => void
   onNewSession: (project: Project) => void
+  onNewDeviceSession: (agent: Agent) => void
 }
 
 // Left rail: collapsible Projects → Sessions tree. Projects come from
@@ -19,26 +21,52 @@ interface Props {
 export function Sidebar({
   projects,
   sessions,
+  agents,
   projectsState,
   activeSessionId,
   collapsed,
   onToggleCollapse,
   onSelectSession,
   onNewSession,
+  onNewDeviceSession,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [deviceExpanded, setDeviceExpanded] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
+
+  // PROJECTS shows project-scoped sessions only; device sessions live in DEVICES.
+  const projectSessions = useMemo(() => sessions.filter((s) => s.scope !== 'device'), [sessions])
 
   // Default-expand any project that currently has sessions, plus the active one.
   const sessionsByProject = useMemo(() => {
     const m = new Map<string, Session[]>()
-    for (const s of sessions) {
+    for (const s of projectSessions) {
       const arr = m.get(s.projectPath) ?? []
       arr.push(s)
       m.set(s.projectPath, arr)
     }
     return m
+  }, [projectSessions])
+
+  // Device sessions keyed by the machine they're pinned to.
+  const sessionsByAgent = useMemo(() => {
+    const m = new Map<string, Session[]>()
+    for (const s of sessions) {
+      if (s.scope !== 'device') continue
+      const arr = m.get(s.agentId) ?? []
+      arr.push(s)
+      m.set(s.agentId, arr)
+    }
+    return m
   }, [sessions])
+
+  // Online machines first, then offline; stable hostname sort within each group.
+  const orderedAgents = useMemo(() => {
+    return [...agents].sort((a, b) => {
+      if (a.online !== b.online) return a.online ? -1 : 1
+      return (a.hostname || a.id).localeCompare(b.hostname || b.id)
+    })
+  }, [agents])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -48,6 +76,9 @@ export function Sidebar({
 
   const isOpen = (path: string) =>
     expanded[path] ?? ((sessionsByProject.get(path)?.length ?? 0) > 0)
+
+  const isDeviceOpen = (agentId: string) =>
+    deviceExpanded[agentId] ?? ((sessionsByAgent.get(agentId)?.length ?? 0) > 0)
 
   if (collapsed) {
     return (
@@ -152,8 +183,105 @@ export function Sidebar({
             </div>
           )
         })}
+
+        <div className="mt-3 flex items-center gap-2 px-2 pb-1.5 pt-2">
+          <span className="font-display text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+            devices
+          </span>
+          <span className="h-px flex-1 bg-zinc-800" />
+        </div>
+
+        {orderedAgents.length === 0 ? (
+          <p className="px-2 py-4 text-center font-mono text-[11px] text-zinc-600">// no devices online</p>
+        ) : (
+          orderedAgents.map((a) => {
+            const ds = sessionsByAgent.get(a.id) ?? []
+            const open = isDeviceOpen(a.id)
+            const hasClaude = a.capabilities?.claudeInstalled ?? false
+            return (
+              <div key={a.id} className="mb-0.5">
+                <div
+                  className={`group flex items-center rounded-md hover:bg-zinc-900/70 ${a.online ? '' : 'opacity-50'}`}
+                  title={a.online ? undefined : 'offline — start a session once it comes online'}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setDeviceExpanded((e) => ({ ...e, [a.id]: !open }))}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left"
+                  >
+                    <Caret open={open} />
+                    <DeviceDot online={a.online} />
+                    <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
+                      {a.hostname || a.name || a.id.slice(0, 8)}
+                    </span>
+                    {hasClaude && (
+                      <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[9px] uppercase tracking-wider text-zinc-500">
+                        claude
+                      </span>
+                    )}
+                    {ds.length > 0 && (
+                      <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[10px] text-zinc-400">
+                        {ds.length}
+                      </span>
+                    )}
+                  </button>
+                  {a.online && (
+                    <button
+                      type="button"
+                      onClick={() => onNewDeviceSession(a)}
+                      title="new session on this device"
+                      className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-800 hover:text-emerald-300 group-hover:opacity-100"
+                    >
+                      <PlusIcon />
+                    </button>
+                  )}
+                </div>
+
+                {open && (
+                  <ul className="ml-3 border-l border-zinc-800 pl-1.5">
+                    {ds.length === 0 ? (
+                      <li>
+                        {a.online ? (
+                          <button
+                            type="button"
+                            onClick={() => onNewDeviceSession(a)}
+                            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left font-mono text-[11px] text-zinc-600 hover:text-emerald-300"
+                          >
+                            <PlusIcon /> new session
+                          </button>
+                        ) : (
+                          <span className="flex w-full items-center px-2 py-1.5 font-mono text-[11px] text-zinc-600">
+                            offline — can't start a session
+                          </span>
+                        )}
+                      </li>
+                    ) : (
+                      ds.map((s) => (
+                        <SessionRow
+                          key={s.id}
+                          session={s}
+                          active={s.id === activeSessionId}
+                          onSelect={() => onSelectSession(s.id)}
+                        />
+                      ))
+                    )}
+                  </ul>
+                )}
+              </div>
+            )
+          })
+        )}
       </nav>
     </aside>
+  )
+}
+
+function DeviceDot({ online }: { online: boolean }) {
+  return (
+    <span className="relative flex h-2 w-2 shrink-0 items-center justify-center" title={online ? 'online' : 'offline'}>
+      {online && <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-70 animate-breathe" />}
+      <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${online ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+    </span>
   )
 }
 

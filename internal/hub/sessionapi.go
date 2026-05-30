@@ -78,9 +78,12 @@ func (h *Hub) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
 
-// createSessionBody is the POST /api/sessions request body.
+// createSessionBody is the POST /api/sessions request body. Scope is "project"
+// (default — a synced project, auto-placeable) or "device" (machine-local work
+// pinned to PinAgentId, cwd = that device's home).
 type createSessionBody struct {
 	Kind        string `json:"kind"`
+	Scope       string `json:"scope"`
 	ProjectPath string `json:"projectPath"`
 	Title       string `json:"title"`
 	UserAgentID string `json:"userAgentId"`
@@ -98,14 +101,28 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal or claude"})
 		return
 	}
-	if strings.TrimSpace(body.ProjectPath) == "" {
+	scope := strings.TrimSpace(body.Scope)
+	if scope == "" {
+		scope = "project"
+	}
+
+	// A device session is pinned to one machine and runs in that machine's home
+	// (empty projectPath ⇒ the agent resolves home). A project session needs a path.
+	projectPath := strings.TrimSpace(body.ProjectPath)
+	if scope == "device" {
+		if strings.TrimSpace(body.PinAgentID) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pinAgentId is required for a device session"})
+			return
+		}
+		projectPath = "" // home, resolved on the agent
+	} else if projectPath == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "projectPath is required"})
 		return
 	}
 
 	req := PlacementRequest{
 		Kind:        kind,
-		ProjectPath: body.ProjectPath,
+		ProjectPath: projectPath,
 		UserAgentID: body.UserAgentID,
 		PinAgentID:  body.PinAgentID,
 	}
@@ -117,8 +134,17 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// A device session must run on its device or fail — never silently fall back
+	// to another machine (defeats the point of acting ON that box).
+	if scope == "device" && placement.Chosen != body.PinAgentID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":     "this device can't host the session: " + deviceExcludeReason(placement, body.PinAgentID),
+			"placement": placement,
+		})
+		return
+	}
 
-	rec, err := h.createOnAgent(req.Kind, body.ProjectPath, body.Title, placement.Chosen, "")
+	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "")
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -129,16 +155,33 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deviceExcludeReason pulls the placement exclusion reason for a pinned device so
+// the UI can say WHY (e.g. "claude not installed", "offline").
+func deviceExcludeReason(p PlacementResult, agentID string) string {
+	for _, c := range p.Candidates {
+		if c.AgentID == agentID {
+			if c.Excluded != "" {
+				return c.Excluded
+			}
+			return "not eligible"
+		}
+	}
+	return "device not found"
+}
+
 // createOnAgent allocates the session row, dispatches session_create to the
 // chosen agent, and flips the row to live on ack. resumeID is non-empty only for
 // a resume onto a (possibly different) agent. The session row id is reused on
 // resume so the logical conversation keeps one identity (D20).
-func (h *Hub) createOnAgent(kind proto.SessionKind, projectPath, title, agentID, resumeID string) (SessionRecord, error) {
+func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID string) (SessionRecord, error) {
 	now := time.Now()
 	sessionID := resumeID
 	isResume := resumeID != ""
 	if !isResume {
 		sessionID = newSessionID()
+	}
+	if scope == "" {
+		scope = "project"
 	}
 
 	// Approval kill switch (D21): skip permissions unless approval is forced.
@@ -151,6 +194,7 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, projectPath, title, agentID,
 		AgentID:      agentID,
 		Title:        title,
 		Status:       proto.SessionStarting,
+		Scope:        scope,
 		CreatedAt:    now,
 		LastActiveAt: now,
 	}
@@ -244,11 +288,16 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	var body resumeBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
+	// A device session is bound to its machine — resume it there, not elsewhere.
+	pin := body.PinAgentID
+	if rec.Scope == "device" {
+		pin = rec.AgentID
+	}
 	req := PlacementRequest{
 		Kind:        proto.SessionClaude,
 		ProjectPath: rec.ProjectPath,
 		UserAgentID: body.UserAgentID,
-		PinAgentID:  body.PinAgentID,
+		PinAgentID:  pin,
 	}
 	placement := ScorePlacement(req, h.fleet(), time.Now())
 	if placement.Chosen == "" {
@@ -262,7 +311,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.ProjectPath, rec.Title, placement.Chosen, resumeID)
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, placement.Chosen, resumeID)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return

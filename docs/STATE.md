@@ -65,6 +65,16 @@ Keychain auth), **D23** (projectPath portability gap — follow-up).
 - **Frontend:** workspace shell renders (WORKSPACE|FLEET toggle, Projects→Sessions sidebar, empty-state),
   matches the dark emerald/zinc aesthetic. Screenshot: /tmp/lattice-workspace.png.
 
+### Device projects (D24) — ADDED & VERIFIED (2026-05-29, same session)
+Sessions now have a **`scope`**: `project` (synced, auto-placed) or **`device`** (pinned to one machine,
+cwd = that machine's **home**) — for machine-local work (set up programs, organize files, admin a box).
+UI: a **DEVICES** section under PROJECTS (fleet, online-first, CLAUDE capability chip, offline dimmed),
+each device → its device sessions + "+ new session"; static machine chip for device sessions. Strict
+placement (runs on the device or fails; capability filter still applies). Agent resolves empty/`~` cwd to
+home (the hub can't — home paths differ per box; partially addresses D23). **Verified on the fleet:**
+device terminal on mini-ops → `pwd`=`/Users/mini-ops`; device Claude on mbp → 400 "claude not installed";
+device Claude on studio → real "PONG" in its home. Schema: idempotent `sessions.scope` ALTER migration.
+
 ### Bugs found & fixed THIS session (via adversarial fleet verification)
 1. `claude --print --output-format=stream-json` **requires `--verbose`** — launcher omitted it (instant exit). FIXED.
 2. Launcher now **scrubs `ANTHROPIC_API_KEY`/`CLAUDECODE`/`CLAUDE_CODE_*`** from the child env → forces subscription auth (also the cost rule). FIXED.

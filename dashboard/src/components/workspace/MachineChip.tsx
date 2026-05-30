@@ -17,6 +17,25 @@ function agentLabel(agents: Agent[], id: string): string {
 // dropdown that previews the ranked candidates (POST /api/placement) so the user
 // can pin/override (D19). Orphaned sessions surface a "Resume here" action.
 export function MachineChip({ session, agents, onPin }: Props) {
+  // Device sessions are pinned to one machine by definition — pinning elsewhere
+  // is meaningless, so render a static chip with no placement dropdown.
+  if (session.scope === 'device') {
+    return (
+      <span
+        className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-300"
+        title="device-local session"
+      >
+        <PinIcon />
+        <ChipIcon />
+        <span className="max-w-[10rem] truncate">{agentLabel(agents, session.agentId)}</span>
+      </span>
+    )
+  }
+
+  return <ProjectMachineChip session={session} agents={agents} onPin={onPin} />
+}
+
+function ProjectMachineChip({ session, agents, onPin }: Props) {
   const [open, setOpen] = useState(false)
   const [result, setResult] = useState<PlacementResult | null>(null)
   const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle')

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Agent, Project, Session, SessionWithPlacement } from '../../types'
+import type { Agent, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
 import { deleteSession, resumeSession } from '../../api'
 import { Sidebar } from './Sidebar'
 import { SessionPane } from './SessionPane'
 import { NewSessionDialog } from './NewSessionDialog'
+import type { NewSessionTarget } from './NewSessionDialog'
 import { statusDotClass, statusPulses } from './sessionMeta'
 
 interface Props {
@@ -18,7 +19,7 @@ export function Workspace({ agents }: Props) {
   const [openIds, setOpenIds] = useState<string[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
-  const [newFor, setNewFor] = useState<Project | null>(null)
+  const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
   // Below md the sidebar overlays the pane instead of sitting beside it.
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -49,7 +50,7 @@ export function Workspace({ agents }: Props) {
     (res: SessionWithPlacement) => {
       ws.upsertSession(res.session)
       void ws.refreshSessions()
-      setNewFor(null)
+      setNewTarget(null)
       setMobileNavOpen(false)
       openSession(res.session.id)
     },
@@ -102,12 +103,14 @@ export function Workspace({ agents }: Props) {
         <Sidebar
           projects={ws.projects}
           sessions={ws.sessions}
+          agents={agents}
           projectsState={ws.projectsState}
           activeSessionId={activeId}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((c) => !c)}
           onSelectSession={openSession}
-          onNewSession={setNewFor}
+          onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
+          onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
         />
       </div>
 
@@ -116,13 +119,18 @@ export function Workspace({ agents }: Props) {
           <Sidebar
             projects={ws.projects}
             sessions={ws.sessions}
+            agents={agents}
             projectsState={ws.projectsState}
             activeSessionId={activeId}
             collapsed={false}
             onToggleCollapse={() => setMobileNavOpen(false)}
             onSelectSession={selectFromNav}
             onNewSession={(p) => {
-              setNewFor(p)
+              setNewTarget({ kind: 'project', project: p })
+              setMobileNavOpen(false)
+            }}
+            onNewDeviceSession={(a) => {
+              setNewTarget({ kind: 'device', agent: a })
               setMobileNavOpen(false)
             }}
           />
@@ -173,11 +181,11 @@ export function Workspace({ agents }: Props) {
         </div>
       </div>
 
-      {newFor && (
+      {newTarget && (
         <NewSessionDialog
-          project={newFor}
+          target={newTarget}
           agents={agents}
-          onClose={() => setNewFor(null)}
+          onClose={() => setNewTarget(null)}
           onCreated={onCreated}
         />
       )}
@@ -253,6 +261,8 @@ function WorkspaceEmpty() {
           pick a project on the left, then start a Claude or terminal session.
           <br />
           the mesh auto-places it on the best machine — you can always override.
+          <br />
+          …or pick a device to work on that machine directly.
         </p>
       </div>
     </div>

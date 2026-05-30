@@ -17,6 +17,12 @@ export interface Agent {
   loadAvg1: number
   cpuCount: number
   macs?: string[]
+  capabilities?: {
+    claudeInstalled: boolean
+    claudeVersion?: string
+    nodeInstalled: boolean
+    nodeVersion?: string
+  }
 }
 
 // File browser (mirrors hub FileListResultPayload / FileEntry).
@@ -86,11 +92,14 @@ export interface Project {
 
 export type SessionKind = 'terminal' | 'claude'
 export type SessionStatus = 'starting' | 'live' | 'detached' | 'orphaned' | 'exited'
+export type SessionScope = 'project' | 'device'
 
-// Mirrors the hub `sessions` row (D18).
+// Mirrors the hub `sessions` row (D18). Device-scoped sessions have an empty
+// projectPath and run in the pinned machine's home dir.
 export interface Session {
   id: string
   projectPath: string
+  scope: SessionScope
   kind: SessionKind
   agentId: string
   claudeSessionId?: string
@@ -122,7 +131,8 @@ export interface PlacementResult {
 
 export interface CreateSessionRequest {
   kind: SessionKind
-  projectPath: string
+  scope?: SessionScope
+  projectPath?: string
   title?: string
   userAgentId?: string
   pinAgentId?: string

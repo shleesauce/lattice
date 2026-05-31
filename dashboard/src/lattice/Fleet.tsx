@@ -185,6 +185,8 @@ function SidePanel({
             {waking ? 'Waking…' : 'Wake machine'}
           </button>
         </div>
+      ) : !m.hasAgent ? (
+        <ReachableCard m={m} />
       ) : (
         <div className="panel">
           <div className="panel-h">

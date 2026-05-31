@@ -143,17 +143,18 @@ func (h *Hub) devices() []Device {
 			ts:     &p,
 		})
 	}
-	// 3) ssh config hosts. Join ONLY on the resolved HostName (the real DNS /
-	// tailnet target) — the alias ("pc", "mbp") is a decorative label, not an
-	// identity, and tokenizing it would spuriously match unrelated hosts. If a
-	// host has no HostName, fall back to the alias so it still appears.
+	// 3) ssh config hosts. Join on BOTH the alias and the resolved HostName: the
+	// alias is the bridge between a short agent hostname ("mbp", "studio", "pc")
+	// and the machine's long Tailscale/DNS name ("dylans-macbook-pro", …), so an
+	// agent and its tailnet entry fold into one device. (The fleet uses real
+	// hostnames/DNS names, not generic single-letter aliases, so this doesn't
+	// over-merge.)
 	for i := range hosts {
 		s := hosts[i]
-		toks := idTokens(s.hostName)
-		if len(toks) == 0 {
-			toks = idTokens(s.alias)
-		}
-		frags = append(frags, fragment{tokens: dedup(toks), ssh: &s})
+		frags = append(frags, fragment{
+			tokens: dedup(append(idTokens(s.alias), idTokens(s.hostName)...)),
+			ssh:    &s,
+		})
 	}
 
 	groups := unionByToken(frags)

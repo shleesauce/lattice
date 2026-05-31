@@ -20,6 +20,7 @@ export interface Machine {
   online: boolean
   offline: boolean
   hasAgent: boolean
+  agentId?: string
   cores: number
   cpu: number // 0–100, derived from loadAvg1 / cpuCount
   memUsed: number // GB
@@ -93,6 +94,7 @@ export function devicesToMachines(devices: Device[], sessions: Session[]): Machi
       online: d.online,
       offline: !d.online,
       hasAgent: d.hasAgent,
+      agentId: d.agentId,
       cores: d.cpuCount ?? 0,
       cpu: d.cpuCount ? Math.min(100, Math.max(0, Math.round(((d.loadAvg1 ?? 0) / d.cpuCount) * 100))) : 0,
       memUsed,

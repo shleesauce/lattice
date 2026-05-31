@@ -114,6 +114,15 @@ Hub-served tarball stays a clean future add (the resolver is the only seam that'
    200, SAME code-server pid survives. Editor close tears code-server down cleanly.
 
 ### P2 — IN PROGRESS
+- ✅ **D29 AI chrome — Claude beside the editor (Cursor-style), 2026-05-30.** An editor session now
+  renders a resizable split: VS Code (iframe) on the left, the project's Claude chat on the right, with
+  a draggable divider + an `AI` collapse toggle (split open by default). The Workspace auto
+  create-or-reuses ONE Claude session per project **pinned to the editor's machine** (so the AI shares
+  the editor's filesystem); a `· ai` suffix marks it. Machines without claude (mbp) show "claude isn't
+  installed on <machine> — editor only" and just get the editor. Reuses the Phase-3 stream-json runner
+  (D17, Max subscription) untouched. Verified on mini-ops via Playwright: open editor → paired Claude
+  auto-spawns on the same agent → sent a prompt → assistant replied in the right pane. (SessionPane
+  split + EditorPane in `SessionPane.tsx`; pairing effect in `Workspace.tsx`.)
 - ✅ **One-click "Open Editor" per project (2026-05-30).** Each project row in the Sidebar has an
   Open-Editor (`</>`) action (shown only when an online machine has code-server — `editorAvailable`).
   It **creates-or-reuses a single editor session per project** (never spawns a 2nd code-server for the

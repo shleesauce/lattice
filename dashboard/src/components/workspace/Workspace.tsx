@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
 import { createSession, deleteSession, resumeSession } from '../../api'
@@ -184,6 +184,65 @@ export function Workspace({ agents }: Props) {
 
   const activeSession = activeId ? sessionById(activeId) : undefined
 
+  // ─────────── D29: pair a Claude chat to the editor (chrome-first) ───────────
+  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+
+  // The project's live Claude session on the SAME machine as the editor (so the
+  // AI edits the same files). Project editors match by projectPath; device
+  // editors match by device scope. Undefined ⇒ none yet (the effect creates one).
+  const pairedClaudeFor = useCallback(
+    (ed: Session): Session | undefined =>
+      ws.sessions.find(
+        (s) =>
+          s.kind === 'claude' &&
+          s.status !== 'exited' &&
+          s.agentId === ed.agentId &&
+          (ed.scope === 'device'
+            ? s.scope === 'device'
+            : s.scope !== 'device' && s.projectPath === ed.projectPath),
+      ),
+    [ws.sessions],
+  )
+
+  // Auto create-or-reuse the paired Claude when an editor is active and its
+  // machine has claude (D29: split open by default). Guarded so we never spawn
+  // two for one editor.
+  const pairingInFlight = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const ed = activeSession
+    if (!ed || ed.kind !== 'editor') return
+    if (!agentById.get(ed.agentId)?.capabilities?.claudeInstalled) return
+    if (pairedClaudeFor(ed)) return
+    if (pairingInFlight.current.has(ed.id)) return
+    pairingInFlight.current.add(ed.id)
+    ;(async () => {
+      try {
+        const res = await createSession({
+          kind: 'claude',
+          scope: ed.scope,
+          projectPath: ed.scope === 'device' ? undefined : ed.projectPath,
+          pinAgentId: ed.agentId,
+          userAgentId: ed.agentId,
+          title: `${ed.title || 'project'} · ai`,
+        })
+        ws.upsertSession(res.session)
+        void ws.refreshSessions()
+      } catch {
+        /* transient — the effect retries on the next sessions poll */
+      } finally {
+        pairingInFlight.current.delete(ed.id)
+      }
+    })()
+  }, [activeSession, agentById, pairedClaudeFor, ws])
+
+  const editorPaired =
+    activeSession?.kind === 'editor'
+      ? {
+          pairedClaudeId: pairedClaudeFor(activeSession)?.id ?? null,
+          editorAgentHasClaude: !!agentById.get(activeSession.agentId)?.capabilities?.claudeInstalled,
+        }
+      : { pairedClaudeId: null, editorAgentHasClaude: false }
+
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
       {/* md+ : sidebar sits inline. below md : it's an overlay drawer. */}
@@ -276,6 +335,8 @@ export function Workspace({ agents }: Props) {
               agents={agents}
               onClose={() => onCloseSession(activeSession.id)}
               onPin={(agentId) => onPin(activeSession.id, agentId)}
+              pairedClaudeId={editorPaired.pairedClaudeId}
+              editorAgentHasClaude={editorPaired.editorAgentHasClaude}
             />
           ) : (
             <WorkspaceEmpty />

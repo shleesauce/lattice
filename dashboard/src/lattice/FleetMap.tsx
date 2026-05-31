@@ -15,6 +15,8 @@ interface Node {
 interface MapState {
   nodes: Node[]
   bg: { x: number; y: number }[]
+  bgW: number
+  bgH: number
   edges: [number, number][]
   w: number
   h: number
@@ -31,7 +33,7 @@ export function FleetMap({
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const stateRef = useRef<MapState>({ nodes: [], bg: [], edges: [], w: 0, h: 0 })
+  const stateRef = useRef<MapState>({ nodes: [], bg: [], bgW: 0, bgH: 0, edges: [], w: 0, h: 0 })
   const fleetRef = useRef(fleet)
   fleetRef.current = fleet
   const selRef = useRef(selected)
@@ -48,11 +50,17 @@ export function FleetMap({
       alive: m.sessions.some((s) => s.status === 'live'),
       starting: m.status === 'starting',
     }))
-    const bg: { x: number; y: number }[] = []
-    let seed = 11
-    const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280
-    for (let i = 0; i < 26; i++) bg.push({ x: rnd() * w, y: rnd() * h })
-    S.bg = bg
+    // Background fabric: deterministic scatter, recomputed only when the canvas
+    // size changes — not on every fleet poll — so it never visibly jumps.
+    if (S.bg.length === 0 || S.bgW !== w || S.bgH !== h) {
+      const bg: { x: number; y: number }[] = []
+      let seed = 11
+      const rnd = () => (seed = (seed * 9301 + 49297) % 233280) / 233280
+      for (let i = 0; i < 26; i++) bg.push({ x: rnd() * w, y: rnd() * h })
+      S.bg = bg
+      S.bgW = w
+      S.bgH = h
+    }
     const edges: [number, number][] = []
     S.nodes.forEach((a, i) => {
       const d = S.nodes
@@ -258,7 +266,18 @@ export function FleetMap({
       cancelAnimationFrame(raf)
       ro.disconnect()
     }
-  }, [layout, fleet])
+    // Mount ONCE: the draw loop reads fleetRef/selRef live, so it never needs to
+    // tear down on data updates. Re-laying-out on every poll (below) would
+    // otherwise blank the canvas each tick — that was the visible flashing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout])
+
+  // Re-derive node/edge positions when the fleet changes, reusing the existing
+  // canvas size — no teardown, no blank frame.
+  useEffect(() => {
+    const S = stateRef.current
+    if (S.w && S.h) layout(S.w, S.h)
+  }, [fleet, layout])
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const S = stateRef.current

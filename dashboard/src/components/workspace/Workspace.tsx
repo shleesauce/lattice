@@ -4,6 +4,7 @@ import { useWorkspace } from '../../useWorkspace'
 import {
   createSession,
   deleteSessionForever,
+  emptyTrash,
   resumeSession,
   setSessionArchived,
   setSessionDeleted,
@@ -32,6 +33,7 @@ export function Workspace({ agents }: Props) {
   const [wizardOpen, setWizardOpen] = useState(false)
   const [mode, setMode] = useState<SidebarMode>('active')
   const [confirmKill, setConfirmKill] = useState<Session | null>(null)
+  const [confirmEmpty, setConfirmEmpty] = useState(false)
   // Below md the sidebar overlays the pane instead of sitting beside it.
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -241,6 +243,15 @@ export function Workspace({ agents }: Props) {
     [closeTab, ws],
   )
 
+  // Empty Trash — permanently delete every trashed session (confirmed in-app).
+  const onEmptyTrash = useCallback(async () => {
+    try {
+      await emptyTrash()
+    } finally {
+      void ws.refreshSessions()
+    }
+  }, [ws])
+
   const activeSession = activeId ? sessionById(activeId) : undefined
 
   // ─────────── D29: pair a Claude chat to the editor (chrome-first) ───────────
@@ -326,6 +337,7 @@ export function Workspace({ agents }: Props) {
           onTrashSession={onTrashSession}
           onRestoreTrash={onRestoreTrash}
           onDeleteForever={(s) => setConfirmKill(s)}
+          onEmptyTrash={() => setConfirmEmpty(true)}
           editorAvailable={editorAvailable}
         />
       </div>
@@ -364,6 +376,7 @@ export function Workspace({ agents }: Props) {
             onTrashSession={onTrashSession}
             onRestoreTrash={onRestoreTrash}
             onDeleteForever={(s) => setConfirmKill(s)}
+            onEmptyTrash={() => setConfirmEmpty(true)}
             editorAvailable={editorAvailable}
           />
           <button
@@ -440,6 +453,17 @@ export function Workspace({ agents }: Props) {
           danger
           onConfirm={() => onDeleteForever(confirmKill.id)}
           onClose={() => setConfirmKill(null)}
+        />
+      )}
+
+      {confirmEmpty && (
+        <ConfirmDialog
+          title="Empty Trash?"
+          body="Every session in Trash will be permanently deleted. This can't be undone."
+          confirmLabel="Empty Trash"
+          danger
+          onConfirm={onEmptyTrash}
+          onClose={() => setConfirmEmpty(false)}
         />
       )}
     </div>

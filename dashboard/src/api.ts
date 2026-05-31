@@ -152,6 +152,13 @@ export async function deleteSessionForever(id: string): Promise<void> {
   }
 }
 
+// Empty Trash: permanently delete every trashed session at once.
+export async function emptyTrash(): Promise<number> {
+  const res = await fetch('/api/sessions/trash', { method: 'DELETE' })
+  const data = await json<{ ok: boolean; purged: number }>(res)
+  return data.purged
+}
+
 // Archive (hide, keep) or restore a session via PATCH. The row survives.
 export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {

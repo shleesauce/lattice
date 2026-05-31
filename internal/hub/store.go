@@ -329,11 +329,22 @@ func (s *Store) SetSessionDeleted(id string, deleted bool, at time.Time) error {
 	return err
 }
 
+// PurgeAllDeleted permanently removes every trashed session (and its audit
+// rows) immediately — the "Empty Trash" action. Returns the count purged.
+func (s *Store) PurgeAllDeleted() (int, error) {
+	return s.purgeDeleted(`SELECT id FROM sessions WHERE deleted_at != ''`)
+}
+
 // PurgeDeletedBefore permanently removes trashed sessions whose deleted_at is
 // older than cutoff (the trash TTL), with their audit rows. Returns the count.
 func (s *Store) PurgeDeletedBefore(cutoff time.Time) (int, error) {
-	c := cutoff.UTC().Format(time.RFC3339)
-	rows, err := s.db.Query(`SELECT id FROM sessions WHERE deleted_at != '' AND deleted_at < ?`, c)
+	return s.purgeDeleted(`SELECT id FROM sessions WHERE deleted_at != '' AND deleted_at < ?`, cutoff.UTC().Format(time.RFC3339))
+}
+
+// purgeDeleted runs the given id-selecting query and hard-deletes each match
+// (session row + audit rows). Shared by PurgeAllDeleted / PurgeDeletedBefore.
+func (s *Store) purgeDeleted(query string, args ...any) (int, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return 0, err
 	}

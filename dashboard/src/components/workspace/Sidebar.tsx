@@ -25,6 +25,7 @@ interface Props {
   onTrashSession: (id: string) => void
   onRestoreTrash: (id: string) => void
   onDeleteForever: (session: Session) => void
+  onEmptyTrash: () => void
   editorAvailable: boolean
 }
 
@@ -83,6 +84,7 @@ export function Sidebar({
   onTrashSession,
   onRestoreTrash,
   onDeleteForever,
+  onEmptyTrash,
   editorAvailable,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -180,6 +182,20 @@ export function Sidebar({
               </>
             )}
           </div>
+
+          {mode === 'trash' && trashedSessions.length > 0 && (
+            <div style={{ padding: '4px 14px 8px' }}>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={onEmptyTrash}
+              >
+                <TrashIcon />
+                Empty Trash ({trashedSessions.length})
+              </button>
+            </div>
+          )}
 
           {(mode === 'archived' ? archivedSessions : trashedSessions).length === 0 ? (
             <div style={{ padding: '14px 18px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>

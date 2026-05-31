@@ -65,6 +65,9 @@ func (h *Hub) handleSessions(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	case rest == "trash" && r.Method == http.MethodDelete:
+		// DELETE /api/sessions/trash — empty Trash now (purge all trashed rows).
+		h.handleEmptyTrash(w, r)
 	default:
 		id, action, _ := strings.Cut(rest, "/")
 		switch {
@@ -290,6 +293,19 @@ func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id str
 	}
 	h.broadcastSessions()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleEmptyTrash permanently deletes every trashed session immediately.
+func (h *Hub) handleEmptyTrash(w http.ResponseWriter, r *http.Request) {
+	n, err := h.store.PurgeAllDeleted()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if n > 0 {
+		h.broadcastSessions()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "purged": n})
 }
 
 // handleUpdateSession patches mutable session fields: {archived} hides/restores

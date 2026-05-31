@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
-import { deleteSession, resumeSession } from '../../api'
+import { createSession, deleteSession, resumeSession } from '../../api'
 import { Sidebar } from './Sidebar'
 import { SessionPane } from './SessionPane'
 import { ProjectFilesPanel } from './ProjectFilesPanel'
@@ -39,6 +39,14 @@ export function Workspace({ agents }: Props) {
   // online agent if the local one isn't reporting yet.
   const localAgent = useMemo(
     () => agents.find((a) => a.local && a.online) ?? agents.find((a) => a.online) ?? null,
+    [agents],
+  )
+
+  // The embedded editor is offerable only when some online machine has
+  // code-server (D28 per-node install). Gates the sidebar's Open-Editor action
+  // so we never present a button that would fail placement.
+  const editorAvailable = useMemo(
+    () => agents.some((a) => a.online && a.capabilities?.codeServerInstalled),
     [agents],
   )
 
@@ -99,6 +107,36 @@ export function Workspace({ agents }: Props) {
       openSession(res.session.id)
     },
     [ws, openSession],
+  )
+
+  // One-click "Open Editor" for a project: reuse the project's existing editor
+  // session if one is live (never spawn a second code-server for the same
+  // project), otherwise create one and open it. Locality-boosted to the local
+  // agent; the mesh still auto-places onto any code-server-capable machine.
+  const onOpenEditor = useCallback(
+    async (p: Project) => {
+      const existing = ws.sessions.find(
+        (s) => s.kind === 'editor' && s.projectPath === p.path && s.status !== 'exited',
+      )
+      if (existing) {
+        openSession(existing.id)
+        setMobileNavOpen(false)
+        return
+      }
+      try {
+        const res = await createSession({
+          kind: 'editor',
+          scope: 'project',
+          projectPath: p.path,
+          title: p.name,
+          userAgentId: localAgent?.id,
+        })
+        onCreated(res)
+      } catch {
+        /* surfaced via session polling; keep the UI responsive */
+      }
+    },
+    [ws.sessions, localAgent, openSession, onCreated],
   )
 
   const onProjectCreated = useCallback(
@@ -172,6 +210,8 @@ export function Workspace({ agents }: Props) {
           onBeginNewProject={() => setWizardOpen(true)}
           onOpenProjectFiles={openProjectFiles}
           onOpenDeviceFiles={openDeviceFiles}
+          onOpenEditor={onOpenEditor}
+          editorAvailable={editorAvailable}
         />
       </div>
 
@@ -207,6 +247,8 @@ export function Workspace({ agents }: Props) {
               openDeviceFiles(a)
               setMobileNavOpen(false)
             }}
+            onOpenEditor={onOpenEditor}
+            editorAvailable={editorAvailable}
           />
           <button
             type="button"
@@ -385,7 +427,7 @@ function TabStrip({
                 <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${cls}`} />
               </span>
               <span className={`max-w-[12rem] truncate font-mono text-[11px] ${active ? 'text-zinc-100' : 'text-zinc-400'}`}>
-                {s.title || (s.kind === 'claude' ? 'claude' : 'terminal')}
+                {s.title || s.kind}
               </span>
             </button>
             <button

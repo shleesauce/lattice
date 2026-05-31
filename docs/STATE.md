@@ -113,9 +113,18 @@ Hub-served tarball stays a clean future add (the resolver is the only seam that'
    5. ✅ **hub restart re-adopts** — session stays `live`, tunnel re-establishes, `/editor/{id}/` serves
    200, SAME code-server pid survives. Editor close tears code-server down cleanly.
 
-### NEXT (P2)
-- Retire the read-only Monaco rail in the workspace (D31): remove ProjectFilesPanel/FileViewer/
-  MonacoPanel/useFileBrowser; Sidebar click-file → open-in-embedded-editor.
+### P2 — IN PROGRESS
+- ✅ **One-click "Open Editor" per project (2026-05-30).** Each project row in the Sidebar has an
+  Open-Editor (`</>`) action (shown only when an online machine has code-server — `editorAvailable`).
+  It **creates-or-reuses a single editor session per project** (never spawns a 2nd code-server for the
+  same project) and opens it embedded in the Lattice shell. Verified on mini-ops via Playwright: click →
+  VS Code workbench mounts INSIDE the Lattice iframe (2 editor WS), 2nd click reuses (session count
+  stays 1), editor tab/glyph/labels render. (Workspace.tsx `onOpenEditor`/`editorAvailable`, Sidebar.tsx
+  CodeIcon button + editor KindGlyph.)
+- **Monaco-rail retirement (D31) — DEFERRED until code-server is fleet-wide.** Fully removing
+  ProjectFilesPanel/FileViewer/MonacoPanel/useFileBrowser now would regress file browsing on
+  studio/mbp/devices (no code-server there yet). Keep the read-only rail as a graceful fallback; retire
+  it once the editor is on every machine. Sidebar click-file → open-in-embedded-editor is the follow-on.
 - Install code-server on studio/mbp/pc and verify the editor cross-machine (Windows = code-server inside
   WSL2, D30 — `codeserver.go`/`detectWSL` already gate this; the spawn path needs a WSL `wsl.exe -e`
   wrapper).

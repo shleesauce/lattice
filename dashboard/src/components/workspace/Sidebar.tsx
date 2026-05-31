@@ -21,6 +21,10 @@ interface Props {
   onBeginNewProject: () => void
   onOpenProjectFiles: (project: Project) => void
   onOpenDeviceFiles: (agent: Agent) => void
+  // One-click embedded editor for a project (create-or-reuse). Shown only when
+  // editorAvailable (some online machine has code-server).
+  onOpenEditor: (project: Project) => void
+  editorAvailable: boolean
 }
 
 // Left rail: collapsible Projects → Sessions tree. Projects come from
@@ -40,6 +44,8 @@ export function Sidebar({
   onBeginNewProject,
   onOpenProjectFiles,
   onOpenDeviceFiles,
+  onOpenEditor,
+  editorAvailable,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [deviceExpanded, setDeviceExpanded] = useState<Record<string, boolean>>({})
@@ -184,6 +190,16 @@ export function Sidebar({
                     </span>
                   )}
                 </button>
+                {editorAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenEditor(p)}
+                    title="open editor"
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-800 hover:text-emerald-300 group-hover:opacity-100"
+                  >
+                    <CodeIcon />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onNewSession(p)}
@@ -360,7 +376,7 @@ function SessionRow({
         <StatusDot status={session.status} />
         <KindGlyph kind={session.kind} />
         <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-          {session.title || (session.kind === 'claude' ? 'claude' : 'terminal')}
+          {session.title || session.kind}
         </span>
       </button>
     </li>
@@ -382,6 +398,13 @@ function KindGlyph({ kind }: { kind: SessionKind }) {
     return (
       <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0 text-emerald-400/80" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
         <path d="M12 4v16M4 12h16" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (kind === 'editor') {
+    return (
+      <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0 text-sky-400/80" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+        <path d="M8 7l-4 5 4 5M16 7l4 5-4 5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
   }
@@ -411,6 +434,14 @@ function FolderIcon({ active }: { active: boolean }) {
   return (
     <svg viewBox="0 0 24 24" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-emerald-400/80' : 'text-zinc-500'}`} fill="currentColor" aria-hidden>
       <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  )
+}
+
+function CodeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M8 7l-4 5 4 5M16 7l4 5-4 5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

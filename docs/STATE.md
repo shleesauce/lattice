@@ -121,7 +121,18 @@ Hub-served tarball stays a clean future add (the resolver is the only seam that'
   VS Code workbench mounts INSIDE the Lattice iframe (2 editor WS), 2nd click reuses (session count
   stays 1), editor tab/glyph/labels render. (Workspace.tsx `onOpenEditor`/`editorAvailable`, Sidebar.tsx
   CodeIcon button + editor KindGlyph.)
-- **Monaco-rail retirement (D31) — DEFERRED until code-server is fleet-wide.** Fully removing
+- ✅ **Fleet rollout to studio + mbp (D30/D28, 2026-05-30).** code-server 4.112.0 installed via brew on
+  both; their agents redeployed with the tunnel-capable binary (via the hub installer, preserving
+  `--name mbp` / `--name Dylans-Mac-Studio.local` so agentIDs stay stable). **All three Macs now report
+  `codeServerInstalled` and have live tunnels.** Cross-machine editor VERIFIED via Playwright: a
+  device-scoped editor on mbp AND on studio each rendered its remote home in VS Code through the hub
+  (browser → hub@mini-ops → yamux tunnel → remote code-server), 2 editor WS each, clean teardown. The
+  milestone headline ("full VS Code on ANY fleet machine, one hub URL") is real for the 3 Macs.
+  *(Remote project-scoped editors hit the D23 home-path divergence — `/Users/mini-ops/...` ≠
+  `/Users/dylanstory/...`; the one-click Open-Editor locality-boosts to the user's machine so this isn't
+  hit in practice. A proper fix = per-agent project-path remap, same latent issue as remote claude/term
+  project sessions.)* **pc (Windows) still pending: needs the WSL2 spawn path (D30) + pc online.**
+- **Monaco-rail retirement (D31) — now UNBLOCKED on the Macs (code-server fleet-wide there).** Fully removing
   ProjectFilesPanel/FileViewer/MonacoPanel/useFileBrowser now would regress file browsing on
   studio/mbp/devices (no code-server there yet). Keep the read-only rail as a graceful fallback; retire
   it once the editor is on every machine. Sidebar click-file → open-in-embedded-editor is the follow-on.

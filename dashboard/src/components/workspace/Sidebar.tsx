@@ -1,7 +1,7 @@
+/// <reference types="vite/client" />
 import { useMemo, useState } from 'react'
 import type { LoadState } from '../../useWorkspace'
-import type { Agent, Project, Session, SessionKind } from '../../types'
-import { statusDotClass, statusPulses } from './sessionMeta'
+import type { Agent, Project, Session, SessionKind, SessionStatus } from '../../types'
 
 interface Props {
   projects: Project[]
@@ -15,16 +15,34 @@ interface Props {
   onNewSession: (project: Project) => void
   onNewDeviceSession: (agent: Agent) => void
   onBeginNewProject: () => void
-  // One-click embedded editor for a project (create-or-reuse). Shown only when
-  // editorAvailable (some online machine has code-server).
   onOpenEditor: (project: Project) => void
-  // One-click embedded editor for a device (create-or-reuse).
   onOpenDeviceEditor: (agent: Agent) => void
   editorAvailable: boolean
 }
 
-// Left rail: collapsible Projects → Sessions tree. Projects come from
-// /api/projects; each expands to its sessions (filtered by projectPath).
+function sessionDotClass(status: SessionStatus): string {
+  switch (status) {
+    case 'live':      return 'dot live'
+    case 'starting':  return 'dot starting'
+    case 'detached':  return 'dot detached'
+    case 'orphaned':  return 'dot orphaned'
+    case 'exited':    return 'dot exited'
+  }
+}
+
+function deviceDotClass(online: boolean, hasSessions: boolean): string {
+  if (!online)      return 'dot exited'
+  if (hasSessions)  return 'dot live'
+  return 'dot idle'
+}
+
+function deviceMeta(agent: Agent, sessionCount: number): string {
+  if (!agent.online) return 'offline'
+  if (sessionCount > 0) return `${sessionCount}●`
+  return 'idle'
+}
+
+// Left rail: collapsible Projects → Sessions tree + Devices section.
 export function Sidebar({
   projects,
   sessions,
@@ -42,13 +60,13 @@ export function Sidebar({
   editorAvailable,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [deviceExpanded, setDeviceExpanded] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
 
-  // PROJECTS shows project-scoped sessions only; device sessions live in DEVICES.
-  const projectSessions = useMemo(() => sessions.filter((s) => s.scope !== 'device'), [sessions])
+  const projectSessions = useMemo(
+    () => sessions.filter((s) => s.scope !== 'device'),
+    [sessions],
+  )
 
-  // Default-expand any project that currently has sessions, plus the active one.
   const sessionsByProject = useMemo(() => {
     const m = new Map<string, Session[]>()
     for (const s of projectSessions) {
@@ -59,7 +77,6 @@ export function Sidebar({
     return m
   }, [projectSessions])
 
-  // Device sessions keyed by the machine they're pinned to.
   const sessionsByAgent = useMemo(() => {
     const m = new Map<string, Session[]>()
     for (const s of sessions) {
@@ -71,13 +88,14 @@ export function Sidebar({
     return m
   }, [sessions])
 
-  // Online machines first, then offline; stable hostname sort within each group.
-  const orderedAgents = useMemo(() => {
-    return [...agents].sort((a, b) => {
-      if (a.online !== b.online) return a.online ? -1 : 1
-      return (a.hostname || a.id).localeCompare(b.hostname || b.id)
-    })
-  }, [agents])
+  const orderedAgents = useMemo(
+    () =>
+      [...agents].sort((a, b) => {
+        if (a.online !== b.online) return a.online ? -1 : 1
+        return (a.hostname || a.id).localeCompare(b.hostname || b.id)
+      }),
+    [agents],
+  )
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -88,17 +106,21 @@ export function Sidebar({
   const isOpen = (path: string) =>
     expanded[path] ?? ((sessionsByProject.get(path)?.length ?? 0) > 0)
 
-  const isDeviceOpen = (agentId: string) =>
-    deviceExpanded[agentId] ?? ((sessionsByAgent.get(agentId)?.length ?? 0) > 0)
+  const toggle = (path: string, current: boolean) =>
+    setExpanded((e) => ({ ...e, [path]: !current }))
 
+  // ── Collapsed rail ──────────────────────────────────────────────────────────
   if (collapsed) {
     return (
-      <aside className="flex w-12 shrink-0 flex-col items-center border-r border-zinc-800 bg-zinc-950/60 py-3">
+      <aside
+        className="rail"
+        style={{ width: 48, alignItems: 'center', paddingTop: 12 }}
+      >
         <button
           type="button"
           onClick={onToggleCollapse}
           title="expand sidebar"
-          className="grid h-8 w-8 place-items-center rounded-md text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+          style={{ padding: '6px', borderRadius: 8, color: 'var(--fg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         >
           <PanelIcon />
         </button>
@@ -106,100 +128,155 @@ export function Sidebar({
     )
   }
 
+  // ── Expanded rail ───────────────────────────────────────────────────────────
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/60">
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2.5">
-        <span className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-zinc-400">projects</span>
-        <button
-          type="button"
-          onClick={onBeginNewProject}
-          title="begin new project"
-          className="ml-auto flex items-center gap-1 rounded px-1.5 py-1 font-mono text-[10px] uppercase tracking-wider text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-emerald-300"
-        >
-          <PlusIcon /> new project
-        </button>
+    <aside className="rail">
+      {/* Slim rail header — the brand logo lives in the top bar; here we just
+          show the mesh status + a collapse toggle (no duplicate logo). */}
+      <div className="rail-head">
+        <span className="net" style={{ marginLeft: 0, marginRight: 'auto' }}>
+          <span className="dot live" style={{ width: 6, height: 6 }} />
+          mesh
+        </span>
         <button
           type="button"
           onClick={onToggleCollapse}
           title="collapse sidebar"
-          className="grid h-6 w-6 place-items-center rounded text-zinc-600 hover:bg-zinc-900 hover:text-zinc-300"
+          style={{ padding: 4, borderRadius: 6, color: 'var(--fg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         >
           <PanelIcon />
         </button>
       </div>
 
-      <div className="px-2.5 py-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="filter projects…"
-          className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 font-mono text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
-        />
-      </div>
+      <div className="rail-scroll">
+        {/* ── PROJECTS ─────────────────────────────────────────── */}
+        <div className="rail-sec">
+          Projects
+          <span className="ct">{projects.length}</span>
+          <button
+            type="button"
+            onClick={onBeginNewProject}
+            title="new project"
+            style={{ marginLeft: 4, display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--fg-3)', fontSize: 10, borderRadius: 5, padding: '2px 5px' }}
+            className="btn btn-ghost"
+          >
+            <PlusIcon size={10} /> new
+          </button>
+        </div>
 
-      <nav className="term-scroll min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
-        {projectsState === 'loading' && <SidebarSkeleton />}
+        {/* Filter input */}
+        <div style={{ padding: '4px 16px 8px' }}>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="filter…"
+            style={{
+              width: '100%',
+              background: 'var(--void)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: '5px 10px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: 'var(--fg-1)',
+              outline: 'none',
+            }}
+          />
+        </div>
+
+        {/* Project loading / error / empty states */}
+        {projectsState === 'loading' && <RailSkeleton />}
         {projectsState === 'error' && (
-          <p className="px-2 py-6 text-center font-mono text-[11px] text-red-400/80">// projects unavailable</p>
+          <div style={{ padding: '12px 18px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--st-danger)' }}>
+            // projects unavailable
+          </div>
         )}
         {projectsState === 'ready' && filtered.length === 0 && (
-          <p className="px-2 py-6 text-center font-mono text-[11px] text-zinc-600">// no projects</p>
+          <div style={{ padding: '12px 18px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>
+            // no projects
+          </div>
         )}
+
+        {/* Project rows */}
         {filtered.map((p) => {
           const ps = sessionsByProject.get(p.path) ?? []
           const open = isOpen(p.path)
+          const hasActive = ps.some((s) => s.id === activeSessionId)
           return (
-            <div key={p.path} className="mb-0.5">
-              <div className="group flex items-center rounded-md hover:bg-zinc-900/70">
+            <div key={p.path}>
+              {/* Project header row */}
+              <div
+                className={`prow proj${hasActive ? ' active' : ''}`}
+                onClick={() =>
+                  editorAvailable ? onOpenEditor(p) : toggle(p.path, open)
+                }
+                style={{ userSelect: 'none' }}
+              >
                 <button
                   type="button"
-                  onClick={() => setExpanded((e) => ({ ...e, [p.path]: !open }))}
-                  title={open ? 'collapse sessions' : 'expand sessions'}
-                  className="grid h-7 w-6 shrink-0 place-items-center rounded text-zinc-600 hover:text-zinc-300"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    toggle(p.path, open)
+                  }}
+                  title={open ? 'collapse' : 'expand'}
+                  style={{ display: 'flex', alignItems: 'center', color: 'var(--fg-3)', background: 'none', padding: 0 }}
                 >
                   <Caret open={open} />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => editorAvailable ? onOpenEditor(p) : setExpanded((e) => ({ ...e, [p.path]: !open }))}
-                  title={editorAvailable ? 'open editor' : 'expand / collapse'}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
-                >
-                  <FolderIcon active={ps.length > 0} />
-                  <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
-                    {p.name}
+                <FolderIcon active={ps.length > 0} />
+                <span className="nm">{p.name}</span>
+                {ps.length > 0 && (
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 10,
+                      color: 'var(--fg-3)',
+                      marginLeft: 'auto',
+                      paddingRight: 2,
+                    }}
+                  >
+                    {ps.length}
                   </span>
-                  {ps.length > 0 && (
-                    <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[10px] text-zinc-400">
-                      {ps.length}
-                    </span>
-                  )}
-                </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => onNewSession(p)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onNewSession(p)
+                  }}
                   title="new session"
-                  className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-800 hover:text-emerald-300 group-hover:opacity-100"
+                  className="btn btn-ghost"
+                  style={{
+                    padding: '2px 4px',
+                    opacity: 0,
+                    fontSize: 10,
+                    borderRadius: 5,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+                  onMouseLeave={(e) => (e.currentTarget.style.opacity = '0')}
                 >
-                  <PlusIcon />
+                  <PlusIcon size={11} />
                 </button>
               </div>
 
+              {/* Sessions under project */}
               {open && (
-                <ul className="ml-3 border-l border-zinc-800 pl-1.5">
+                <div style={{ marginLeft: 8, borderLeft: '1px solid var(--border)', marginBottom: 2 }}>
                   {ps.length === 0 ? (
-                    <li>
-                      <button
-                        type="button"
-                        onClick={() => onNewSession(p)}
-                        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left font-mono text-[11px] text-zinc-600 hover:text-emerald-300"
-                      >
-                        <PlusIcon /> new session
-                      </button>
-                    </li>
+                    <button
+                      type="button"
+                      onClick={() => onNewSession(p)}
+                      className="srow"
+                      style={{ width: '100%', textAlign: 'left', paddingLeft: 18 }}
+                    >
+                      <PlusIcon size={10} />
+                      <span className="nm" style={{ color: 'var(--fg-3)', fontSize: 11 }}>
+                        new session
+                      </span>
+                    </button>
                   ) : (
                     ps.map((s) => (
-                      <SessionRow
+                      <ProjectSessionRow
                         key={s.id}
                         session={s}
                         active={s.id === activeSessionId}
@@ -207,128 +284,90 @@ export function Sidebar({
                       />
                     ))
                   )}
-                </ul>
+                </div>
               )}
             </div>
           )
         })}
 
-        <div className="mt-3 flex items-center gap-2 px-2 pb-1.5 pt-2">
-          <span className="font-display text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-            devices
-          </span>
-          <span className="h-px flex-1 bg-zinc-800" />
+        {/* ── DEVICES ──────────────────────────────────────────── */}
+        <div className="rail-sec" style={{ marginTop: 8 }}>
+          Devices
+          <span className="ct">{agents.filter((a) => a.online).length} woven</span>
         </div>
 
         {orderedAgents.length === 0 ? (
-          <p className="px-2 py-4 text-center font-mono text-[11px] text-zinc-600">// no devices online</p>
+          <div style={{ padding: '8px 18px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>
+            // no devices
+          </div>
         ) : (
           orderedAgents.map((a) => {
             const ds = sessionsByAgent.get(a.id) ?? []
-            const open = isDeviceOpen(a.id)
-            const hasClaude = a.capabilities?.claudeInstalled ?? false
             const hasEditor = a.capabilities?.codeServerInstalled ?? false
+            const metaLabel = deviceMeta(a, ds.length)
+            const dotCls = deviceDotClass(a.online, ds.length > 0)
             return (
-              <div key={a.id} className="mb-0.5">
-                <div
-                  className={`group flex items-center rounded-md hover:bg-zinc-900/70 ${a.online ? '' : 'opacity-50'}`}
-                  title={a.online ? undefined : 'offline — start a session once it comes online'}
-                >
+              <div
+                key={a.id}
+                className={`mrow${a.online ? '' : ' off'}`}
+                onClick={() => {
+                  if (!a.online) return
+                  if (hasEditor) onOpenDeviceEditor(a)
+                  else onNewDeviceSession(a)
+                }}
+                title={a.online ? undefined : 'offline'}
+              >
+                <span className={dotCls} />
+                <span className="name">{a.hostname || a.name || a.id.slice(0, 8)}</span>
+                {!a.online ? (
                   <button
                     type="button"
-                    onClick={() => setDeviceExpanded((e) => ({ ...e, [a.id]: !open }))}
-                    title={open ? 'collapse sessions' : 'expand sessions'}
-                    className="grid h-7 w-6 shrink-0 place-items-center rounded text-zinc-600 hover:text-zinc-300"
-                  >
-                    <Caret open={open} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!a.online) return
-                      if (hasEditor) onOpenDeviceEditor(a)
-                      else setDeviceExpanded((e) => ({ ...e, [a.id]: !open }))
+                    className="wake-mini"
+                    title="wake machine"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onNewDeviceSession(a)
                     }}
-                    disabled={!a.online}
-                    title={a.online ? (hasEditor ? 'open editor' : 'expand / collapse') : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left disabled:cursor-default"
                   >
-                    <DeviceDot online={a.online} />
-                    <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
-                      {a.hostname || a.name || a.id.slice(0, 8)}
-                    </span>
-                    {hasClaude && (
-                      <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[9px] uppercase tracking-wider text-zinc-500">
-                        claude
-                      </span>
-                    )}
-                    {ds.length > 0 && (
-                      <span className="shrink-0 rounded bg-zinc-800 px-1.5 font-mono text-[10px] text-zinc-400">
-                        {ds.length}
-                      </span>
-                    )}
+                    <PowerIcon />
                   </button>
-                  {a.online && (
-                    <button
-                      type="button"
-                      onClick={() => onNewDeviceSession(a)}
-                      title="new session on this device"
-                      className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-800 hover:text-emerald-300 group-hover:opacity-100"
-                    >
-                      <PlusIcon />
-                    </button>
-                  )}
-                </div>
-
-                {open && (
-                  <ul className="ml-3 border-l border-zinc-800 pl-1.5">
-                    {ds.length === 0 ? (
-                      <li>
-                        {a.online ? (
-                          <button
-                            type="button"
-                            onClick={() => onNewDeviceSession(a)}
-                            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left font-mono text-[11px] text-zinc-600 hover:text-emerald-300"
-                          >
-                            <PlusIcon /> new session
-                          </button>
-                        ) : (
-                          <span className="flex w-full items-center px-2 py-1.5 font-mono text-[11px] text-zinc-600">
-                            offline — can't start a session
-                          </span>
-                        )}
-                      </li>
-                    ) : (
-                      ds.map((s) => (
-                        <SessionRow
-                          key={s.id}
-                          session={s}
-                          active={s.id === activeSessionId}
-                          onSelect={() => onSelectSession(s.id)}
-                        />
-                      ))
-                    )}
-                  </ul>
+                ) : (
+                  <span
+                    className="meta"
+                    style={ds.length > 0 ? { color: 'var(--green)' } : undefined}
+                  >
+                    {metaLabel}
+                  </span>
                 )}
               </div>
             )
           })
         )}
-      </nav>
+      </div>
+
+      {/* ── Footer: New session button ───────────────────────── */}
+      <div className="rail-foot">
+        <button
+          type="button"
+          className="btn btn-run"
+          style={{ width: '100%', justifyContent: 'center' }}
+          onClick={() => {
+            const first = projects[0]
+            if (first) onNewSession(first)
+            else onBeginNewProject()
+          }}
+        >
+          <PlusIcon size={14} />
+          New session
+        </button>
+      </div>
     </aside>
   )
 }
 
-function DeviceDot({ online }: { online: boolean }) {
-  return (
-    <span className="relative flex h-2 w-2 shrink-0 items-center justify-center" title={online ? 'online' : 'offline'}>
-      {online && <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-70 animate-breathe" />}
-      <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${online ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-    </span>
-  )
-}
+// ── Sub-components ──────────────────────────────────────────────────────────
 
-function SessionRow({
+function ProjectSessionRow({
   session,
   active,
   onSelect,
@@ -337,52 +376,58 @@ function SessionRow({
   active: boolean
   onSelect: () => void
 }) {
+  const dotCls = sessionDotClass(session.status)
   return (
-    <li>
-      <button
-        type="button"
-        onClick={onSelect}
-        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
-          active ? 'bg-emerald-500/10 text-emerald-200' : 'text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-200'
-        }`}
-      >
-        <StatusDot status={session.status} />
-        <KindGlyph kind={session.kind} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-          {session.title || session.kind}
-        </span>
-      </button>
-    </li>
-  )
-}
-
-function StatusDot({ status }: { status: Session['status'] }) {
-  const cls = statusDotClass(status)
-  return (
-    <span className="relative flex h-2 w-2 shrink-0 items-center justify-center" title={status}>
-      {statusPulses(status) && <span className={`absolute inline-flex h-full w-full rounded-full opacity-70 animate-breathe ${cls}`} />}
-      <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${cls}`} />
-    </span>
+    <div
+      className={`srow${active ? ' on' : ''}`}
+      onClick={onSelect}
+      style={{ paddingLeft: 18 }}
+    >
+      <span className={dotCls} />
+      <KindGlyph kind={session.kind} />
+      <span className="nm">{session.title || session.kind}</span>
+    </div>
   )
 }
 
 function KindGlyph({ kind }: { kind: SessionKind }) {
   if (kind === 'claude') {
     return (
-      <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0 text-emerald-400/80" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <svg
+        viewBox="0 0 24 24"
+        style={{ width: 12, height: 12, flexShrink: 0, color: 'var(--teal)', opacity: 0.85 }}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        aria-hidden
+      >
         <path d="M12 4v16M4 12h16" strokeLinecap="round" />
       </svg>
     )
   }
   if (kind === 'editor') {
     return (
-      <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0 text-sky-400/80" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <svg
+        viewBox="0 0 24 24"
+        style={{ width: 12, height: 12, flexShrink: 0, color: 'var(--blue)', opacity: 0.85 }}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        aria-hidden
+      >
         <path d="M8 7l-4 5 4 5M16 7l4 5-4 5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
   }
   return (
-    <svg viewBox="0 0 24 24" className="h-3 w-3 shrink-0 text-zinc-500" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      style={{ width: 12, height: 12, flexShrink: 0, color: 'var(--fg-3)' }}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
       <path d="M5 7l4 4-4 4M12 16h7" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
@@ -392,7 +437,13 @@ function Caret({ open }: { open: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      className={`h-3 w-3 shrink-0 text-zinc-600 transition-transform ${open ? 'rotate-90' : ''}`}
+      style={{
+        width: 12,
+        height: 12,
+        flexShrink: 0,
+        transition: 'transform var(--dur) var(--ease)',
+        transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+      }}
       fill="none"
       stroke="currentColor"
       strokeWidth="2.2"
@@ -405,15 +456,27 @@ function Caret({ open }: { open: boolean }) {
 
 function FolderIcon({ active }: { active: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-emerald-400/80' : 'text-zinc-500'}`} fill="currentColor" aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      style={{ width: 13, height: 13, flexShrink: 0, color: active ? 'var(--teal)' : 'var(--fg-3)', opacity: active ? 0.85 : 1 }}
+      fill="currentColor"
+      aria-hidden
+    >
       <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   )
 }
 
-function PlusIcon() {
+function PlusIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      style={{ width: size, height: size, flexShrink: 0 }}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      aria-hidden
+    >
       <path d="M12 5v14m-7-7h14" strokeLinecap="round" />
     </svg>
   )
@@ -421,21 +484,37 @@ function PlusIcon() {
 
 function PanelIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+    <svg viewBox="0 0 24 24" style={{ width: 16, height: 16 }} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <path d="M9 4v16" />
     </svg>
   )
 }
 
-function SidebarSkeleton() {
+function PowerIcon() {
   return (
-    <div className="space-y-1 px-1 py-1">
-      {Array.from({ length: 7 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-2 px-2 py-1.5">
-          <span className="h-3.5 w-3.5 animate-pulse rounded bg-zinc-800" />
-          <span className="h-3 animate-pulse rounded bg-zinc-800/70" style={{ width: `${50 + (i % 4) * 12}%` }} />
-        </div>
+    <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M12 2v6M6.8 6.8a8 8 0 1 0 10.4 0" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function RailSkeleton() {
+  return (
+    <div style={{ padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            height: 28,
+            borderRadius: 9,
+            background: 'var(--surface)',
+            opacity: 0.6,
+            animation: 'pulseStart 1.4s ease infinite',
+            width: `${55 + (i % 4) * 10}%`,
+            marginLeft: 10,
+          }}
+        />
       ))}
     </div>
   )

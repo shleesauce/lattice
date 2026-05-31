@@ -37,9 +37,6 @@ function reducer(state: ClaudeState, a: Action): ClaudeState {
   }
 }
 
-// The Claude tab — a native chat over the stream-json event feed. Renders
-// assistant markdown, tool-call/result cards, a live token-usage HUD, and a
-// multiline composer. Feels like the Claude Code desktop app.
 export function SessionClaude({ sessionId }: Props) {
   const [state, dispatch] = useReducer(reducer, emptyClaudeState)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -53,7 +50,6 @@ export function SessionClaude({ sessionId }: Props) {
     },
   })
 
-  // Stick to bottom on new content unless the user scrolled up.
   useEffect(() => {
     const el = scrollRef.current
     if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
@@ -85,51 +81,94 @@ export function SessionClaude({ sessionId }: Props) {
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-zinc-950">
-      <UsageHudBar state={state} phase={phase} />
+    <div className="chat" style={{ height: '100%', minHeight: 0 }}>
+      <ChatHeader phase={phase} model={state.model} usage={state.usage} />
 
-      <div ref={scrollRef} onScroll={onScroll} className="term-scroll min-h-0 flex-1 overflow-y-auto px-4 py-5">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
-          {state.items.length === 0 && phase !== 'connecting' && <EmptyChat />}
-          {state.items.length === 0 && phase === 'connecting' && <ConnectingChat />}
-          {state.items.map((it) => (
-            <ChatItemView key={it.id} item={it} onPermission={onPermission} />
-          ))}
-          {state.busy && <ThinkingRow />}
-        </div>
+      <div ref={scrollRef} onScroll={onScroll} className="chat-body">
+        {state.items.length === 0 && phase !== 'connecting' && <EmptyChat />}
+        {state.items.length === 0 && phase === 'connecting' && <ConnectingChat />}
+        {state.items.map((it) => (
+          <ChatItemView key={it.id} item={it} onPermission={onPermission} />
+        ))}
+        {state.busy && <ThinkingRow />}
       </div>
 
-      <Composer onSend={send} busy={state.busy} disabled={phase === 'exited'} />
+      <div className="chat-foot">
+        <Composer onSend={send} busy={state.busy} disabled={phase === 'exited'} />
+      </div>
     </div>
   )
 }
 
-function UsageHudBar({ state, phase }: { state: ClaudeState; phase: string }) {
-  const u = state.usage
+// ---- Header ----
+
+interface UsageHudLike {
+  inputTokens: number
+  outputTokens: number
+  cacheRead: number
+  costUsd: number
+  numTurns: number
+}
+
+function ChatHeader({
+  phase,
+  model,
+  usage,
+}: {
+  phase: string
+  model?: string
+  usage: UsageHudLike
+}) {
+  const u = usage
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-zinc-800 bg-zinc-900/40 px-4 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-      <span className="flex items-center gap-1.5">
-        <span className={`inline-block h-1.5 w-1.5 rounded-full ${phaseDot(phase)}`} />
-        {state.model ?? 'claude'}
-      </span>
-      <Metric label="in" value={fmt(u.inputTokens)} />
-      <Metric label="out" value={fmt(u.outputTokens)} />
-      {u.cacheRead > 0 && <Metric label="cache" value={fmt(u.cacheRead)} />}
-      <span className="ml-auto flex items-center gap-3">
-        {u.numTurns > 0 && <Metric label="turns" value={String(u.numTurns)} />}
-        <span className="text-emerald-400">${u.costUsd.toFixed(4)}</span>
-      </span>
+    <div style={{ display: 'flex', flexDirection: 'column', borderBottom: '1px solid var(--border)' }}>
+      <div className="chat-h">
+        <span className="av">
+          <SparklesIcon />
+        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+          <span className="nm">Claude</span>
+          <span className="on-node">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '999px',
+                  background: phaseDotColor(phase),
+                  flexShrink: 0,
+                  display: 'inline-block',
+                }}
+              />
+              {model ?? 'claude'} · {phaseLabel(phase)}
+            </span>
+          </span>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {u.numTurns > 0 && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--teal)' }}>
+              ${u.costUsd.toFixed(4)}
+            </span>
+          )}
+          <span
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              color: 'var(--fg-3)',
+              display: 'flex',
+              gap: 8,
+            }}
+          >
+            {u.inputTokens > 0 && <span>{fmt(u.inputTokens)}in</span>}
+            {u.outputTokens > 0 && <span>{fmt(u.outputTokens)}out</span>}
+          </span>
+        </div>
+      </div>
     </div>
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <span>
-      <span className="text-zinc-600">{label}</span> <span className="tabular-nums text-zinc-300">{value}</span>
-    </span>
-  )
-}
+// ---- Composer ----
 
 function Composer({
   onSend,
@@ -147,7 +186,7 @@ function Composer({
     const ta = taRef.current
     if (!ta) return
     ta.style.height = 'auto'
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
+    ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`
   }, [])
 
   const submit = () => {
@@ -158,68 +197,99 @@ function Composer({
   }
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-900/40 px-4 py-3">
-      <div className="mx-auto flex max-w-3xl items-end gap-2.5 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 focus-within:border-emerald-500/50">
-        <textarea
-          ref={taRef}
-          rows={1}
-          value={text}
-          disabled={disabled}
-          onChange={(e) => {
-            setText(e.target.value)
-            grow()
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          placeholder={disabled ? 'session ended' : 'Message Claude…  (Enter to send · Shift+Enter for newline)'}
-          className="term-scroll max-h-[200px] min-h-[24px] w-full resize-none bg-transparent font-display text-[13.5px] leading-relaxed text-zinc-100 placeholder:text-zinc-600 focus:outline-none disabled:opacity-50"
-        />
+    <div className="composer">
+      <textarea
+        ref={taRef}
+        rows={2}
+        value={text}
+        disabled={disabled}
+        onChange={(e) => {
+          setText(e.target.value)
+          grow()
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            submit()
+          }
+        }}
+        placeholder={disabled ? 'session ended' : 'Ask Claude, or describe a change…'}
+        style={{ maxHeight: 180 }}
+      />
+      <div className="composer-row">
+        <div className="left">
+          <button
+            type="button"
+            className="iconbtn"
+            style={{ width: 28, height: 28 }}
+            title="Attach file"
+            aria-label="Attach file"
+          >
+            <FolderIconSmall />
+          </button>
+          <button
+            type="button"
+            className="iconbtn"
+            style={{ width: 28, height: 28 }}
+            title="Terminal context"
+            aria-label="Terminal context"
+          >
+            <TerminalIconSmall />
+          </button>
+        </div>
         <button
           type="button"
+          className="send"
           onClick={submit}
           disabled={disabled || !text.trim()}
-          title="send"
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-emerald-500 text-emerald-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-600"
+          title="Send"
         >
-          {busy ? <Spinner /> : <SendIcon />}
+          {busy ? <SpinnerSend /> : <SendIcon />}
         </button>
       </div>
     </div>
   )
 }
 
+// ---- Thinking ----
+
 function ThinkingRow() {
   return (
-    <div className="ml-9 flex items-center gap-2 font-mono text-[11px] text-zinc-500">
-      <span className="flex gap-1">
-        <Dot delay="0ms" />
-        <Dot delay="160ms" />
-        <Dot delay="320ms" />
-      </span>
-      working…
+    <div className="thinking">
+      <span className="d" />
+      <span className="d" style={{ animationDelay: '0.2s' }} />
+      <span className="d" style={{ animationDelay: '0.4s' }} />
+      thinking…
     </div>
   )
 }
 
-function Dot({ delay }: { delay: string }) {
-  return <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/80 animate-breathe" style={{ animationDelay: delay }} />
-}
+// ---- Empty / Connecting states ----
 
 function EmptyChat() {
   return (
-    <div className="grid place-items-center py-20 text-center">
-      <div className="max-w-sm">
-        <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl border border-emerald-500/30 bg-emerald-500/10">
-          <svg viewBox="0 0 24 24" className="h-6 w-6 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
-            <path d="M12 3v18M3 12h18" strokeLinecap="round" />
-          </svg>
+    <div style={{ display: 'grid', placeItems: 'center', padding: '60px 0', textAlign: 'center' }}>
+      <div style={{ maxWidth: 260 }}>
+        <div style={{
+          margin: '0 auto 16px',
+          width: 44,
+          height: 44,
+          borderRadius: 12,
+          border: '1px solid color-mix(in oklch, var(--amber) 30%, transparent)',
+          background: 'var(--fill-warm)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--amber)',
+        }}>
+          <SparklesIcon />
         </div>
-        <p className="mt-4 font-display text-sm font-semibold text-zinc-300">Claude is live in this project</p>
-        <p className="mt-1 font-mono text-[11px] text-zinc-600">send a message to begin the conversation</p>
+        <p style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600, color: 'var(--fg-1)' }}>
+          Claude is live in this project
+        </p>
+        <p style={{ margin: '4px 0 0', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)' }}>
+          send a message to begin
+        </p>
       </div>
     </div>
   )
@@ -227,42 +297,90 @@ function EmptyChat() {
 
 function ConnectingChat() {
   return (
-    <div className="grid place-items-center py-20 text-center">
-      <p className="font-mono text-xs text-zinc-600">attaching to session…</p>
+    <div style={{ display: 'grid', placeItems: 'center', padding: '60px 0', textAlign: 'center' }}>
+      <p style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg-3)', margin: 0 }}>
+        attaching to session…
+      </p>
     </div>
   )
 }
+
+// ---- Helpers ----
 
 function fmt(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
 
-function phaseDot(phase: string): string {
+function phaseDotColor(phase: string): string {
   switch (phase) {
     case 'live':
-      return 'bg-emerald-400'
+      return 'var(--green)'
     case 'connecting':
-      return 'bg-amber-400 animate-breathe'
+      return 'var(--st-starting)'
     case 'exited':
-      return 'bg-zinc-600'
+      return 'var(--st-exited)'
     default:
-      return 'bg-red-500'
+      return 'var(--st-danger)'
   }
 }
 
-function SendIcon() {
+function phaseLabel(phase: string): string {
+  switch (phase) {
+    case 'live':
+      return 'live'
+    case 'connecting':
+      return 'connecting'
+    case 'exited':
+      return 'session ended'
+    default:
+      return phase
+  }
+}
+
+// ---- Icons ----
+
+function SparklesIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-      <path d="M5 12h14M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+    <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z" />
+      <path d="M19 3l.75 2.25L22 6l-2.25.75L19 9l-.75-2.25L16 6l2.25-.75z" />
+      <path d="M5 17l.5 1.5L7 19l-1.5.5L5 21l-.5-1.5L3 19l1.5-.5z" />
     </svg>
   )
 }
 
-function Spinner() {
+function SendIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4 animate-spin" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
-      <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" />
+    <svg viewBox="0 0 24 24" width={15} height={15} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  )
+}
+
+function SpinnerSend() {
+  return (
+    <svg viewBox="0 0 24 24" width={15} height={15} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden
+      style={{ animation: 'spin 1s linear infinite' }}>
+      <path d="M12 3a9 9 0 1 0 9 9" />
+    </svg>
+  )
+}
+
+function FolderIconSmall() {
+  return (
+    <svg viewBox="0 0 24 24" width={15} height={15} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function TerminalIconSmall() {
+  return (
+    <svg viewBox="0 0 24 24" width={15} height={15} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
     </svg>
   )
 }

@@ -159,8 +159,17 @@ func (e *editorSessions) start(parent context.Context, p proto.SessionCreatePayl
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
+	// Seed a per-session VS Code settings.json so code-server boots already wearing
+	// the Lattice skin (theme via colorCustomizations — no extension to install) and
+	// without the stock welcome/menu clutter. Best-effort: a seed failure just means
+	// a plainer editor, never a failed session.
+	udd := filepath.Join(editorStateBaseDir(), p.SessionID)
+	if err := seedEditorSettings(udd); err != nil {
+		log.Printf("agent: editor %s: seed settings: %v (continuing)", p.SessionID, err)
+	}
+
 	ctx, cancel := context.WithCancel(e.baseCtx)
-	cmd := exec.CommandContext(ctx, bin, codeServerArgs(p.SessionID, addr, p.Cwd)...)
+	cmd := exec.CommandContext(ctx, bin, codeServerArgs(addr, p.Cwd, udd)...)
 	if p.Cwd != "" {
 		cmd.Dir = p.Cwd
 	}
@@ -233,15 +242,16 @@ func (e *editorSessions) sendExit(sessionID string, code int, errMsg string) {
 // isolates the IPC socket so concurrent editors don't collide, while extensions
 // are shared so installs carry across sessions. The positional arg opens the
 // project folder.
-func codeServerArgs(sessionID, addr, cwd string) []string {
+func codeServerArgs(addr, cwd, udd string) []string {
 	args := []string{
 		"--bind-addr", addr,
 		"--auth", "none",
 		"--trusted-origins", "*",
+		"--app-name", "Lattice", // brands the title/welcome as Lattice, not code-server
 		"--disable-telemetry",
 		"--disable-update-check",
 		"--disable-workspace-trust",
-		"--user-data-dir", filepath.Join(editorStateBaseDir(), sessionID),
+		"--user-data-dir", udd,
 	}
 	if ext := sharedExtensionsDir(); ext != "" {
 		args = append(args, "--extensions-dir", ext)
@@ -250,6 +260,128 @@ func codeServerArgs(sessionID, addr, cwd string) []string {
 		args = append(args, cwd)
 	}
 	return args
+}
+
+// editorSettingsJSON is the seeded VS Code settings for every editor session. It
+// makes code-server wear the Lattice "Cool Fabric, Warm Life" skin via workbench
+// colorCustomizations + tokenColorCustomizations (no theme extension required):
+// true-black editor, cool structure, WARM caret/active-tab/selection ("where you
+// are working"), green run/progress, calm cool syntax with warm only on literals.
+// It also strips the stock welcome/walkthrough and points fonts at IBM Plex Mono.
+const editorSettingsJSON = `{
+  "workbench.colorTheme": "Default Dark Modern",
+  "workbench.startupEditor": "none",
+  "workbench.tips.enabled": false,
+  "workbench.welcomePage.walkthroughs.openOnInstall": false,
+  "window.menuBarVisibility": "compact",
+  "window.commandCenter": false,
+  "editor.fontFamily": "'IBM Plex Mono', ui-monospace, monospace",
+  "editor.fontSize": 13,
+  "editor.fontLigatures": false,
+  "editor.minimap.enabled": false,
+  "editor.renderWhitespace": "none",
+  "editor.cursorBlinking": "smooth",
+  "terminal.integrated.fontFamily": "'IBM Plex Mono', monospace",
+  "terminal.integrated.fontSize": 12.5,
+  "telemetry.telemetryLevel": "off",
+  "update.mode": "none",
+  "editor.tokenColorCustomizations": {
+    "comments": "#6E7B84",
+    "keywords": "#38BDF8",
+    "strings": "#F5A623",
+    "numbers": "#FFC24B",
+    "functions": "#2DE2C0",
+    "types": "#5BD6F0",
+    "variables": "#E9EFF1"
+  },
+  "workbench.colorCustomizations": {
+    "editor.background": "#000000",
+    "editor.foreground": "#E9EFF1",
+    "editorCursor.foreground": "#F5A623",
+    "editor.selectionBackground": "#F5A62330",
+    "editor.lineHighlightBackground": "#F5A62310",
+    "editor.lineHighlightBorder": "#00000000",
+    "editorLineNumber.foreground": "#3A444C",
+    "editorLineNumber.activeForeground": "#A4B0B8",
+    "editorWhitespace.foreground": "#1A2228",
+    "editorIndentGuide.background1": "#141A20",
+    "foreground": "#A4B0B8",
+    "focusBorder": "#2DE2C0",
+    "sideBar.background": "#07090C",
+    "sideBar.foreground": "#A4B0B8",
+    "sideBar.border": "#171D25",
+    "sideBarTitle.foreground": "#6E7B84",
+    "sideBarSectionHeader.background": "#07090C",
+    "activityBar.background": "#000000",
+    "activityBar.foreground": "#2DE2C0",
+    "activityBar.inactiveForeground": "#6E7B84",
+    "activityBar.border": "#171D25",
+    "activityBarBadge.background": "#2DE2C0",
+    "activityBarBadge.foreground": "#04130F",
+    "editorGroupHeader.tabsBackground": "#07090C",
+    "editorGroupHeader.border": "#171D25",
+    "tab.activeBackground": "#000000",
+    "tab.inactiveBackground": "#07090C",
+    "tab.activeForeground": "#E9EFF1",
+    "tab.inactiveForeground": "#6E7B84",
+    "tab.activeBorderTop": "#F5A623",
+    "tab.border": "#171D25",
+    "tab.activeBorder": "#00000000",
+    "titleBar.activeBackground": "#07090C",
+    "titleBar.activeForeground": "#A4B0B8",
+    "titleBar.border": "#171D25",
+    "statusBar.background": "#07090C",
+    "statusBar.foreground": "#6E7B84",
+    "statusBar.border": "#171D25",
+    "statusBar.noFolderBackground": "#07090C",
+    "statusBarItem.remoteBackground": "#0E1218",
+    "statusBarItem.remoteForeground": "#2DE2C0",
+    "panel.background": "#000000",
+    "panel.border": "#171D25",
+    "panelTitle.activeForeground": "#E9EFF1",
+    "panelTitle.inactiveForeground": "#6E7B84",
+    "terminal.background": "#000000",
+    "terminal.foreground": "#A4B0B8",
+    "terminalCursor.foreground": "#F5A623",
+    "editorWidget.background": "#0E1218",
+    "editorWidget.border": "#171D25",
+    "input.background": "#000000",
+    "input.border": "#171D25",
+    "input.foreground": "#E9EFF1",
+    "dropdown.background": "#0E1218",
+    "dropdown.border": "#171D25",
+    "list.activeSelectionBackground": "#171D25",
+    "list.activeSelectionForeground": "#E9EFF1",
+    "list.inactiveSelectionBackground": "#0E1218",
+    "list.hoverBackground": "#0E1218",
+    "list.focusOutline": "#2DE2C0",
+    "button.background": "#2DE2C0",
+    "button.foreground": "#04130F",
+    "button.hoverBackground": "#5BF0D4",
+    "badge.background": "#2DE2C0",
+    "badge.foreground": "#04130F",
+    "progressBar.background": "#2DE2C0",
+    "scrollbarSlider.background": "#1A222880",
+    "scrollbarSlider.hoverBackground": "#27313880",
+    "scrollbarSlider.activeBackground": "#2DE2C080",
+    "minimap.background": "#000000",
+    "widget.border": "#171D25",
+    "gitDecoration.modifiedResourceForeground": "#F5A623",
+    "gitDecoration.untrackedResourceForeground": "#2FD98A",
+    "gitDecoration.deletedResourceForeground": "#FF5C6C"
+  }
+}
+`
+
+// seedEditorSettings writes the Lattice settings.json into a session's user-data
+// dir (<udd>/User/settings.json), creating the dir tree. Overwrites each launch
+// so the skin stays applied.
+func seedEditorSettings(udd string) error {
+	userDir := filepath.Join(udd, "User")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(userDir, "settings.json"), []byte(editorSettingsJSON), 0o644)
 }
 
 // editorStateBaseDir is the parent of the per-session user-data directories.

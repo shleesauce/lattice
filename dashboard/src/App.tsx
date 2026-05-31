@@ -5,6 +5,7 @@ import { ConsolePanel } from './components/ConsolePanel'
 import { AddDevice } from './components/AddDevice'
 import { Workspace } from './components/workspace/Workspace'
 import { wakeAgent } from './api'
+import logoMark from './design/logo-mark.svg'
 
 type View = 'workspace' | 'fleet'
 
@@ -39,58 +40,54 @@ export default function App() {
   }, [agents, selectedId])
 
   return (
-    <div className="lattice-bg flex h-full min-h-screen flex-col">
-      <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <Header
-          view={view}
-          onView={setView}
-          conn={conn}
-          version={health?.version}
-          online={onlineCount}
-          total={agents.length}
-          onAddDevice={() => setAdding(true)}
-        />
+    <div className="flex h-screen min-h-0 flex-col" style={{ background: 'var(--base)' }}>
+      <TopBar
+        view={view}
+        onView={setView}
+        conn={conn}
+        version={health?.version}
+        online={onlineCount}
+        total={agents.length}
+        onAddDevice={() => setAdding(true)}
+      />
 
-        {view === 'workspace' ? (
-          <main className="mt-6 flex min-h-0 flex-1 flex-col">
-            <Workspace agents={agents} />
-          </main>
-        ) : (
-          <main className="mt-6 grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[1fr_minmax(360px,420px)]">
-            <div className="min-w-0">
-              <SectionLabel>fleet</SectionLabel>
-              <div className="mt-3">
-                <FleetGrid
-                  agents={agents}
-                  loading={loading}
-                  error={error}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  canWake={!!firstOnlineId}
-                  onWake={onWake}
-                />
-              </div>
-            </div>
-
-            <div className="min-h-[420px] lg:min-h-0 lg:h-[calc(100vh-7rem)] lg:sticky lg:top-5">
-              <ConsolePanel
-                agents={agents}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                runs={runs}
-                registerRun={registerRun}
-              />
-            </div>
-          </main>
-        )}
-      </div>
+      {view === 'workspace' ? (
+        <main className="flex min-h-0 flex-1 flex-col">
+          <Workspace agents={agents} />
+        </main>
+      ) : (
+        <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_minmax(340px,400px)]">
+          <div className="min-w-0">
+            <FleetGrid
+              agents={agents}
+              loading={loading}
+              error={error}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              canWake={!!firstOnlineId}
+              onWake={onWake}
+            />
+          </div>
+          <div className="min-h-0" style={{ borderLeft: '1px solid var(--border)' }}>
+            <ConsolePanel
+              agents={agents}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              runs={runs}
+              registerRun={registerRun}
+            />
+          </div>
+        </main>
+      )}
 
       {adding && <AddDevice onClose={() => setAdding(false)} />}
     </div>
   )
 }
 
-function Header({
+// TopBar — the design-system top strip: logo + Fleet/Workspace segmented toggle,
+// live mesh stats, a search affordance, hub status, and settings/add icons.
+function TopBar({
   view,
   onView,
   conn,
@@ -107,112 +104,89 @@ function Header({
   total: number
   onAddDevice: () => void
 }) {
+  const connInfo: Record<ConnState, { cls: string; text: string }> = {
+    live: { cls: 'live', text: 'hub live' },
+    connecting: { cls: 'starting', text: 'connecting' },
+    down: { cls: 'danger', text: 'hub down' },
+  }
+  const c = connInfo[conn]
   return (
-    <header className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-zinc-800/80 pb-5">
-      <div className="flex items-center gap-3">
-        <div className="grid h-9 w-9 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/10">
-          <LatticeMark />
-        </div>
-        <div>
-          <h1 className="font-display text-xl font-bold tracking-tight text-zinc-50">lattice</h1>
-          <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-zinc-500">
-            {view === 'workspace' ? 'workspace' : 'fleet console'}
-          </p>
-        </div>
-      </div>
+    <div className="topbar">
+      <img src={logoMark} alt="" style={{ width: 24, height: 24 }} />
+      <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-.03em', color: 'var(--fg-1)' }}>lattice</span>
 
-      <ViewToggle view={view} onView={onView} />
-
-      <div className="ml-auto flex items-center gap-4 sm:gap-5">
-        <Stat value={online} label="online" tone="emerald" />
-        <Stat value={total} label="agents" tone="zinc" />
-        <HubStatus conn={conn} version={version} />
-        <button
-          type="button"
-          onClick={onAddDevice}
-          className="flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 font-display text-sm font-semibold text-emerald-950 transition-colors hover:bg-emerald-400"
-        >
-          <PlusIcon />
-          <span className="hidden sm:inline">Add device</span>
+      <div className="seg" style={{ marginLeft: 6 }}>
+        <button type="button" className={view === 'fleet' ? 'on' : ''} onClick={() => onView('fleet')}>
+          <LayersIcon /> Fleet
+        </button>
+        <button type="button" className={view === 'workspace' ? 'on' : ''} onClick={() => onView('workspace')}>
+          <TermIcon /> Workspace
         </button>
       </div>
-    </header>
-  )
-}
 
-function ViewToggle({ view, onView }: { view: View; onView: (v: View) => void }) {
-  const items: { id: View; label: string }[] = [
-    { id: 'workspace', label: 'workspace' },
-    { id: 'fleet', label: 'fleet' },
-  ]
-  return (
-    <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-950 p-0.5">
-      {items.map((it) => {
-        const active = view === it.id
-        return (
-          <button
-            key={it.id}
-            type="button"
-            onClick={() => onView(it.id)}
-            className={`rounded-md px-3.5 py-1.5 font-display text-xs font-semibold uppercase tracking-wider transition-colors ${
-              active ? 'bg-emerald-500/15 text-emerald-300' : 'text-zinc-500 hover:text-zinc-300'
-            }`}
-          >
-            {it.label}
-          </button>
-        )
-      })}
+      <div className="tb-stat" style={{ marginLeft: 4 }}>
+        <span className="dot live" />
+        <span><b style={{ color: 'var(--fg-1)' }}>{online}</b> alive</span>
+        <span style={{ opacity: 0.5 }}>·</span>
+        <span><b style={{ color: 'var(--fg-1)' }}>{total}</b> woven</span>
+      </div>
+
+      <div className="tb-spacer" />
+
+      <div className="tb-search">
+        <SearchIcon />
+        <span style={{ flex: 1 }}>Search the mesh</span>
+        <span className="mono" style={{ fontSize: 11, opacity: 0.7 }}>⌘K</span>
+      </div>
+
+      <div className="tb-stat" title={version ? `v${version}` : undefined}>
+        <span className={`dot ${c.cls}`} />
+        <span style={{ fontSize: 11 }}>{c.text}</span>
+      </div>
+
+      <button type="button" className="iconbtn" title="add device" onClick={onAddDevice}>
+        <PlusIcon />
+      </button>
+      <button type="button" className="iconbtn" title="settings">
+        <GearIcon />
+      </button>
     </div>
   )
 }
 
 function PlusIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
       <path d="M12 5v14m-7-7h14" strokeLinecap="round" />
     </svg>
   )
 }
-
-function Stat({ value, label, tone }: { value: number; label: string; tone: 'emerald' | 'zinc' }) {
+function LayersIcon() {
   return (
-    <div className="text-right">
-      <div className={`font-mono text-lg font-semibold tabular-nums ${tone === 'emerald' ? 'text-emerald-400' : 'text-zinc-200'}`}>
-        {value}
-      </div>
-      <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">{label}</div>
-    </div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M12 3 3 8l9 5 9-5-9-5zM3 13l9 5 9-5M3 17l9 5 9-5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   )
 }
-
-function HubStatus({ conn, version }: { conn: ConnState; version?: string }) {
-  const map: Record<ConnState, { dot: string; pulse: boolean; text: string }> = {
-    live: { dot: 'bg-emerald-400', pulse: true, text: 'hub live' },
-    connecting: { dot: 'bg-amber-400', pulse: true, text: 'connecting' },
-    down: { dot: 'bg-red-500', pulse: false, text: 'hub down' },
-  }
-  const s = map[conn]
+function TermIcon() {
   return (
-    <div className="flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/70 px-3 py-1.5">
-      <span className="relative flex h-2 w-2">
-        {s.pulse && <span className={`absolute inline-flex h-full w-full rounded-full ${s.dot} opacity-70 animate-breathe`} />}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${s.dot}`} />
-      </span>
-      <span className="font-mono text-[11px] text-zinc-300">{s.text}</span>
-      {version && <span className="font-mono text-[10px] text-zinc-600">v{version}</span>}
-    </div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M5 7l4 4-4 4M12 16h7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   )
 }
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <h2 className="font-display text-xs font-semibold uppercase tracking-[0.18em] text-zinc-400">{children}</h2>
-}
-
-function LatticeMark() {
+function SearchIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
-      <path d="M12 2 22 7v10L12 22 2 17V7z" strokeLinejoin="round" />
-      <path d="M2 7l10 5 10-5M12 12v10" strokeLinejoin="round" />
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <circle cx="11" cy="11" r="7" /><path d="m20 20-3-3" strokeLinecap="round" />
+    </svg>
+  )
+}
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

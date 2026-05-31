@@ -501,10 +501,26 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 	}
 }
 
-// resolveCwd maps an empty or "~"-rooted working directory to the agent's home
-// directory (device sessions), leaving absolute paths untouched (project sessions).
+// resolveCwd maps a session's working directory to a path valid on THIS machine.
+//
+//   - Empty / "~" / "~/sub" → the agent's home dir (device sessions).
+//   - A synced project path (".../AI-Hub/projects/<rest>") → re-rooted at this
+//     machine's $HOME (D23). Projects are Syncthing-synced under ~/AI-Hub/projects
+//     fleet-wide, but each machine's home differs (/Users/mini-ops vs
+//     /Users/dylanstory vs C:\Users\…), so the hub's absolute path is wrong on a
+//     remote agent. Rebasing makes a project session placed on ANY machine open
+//     the right local copy — for the editor, claude, and terminal alike.
+//   - Any other absolute path → untouched.
+//
 // On home-lookup failure it returns the input unchanged so the OS default applies.
 func resolveCwd(cwd string) string {
+	if i := strings.Index(cwd, "/AI-Hub/projects/"); i >= 0 {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			// cwd[i+1:] == "AI-Hub/projects/<rest>"; filepath.Join normalises
+			// separators for the local OS (e.g. backslashes inside WSL/Windows).
+			return filepath.Join(home, cwd[i+1:])
+		}
+	}
 	if cwd != "" && cwd != "~" && !strings.HasPrefix(cwd, "~/") {
 		return cwd
 	}

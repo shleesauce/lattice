@@ -128,10 +128,12 @@ Hub-served tarball stays a clean future add (the resolver is the only seam that'
   device-scoped editor on mbp AND on studio each rendered its remote home in VS Code through the hub
   (browser → hub@mini-ops → yamux tunnel → remote code-server), 2 editor WS each, clean teardown. The
   milestone headline ("full VS Code on ANY fleet machine, one hub URL") is real for the 3 Macs.
-  *(Remote project-scoped editors hit the D23 home-path divergence — `/Users/mini-ops/...` ≠
-  `/Users/dylanstory/...`; the one-click Open-Editor locality-boosts to the user's machine so this isn't
-  hit in practice. A proper fix = per-agent project-path remap, same latent issue as remote claude/term
-  project sessions.)* **pc (Windows) still pending: needs the WSL2 spawn path (D30) + pc online.**
+  ✅ **D23 remote project paths FIXED (2026-05-30):** `resolveCwd` now rebases any
+  `.../AI-Hub/projects/<rest>` path onto the agent's own `$HOME`, so a project session placed on ANY
+  machine opens the correct Syncthing-synced copy (editor/claude/terminal alike). Verified: a
+  project-scoped editor pinned to studio (hub sent `/Users/mini-ops/AI-Hub/projects/lattice`) opened
+  `/Users/dylanstory/AI-Hub/projects/lattice` — the real lattice tree (agent/, internal/, go.mod…).
+  **pc (Windows) still pending: needs the WSL2 spawn path (D30) + pc online.**
 - ✅ **Monaco-rail retirement DONE (D31, 2026-05-30).** Deleted the read-only rail
   (ProjectFilesPanel/FileViewer/MonacoPanel/useFileBrowser) + dropped the `@monaco-editor/react` dep.
   The embedded VS Code's own EXPLORER is now the file surface. **Project name-click → opens the editor**

@@ -1,0 +1,441 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
+import { useWorkspace } from '../../useWorkspace'
+import { createSession, deleteSession, resumeSession } from '../../api'
+import { Sidebar } from './Sidebar'
+import { SessionPane } from './SessionPane'
+import { NewSessionDialog } from './NewSessionDialog'
+import type { NewSessionTarget } from './NewSessionDialog'
+import { NewProjectWizard } from './NewProjectWizard'
+import { statusDotClass, statusPulses } from './sessionMeta'
+
+interface Props {
+  agents: Agent[]
+}
+
+// The workspace shell: Projects→Sessions rail, open-session tabs, and the active
+// session pane. Sidebar status comes from useWorkspace polling /api/sessions.
+export function Workspace({ agents }: Props) {
+  const ws = useWorkspace()
+  const [openIds, setOpenIds] = useState<string[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
+  const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
+  const [wizardOpen, setWizardOpen] = useState(false)
+  // Below md the sidebar overlays the pane instead of sitting beside it.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  // The hub's co-located agent maps 1:1 to project paths; fall back to any
+  // online agent if the local one isn't reporting yet.
+  const localAgent = useMemo(
+    () => agents.find((a) => a.local && a.online) ?? agents.find((a) => a.online) ?? null,
+    [agents],
+  )
+
+  // The embedded editor is offerable only when some online machine has
+  // code-server (D28 per-node install). Gates the sidebar's Open-Editor action
+  // so we never present a button that would fail placement.
+  const editorAvailable = useMemo(
+    () => agents.some((a) => a.online && a.capabilities?.codeServerInstalled),
+    [agents],
+  )
+
+  const sessionById = (id: string): Session | undefined => ws.sessions.find((s) => s.id === id)
+
+  const openSession = useCallback((id: string) => {
+    setOpenIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    setActiveId(id)
+  }, [])
+
+  const closeTab = useCallback(
+    (id: string) => {
+      setOpenIds((prev) => {
+        const next = prev.filter((x) => x !== id)
+        setActiveId((cur) => (cur === id ? next[next.length - 1] ?? null : cur))
+        return next
+      })
+    },
+    [],
+  )
+
+  // Drop tabs whose session disappeared from the backend.
+  useEffect(() => {
+    setOpenIds((prev) => prev.filter((id) => ws.sessions.some((s) => s.id === id)))
+  }, [ws.sessions])
+
+  const onCreated = useCallback(
+    (res: SessionWithPlacement) => {
+      ws.upsertSession(res.session)
+      void ws.refreshSessions()
+      setNewTarget(null)
+      setMobileNavOpen(false)
+      openSession(res.session.id)
+    },
+    [ws, openSession],
+  )
+
+  // One-click "Open Editor" for a project: reuse the project's existing editor
+  // session if one is live (never spawn a second code-server for the same
+  // project), otherwise create one and open it. Locality-boosted to the local
+  // agent; the mesh still auto-places onto any code-server-capable machine.
+  const onOpenEditor = useCallback(
+    async (p: Project) => {
+      const existing = ws.sessions.find(
+        (s) => s.kind === 'editor' && s.projectPath === p.path && s.status !== 'exited',
+      )
+      if (existing) {
+        openSession(existing.id)
+        setMobileNavOpen(false)
+        return
+      }
+      try {
+        const res = await createSession({
+          kind: 'editor',
+          scope: 'project',
+          projectPath: p.path,
+          title: p.name,
+          userAgentId: localAgent?.id,
+        })
+        onCreated(res)
+      } catch {
+        /* surfaced via session polling; keep the UI responsive */
+      }
+    },
+    [ws.sessions, localAgent, openSession, onCreated],
+  )
+
+  // One-click "Open Editor" for a device: reuse an existing device-scoped
+  // editor session if one is live, otherwise create one.
+  const onOpenDeviceEditor = useCallback(
+    async (a: Agent) => {
+      const existing = ws.sessions.find(
+        (s) => s.kind === 'editor' && s.scope === 'device' && s.agentId === a.id && s.status !== 'exited',
+      )
+      if (existing) {
+        openSession(existing.id)
+        setMobileNavOpen(false)
+        return
+      }
+      try {
+        const res = await createSession({
+          kind: 'editor',
+          scope: 'device',
+          pinAgentId: a.id,
+          userAgentId: a.id,
+          title: a.hostname || a.name || a.id.slice(0, 8),
+        })
+        onCreated(res)
+      } catch {
+        /* surfaced via session polling; keep the UI responsive */
+      }
+    },
+    [ws.sessions, openSession, onCreated],
+  )
+
+  const onProjectCreated = useCallback(
+    (res: CreateProjectResult) => {
+      void ws.refreshProjects()
+      if (res.session) {
+        ws.upsertSession(res.session)
+        void ws.refreshSessions()
+        openSession(res.session.id)
+        setMobileNavOpen(false)
+      }
+    },
+    [ws, openSession],
+  )
+
+  const selectFromNav = useCallback(
+    (id: string) => {
+      openSession(id)
+      setMobileNavOpen(false)
+    },
+    [openSession],
+  )
+
+  const onPin = useCallback(
+    async (sessionId: string, agentId: string) => {
+      const s = sessionById(sessionId)
+      if (!s) return
+      try {
+        const res = await resumeSession(sessionId, { pinAgentId: agentId })
+        ws.upsertSession(res.session)
+        void ws.refreshSessions()
+      } catch {
+        /* surfaced via polling; keep UI responsive */
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ws],
+  )
+
+  const onCloseSession = useCallback(
+    async (id: string) => {
+      closeTab(id)
+      try {
+        await deleteSession(id)
+      } finally {
+        ws.removeSession(id)
+        void ws.refreshSessions()
+      }
+    },
+    [closeTab, ws],
+  )
+
+  const activeSession = activeId ? sessionById(activeId) : undefined
+
+  // ─────────── D29: pair a Claude chat to the editor (chrome-first) ───────────
+  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+
+  // The project's live Claude session on the SAME machine as the editor (so the
+  // AI edits the same files). Project editors match by projectPath; device
+  // editors match by device scope. Undefined ⇒ none yet (the effect creates one).
+  const pairedClaudeFor = useCallback(
+    (ed: Session): Session | undefined =>
+      ws.sessions.find(
+        (s) =>
+          s.kind === 'claude' &&
+          s.status !== 'exited' &&
+          s.agentId === ed.agentId &&
+          (ed.scope === 'device'
+            ? s.scope === 'device'
+            : s.scope !== 'device' && s.projectPath === ed.projectPath),
+      ),
+    [ws.sessions],
+  )
+
+  // Auto create-or-reuse the paired Claude when an editor is active and its
+  // machine has claude (D29: split open by default). Guarded so we never spawn
+  // two for one editor.
+  const pairingInFlight = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const ed = activeSession
+    if (!ed || ed.kind !== 'editor') return
+    if (!agentById.get(ed.agentId)?.capabilities?.claudeInstalled) return
+    if (pairedClaudeFor(ed)) return
+    if (pairingInFlight.current.has(ed.id)) return
+    pairingInFlight.current.add(ed.id)
+    ;(async () => {
+      try {
+        const res = await createSession({
+          kind: 'claude',
+          scope: ed.scope,
+          projectPath: ed.scope === 'device' ? undefined : ed.projectPath,
+          pinAgentId: ed.agentId,
+          userAgentId: ed.agentId,
+          title: `${ed.title || 'project'} · ai`,
+        })
+        ws.upsertSession(res.session)
+        void ws.refreshSessions()
+      } catch {
+        /* transient — the effect retries on the next sessions poll */
+      } finally {
+        pairingInFlight.current.delete(ed.id)
+      }
+    })()
+  }, [activeSession, agentById, pairedClaudeFor, ws])
+
+  const editorPaired =
+    activeSession?.kind === 'editor'
+      ? {
+          pairedClaudeId: pairedClaudeFor(activeSession)?.id ?? null,
+          editorAgentHasClaude: !!agentById.get(activeSession.agentId)?.capabilities?.claudeInstalled,
+        }
+      : { pairedClaudeId: null, editorAgentHasClaude: false }
+
+  return (
+    <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
+      {/* md+ : sidebar sits inline. below md : it's an overlay drawer. */}
+      <div className="hidden md:flex">
+        <Sidebar
+          projects={ws.projects}
+          sessions={ws.sessions}
+          agents={agents}
+          projectsState={ws.projectsState}
+          activeSessionId={activeId}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((c) => !c)}
+          onSelectSession={openSession}
+          onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
+          onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
+          onBeginNewProject={() => setWizardOpen(true)}
+          onOpenEditor={onOpenEditor}
+          onOpenDeviceEditor={onOpenDeviceEditor}
+          editorAvailable={editorAvailable}
+        />
+      </div>
+
+      {mobileNavOpen && (
+        <div className="absolute inset-0 z-40 flex md:hidden">
+          <Sidebar
+            projects={ws.projects}
+            sessions={ws.sessions}
+            agents={agents}
+            projectsState={ws.projectsState}
+            activeSessionId={activeId}
+            collapsed={false}
+            onToggleCollapse={() => setMobileNavOpen(false)}
+            onSelectSession={selectFromNav}
+            onNewSession={(p) => {
+              setNewTarget({ kind: 'project', project: p })
+              setMobileNavOpen(false)
+            }}
+            onNewDeviceSession={(a) => {
+              setNewTarget({ kind: 'device', agent: a })
+              setMobileNavOpen(false)
+            }}
+            onBeginNewProject={() => {
+              setWizardOpen(true)
+              setMobileNavOpen(false)
+            }}
+            onOpenEditor={onOpenEditor}
+            onOpenDeviceEditor={(a) => {
+              void onOpenDeviceEditor(a)
+              setMobileNavOpen(false)
+            }}
+            editorAvailable={editorAvailable}
+          />
+          <button
+            type="button"
+            aria-label="close projects"
+            onClick={() => setMobileNavOpen(false)}
+            className="flex-1 bg-black/50"
+          />
+        </div>
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* mobile-only bar to open the projects drawer */}
+        <button
+          type="button"
+          onClick={() => setMobileNavOpen(true)}
+          className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-950/60 px-3 py-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-400 md:hidden"
+        >
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round" />
+          </svg>
+          projects
+        </button>
+
+        {openIds.length > 0 && (
+          <TabStrip
+            openIds={openIds}
+            activeId={activeId}
+            sessions={ws.sessions}
+            onActivate={setActiveId}
+            onClose={closeTab}
+          />
+        )}
+
+        <div className="min-h-0 flex-1">
+          {activeSession ? (
+            <SessionPane
+              key={activeSession.id}
+              session={activeSession}
+              agents={agents}
+              onClose={() => onCloseSession(activeSession.id)}
+              onPin={(agentId) => onPin(activeSession.id, agentId)}
+              pairedClaudeId={editorPaired.pairedClaudeId}
+              editorAgentHasClaude={editorPaired.editorAgentHasClaude}
+            />
+          ) : (
+            <WorkspaceEmpty />
+          )}
+        </div>
+      </div>
+
+      {newTarget && (
+        <NewSessionDialog
+          target={newTarget}
+          agents={agents}
+          onClose={() => setNewTarget(null)}
+          onCreated={onCreated}
+        />
+      )}
+
+      {wizardOpen && (
+        <NewProjectWizard
+          projects={ws.projects}
+          onClose={() => setWizardOpen(false)}
+          onCreated={onProjectCreated}
+        />
+      )}
+    </div>
+  )
+}
+
+function TabStrip({
+  openIds,
+  activeId,
+  sessions,
+  onActivate,
+  onClose,
+}: {
+  openIds: string[]
+  activeId: string | null
+  sessions: Session[]
+  onActivate: (id: string) => void
+  onClose: (id: string) => void
+}) {
+  return (
+    <div className="term-scroll flex shrink-0 items-stretch gap-px overflow-x-auto border-b border-zinc-800 bg-zinc-950/70">
+      {openIds.map((id) => {
+        const s = sessions.find((x) => x.id === id)
+        if (!s) return null
+        const active = id === activeId
+        const cls = statusDotClass(s.status)
+        return (
+          <div
+            key={id}
+            className={`group flex shrink-0 items-center gap-2 border-r border-zinc-800 px-3 py-2 ${
+              active ? 'bg-zinc-900' : 'bg-transparent hover:bg-zinc-900/50'
+            }`}
+          >
+            <button type="button" onClick={() => onActivate(id)} className="flex items-center gap-2">
+              <span className="relative flex h-1.5 w-1.5 items-center justify-center">
+                {statusPulses(s.status) && <span className={`absolute inline-flex h-full w-full rounded-full opacity-70 animate-breathe ${cls}`} />}
+                <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${cls}`} />
+              </span>
+              <span className={`max-w-[12rem] truncate font-mono text-[11px] ${active ? 'text-zinc-100' : 'text-zinc-400'}`}>
+                {s.title || s.kind}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onClose(id)}
+              title="close tab"
+              className="grid h-4 w-4 place-items-center rounded text-zinc-600 opacity-0 hover:bg-zinc-800 hover:text-zinc-300 group-hover:opacity-100"
+            >
+              <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden>
+                <path d="M6 6l12 12M18 6 6 18" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function WorkspaceEmpty() {
+  return (
+    <div className="grid h-full place-items-center px-6 text-center">
+      <div className="max-w-sm">
+        <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-emerald-500/30 bg-emerald-500/10">
+          <svg viewBox="0 0 24 24" className="h-7 w-7 text-emerald-400" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+            <path d="M12 2 22 7v10L12 22 2 17V7z" strokeLinejoin="round" />
+            <path d="M2 7l10 5 10-5M12 12v10" strokeLinejoin="round" />
+          </svg>
+        </div>
+        <h2 className="mt-5 font-display text-lg font-semibold text-zinc-100">Open a session to begin</h2>
+        <p className="mt-1.5 font-mono text-[12px] leading-relaxed text-zinc-500">
+          pick a project on the left, then start a Claude or terminal session.
+          <br />
+          the mesh auto-places it on the best machine — you can always override.
+          <br />
+          …or pick a device to work on that machine directly.
+        </p>
+      </div>
+    </div>
+  )
+}

@@ -2,8 +2,8 @@
    breathe; waking nodes pull soft-yellow light along the mesh; warm travel toward active. */
 import { useCallback, useEffect, useRef } from 'react'
 import { Dot } from './primitives'
-import { STATUS_LABEL } from './data'
-import type { Machine } from './data'
+import { STATUS_LABEL } from './adapt'
+import type { Machine } from './adapt'
 
 interface Node {
   m: Machine

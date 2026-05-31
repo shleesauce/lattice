@@ -22,7 +22,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .stage { grid-column: 2; overflow: hidden; position: relative; background: var(--base); }
 
 /* ---- Left rail ---- */
-.rail { background: var(--base); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.rail { width: 248px; flex: none; background: var(--base); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+/* Fleet control room: machines rail | live mesh map | selected-machine panel */
+.cr3 { display: grid; grid-template-columns: 248px 1fr 332px; height: 100%; min-height: 0; }
+.cr3 .cr-map { min-width: 0; }
 .rail-head { display: flex; align-items: center; gap: 9px; padding: 14px 16px 12px; }
 .rail-head img { width: 26px; height: 26px; }
 .rail-head .wm { font-size: 18px; font-weight: 700; letter-spacing: -.03em; color: var(--fg-1); }

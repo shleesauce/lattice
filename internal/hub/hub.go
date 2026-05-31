@@ -152,6 +152,24 @@ func (h *Hub) broadcastFleet() {
 	})
 }
 
+// broadcastSessions pushes a fresh session snapshot to every dashboard client
+// so session mutations (archive/restore/delete) reflect instantly, ahead of the
+// workspace's periodic poll. Best-effort: a list error just skips the push.
+func (h *Hub) broadcastSessions() {
+	recs, err := h.store.ListSessions()
+	if err != nil {
+		return
+	}
+	out := make([]sessionView, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, toSessionView(rec))
+	}
+	h.registry.broadcast(map[string]any{
+		"type":     "sessions",
+		"sessions": out,
+	})
+}
+
 // fleet returns the dashboard view of every known machine: the UNION of agents
 // persisted in the store (shown offline with last-known metrics + MACs) and the
 // live registry (online + fresh metrics override). Offline/disconnected

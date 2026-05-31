@@ -325,6 +325,8 @@ export function Workspace({ agents }: Props) {
               void onOpenDeviceEditor(a)
               setMobileNavOpen(false)
             }}
+            onArchiveSession={onArchiveSession}
+            onDeleteSession={onDeleteSession}
             editorAvailable={editorAvailable}
           />
           <button

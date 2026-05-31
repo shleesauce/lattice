@@ -45,6 +45,7 @@ type SessionRecord struct {
 	// Scope is "project" (a synced ~/AI-Hub/projects/* worktree, auto-placeable)
 	// or "device" (machine-local work pinned to one box, cwd = that box's home).
 	Scope        string
+	Archived     bool
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 }
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	status            TEXT,
 	pinned            INTEGER DEFAULT 0,
 	scope             TEXT DEFAULT 'project',
+	archived          INTEGER DEFAULT 0,
 	created_at        TEXT,
 	last_active_at    TEXT
 );
@@ -129,6 +131,7 @@ func OpenStore(path string) (*Store, error) {
 	// SQLite has no "ADD COLUMN IF NOT EXISTS"; a duplicate-column error is benign.
 	for _, mig := range []string{
 		`ALTER TABLE sessions ADD COLUMN scope TEXT DEFAULT 'project'`,
+		`ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -250,9 +253,13 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 	if scope == "" {
 		scope = "project"
 	}
+	archived := 0
+	if rec.Archived {
+		archived = 1
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project_path=excluded.project_path,
 			kind=excluded.kind,
@@ -262,9 +269,10 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 			status=excluded.status,
 			pinned=excluded.pinned,
 			scope=excluded.scope,
+			archived=excluded.archived,
 			last_active_at=excluded.last_active_at
 	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
-		rec.Title, rec.Status, pinned, scope, created, active)
+		rec.Title, rec.Status, pinned, scope, archived, created, active)
 	return err
 }
 
@@ -272,6 +280,29 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 func (s *Store) UpdateSessionStatus(id, status string, at time.Time) error {
 	_, err := s.db.Exec(`UPDATE sessions SET status=?, last_active_at=? WHERE id=?`,
 		status, at.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// SetSessionArchived flips a session's archived flag. Archived sessions are
+// hidden from the active workspace tree but kept in the store (and DB), so they
+// can be restored or reviewed — unlike DeleteSession, which ends the process.
+func (s *Store) SetSessionArchived(id string, archived bool, at time.Time) error {
+	v := 0
+	if archived {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE sessions SET archived=?, last_active_at=? WHERE id=?`,
+		v, at.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// DeleteSessionRow permanently removes a session (and its audit rows) from the
+// store. The caller is responsible for ending the live process first.
+func (s *Store) DeleteSessionRow(id string) error {
+	if _, err := s.db.Exec(`DELETE FROM audit_log WHERE session_id=?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
 	return err
 }
 
@@ -287,7 +318,7 @@ func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
 // ListSessions returns every session row, newest activity first.
 func (s *Store) ListSessions() ([]SessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at
 		FROM sessions
 		ORDER BY last_active_at DESC
 	`)
@@ -310,7 +341,7 @@ func (s *Store) ListSessions() ([]SessionRecord, error) {
 // GetSession returns one session row by id. ok=false when no row exists.
 func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at
 		FROM sessions WHERE id=?
 	`, id)
 	rec, err := scanSession(row)
@@ -343,14 +374,16 @@ func scanSession(r scanRow) (SessionRecord, error) {
 	var (
 		rec       SessionRecord
 		pinned    int
+		archived  int
 		createdAt string
 		activeAt  string
 	)
 	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
-		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &createdAt, &activeAt); err != nil {
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &createdAt, &activeAt); err != nil {
 		return SessionRecord{}, err
 	}
 	rec.Pinned = pinned != 0
+	rec.Archived = archived != 0
 	if rec.Scope == "" {
 		rec.Scope = "project"
 	}

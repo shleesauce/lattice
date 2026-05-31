@@ -328,7 +328,6 @@ export function Sidebar({
                 <ArchivedSessionRow
                   key={s.id}
                   session={s}
-                  agentName={agents.find((a) => a.id === s.agentId)?.hostname ?? s.agentId}
                   onRestore={() => onArchiveSession(s.id, false)}
                   onDelete={() => confirmDelete(s)}
                 />
@@ -462,12 +461,10 @@ function ProjectSessionRow({
 
 function ArchivedSessionRow({
   session,
-  agentName,
   onRestore,
   onDelete,
 }: {
   session: Session
-  agentName: string
   onRestore: () => void
   onDelete: () => void
 }) {
@@ -475,9 +472,7 @@ function ArchivedSessionRow({
     <div className="srow" style={{ paddingLeft: 18, opacity: 0.7 }}>
       <span className={sessionDotClass(session.status)} />
       <KindGlyph kind={session.kind} />
-      <span className="nm" title={agentName}>
-        {session.title || session.kind}
-      </span>
+      <span className="nm">{session.title || session.kind}</span>
       <span className="srow-actions">
         <button
           type="button"

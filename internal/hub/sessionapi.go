@@ -70,6 +70,8 @@ func (h *Hub) handleSessions(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case action == "" && r.Method == http.MethodDelete:
 			h.handleDeleteSession(w, r, id)
+		case action == "" && r.Method == http.MethodPatch:
+			h.handleUpdateSession(w, r, id)
 		case action == "resume" && r.Method == http.MethodPost:
 			h.handleResumeSession(w, r, id)
 		default:
@@ -272,7 +274,46 @@ func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id str
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// ?purge=1 hard-removes the row (true delete) after ending the process;
+	// without it, delete is soft (process ends, row kept as exited).
+	if r.URL.Query().Get("purge") == "1" {
+		if err := h.store.DeleteSessionRow(id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	h.broadcastSessions()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleUpdateSession patches mutable session fields. Currently supports
+// {archived} to hide/restore a session from the active workspace tree.
+func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Archived *bool `json:"archived"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	rec, ok, err := h.store.GetSession(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if body.Archived != nil {
+		if err := h.store.SetSessionArchived(id, *body.Archived, time.Now()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		rec.Archived = *body.Archived
+	}
+	h.broadcastSessions()
+	writeJSON(w, http.StatusOK, toSessionView(rec))
 }
 
 // resumeBody is the POST /api/sessions/{id}/resume body.

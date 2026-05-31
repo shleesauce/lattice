@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Base body styling (bg / font / colors) is owned by the design system —
+   src/design/app.css, imported after this file in main.tsx. We keep only the
+   structural bits here so there is no competing palette/typography. */
 :root {
   color-scheme: dark;
 }
@@ -14,133 +17,94 @@ body,
 
 body {
   margin: 0;
-  background-color: #09090b;
-  color: #e4e4e7;
-  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Hairline grid texture — the differentiation anchor: an "ops console" lattice. */
+/* Faint hairline grid used by a couple of legacy modals (AddDevice). */
 .lattice-bg {
   background-image:
-    linear-gradient(to right, rgba(63, 63, 70, 0.18) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(63, 63, 70, 0.18) 1px, transparent 1px);
+    linear-gradient(to right, rgba(45, 226, 192, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(45, 226, 192, 0.05) 1px, transparent 1px);
   background-size: 44px 44px;
   background-position: center top;
 }
 
-/* Terminal scroll surface */
+/* Thin scroll surface (matches the design-system scrollbar tone). */
 .term-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #27272a transparent;
+  scrollbar-color: #1a2228 transparent;
 }
 .term-scroll::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 .term-scroll::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: #1a2228;
   border-radius: 8px;
 }
 
-/* ───────── Claude chat markdown ───────── */
-.md-body {
-  font-size: 13.5px;
-  line-height: 1.62;
-  color: #d4d4d8;
-  word-break: break-word;
-}
-.md-body > :first-child {
-  margin-top: 0;
-}
-.md-body > :last-child {
-  margin-bottom: 0;
-}
-.md-body p {
-  margin: 0.55em 0;
-}
-.md-body h1,
-.md-body h2,
-.md-body h3,
-.md-body h4 {
-  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+/* ───────── Claude chat markdown — scoped to the message bubble, on design tokens.
+   ChatItems renders sanitized markdown HTML directly inside .msg.ai .bubble, so we
+   style the child elements here with the Living Mesh palette (Hanken via inherit,
+   IBM Plex Mono for code, teal links). ───────── */
+.msg.ai .bubble p { margin: 0.55em 0; }
+.msg.ai .bubble > :first-child { margin-top: 0; }
+.msg.ai .bubble > :last-child { margin-bottom: 0; }
+.msg.ai .bubble h1,
+.msg.ai .bubble h2,
+.msg.ai .bubble h3,
+.msg.ai .bubble h4 {
+  font-family: var(--font-ui);
   font-weight: 600;
-  color: #f4f4f5;
+  color: var(--fg-1);
   margin: 1em 0 0.45em;
   line-height: 1.25;
+  letter-spacing: -0.01em;
 }
-.md-body h1 { font-size: 1.3em; }
-.md-body h2 { font-size: 1.15em; }
-.md-body h3 { font-size: 1.05em; }
-.md-body a {
-  color: #34d399;
+.msg.ai .bubble h1 { font-size: 1.3em; }
+.msg.ai .bubble h2 { font-size: 1.15em; }
+.msg.ai .bubble h3 { font-size: 1.05em; }
+.msg.ai .bubble a {
+  color: var(--teal);
   text-decoration: underline;
-  text-decoration-color: rgba(52, 211, 153, 0.4);
+  text-decoration-color: color-mix(in oklch, var(--teal) 40%, transparent);
   text-underline-offset: 2px;
 }
-.md-body a:hover { text-decoration-color: #34d399; }
-.md-body ul,
-.md-body ol {
-  margin: 0.5em 0;
-  padding-left: 1.4em;
-}
-.md-body li { margin: 0.22em 0; }
-.md-body ul { list-style: disc; }
-.md-body ol { list-style: decimal; }
-.md-body code {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 0.86em;
-  background: #18181b;
-  border: 1px solid #27272a;
-  border-radius: 4px;
-  padding: 0.08em 0.34em;
-  color: #6ee7b7;
-}
-.md-body pre {
+.msg.ai .bubble a:hover { text-decoration-color: var(--teal); }
+.msg.ai .bubble ul,
+.msg.ai .bubble ol { margin: 0.5em 0; padding-left: 1.4em; }
+.msg.ai .bubble li { margin: 0.22em 0; }
+.msg.ai .bubble ul { list-style: disc; }
+.msg.ai .bubble ol { list-style: decimal; }
+.msg.ai .bubble pre {
   margin: 0.7em 0;
-  background: #0c0c0e;
-  border: 1px solid #27272a;
-  border-radius: 8px;
+  background: var(--void);
+  border: 1px solid var(--border);
+  border-radius: 11px;
   padding: 0.8em 0.95em;
   overflow-x: auto;
 }
-.md-body pre code {
+.msg.ai .bubble pre code {
   background: transparent;
   border: 0;
   padding: 0;
-  color: #d4d4d8;
+  color: var(--fg-1);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.6;
 }
-.md-body blockquote {
+.msg.ai .bubble blockquote {
   margin: 0.6em 0;
   padding-left: 0.9em;
-  border-left: 2px solid #3f3f46;
-  color: #a1a1aa;
+  border-left: 2px solid var(--border);
+  color: var(--fg-3);
 }
-.md-body table {
-  border-collapse: collapse;
-  margin: 0.7em 0;
-  font-size: 12px;
-  width: 100%;
-}
-.md-body th,
-.md-body td {
-  border: 1px solid #27272a;
-  padding: 0.35em 0.6em;
-  text-align: left;
-}
-.md-body th {
-  background: #18181b;
-  font-weight: 600;
-  color: #e4e4e7;
-}
-.md-body hr {
-  border: 0;
-  border-top: 1px solid #27272a;
-  margin: 1em 0;
-}
+.msg.ai .bubble table { border-collapse: collapse; margin: 0.7em 0; font-size: 12px; width: 100%; }
+.msg.ai .bubble th,
+.msg.ai .bubble td { border: 1px solid var(--border); padding: 0.35em 0.6em; text-align: left; }
+.msg.ai .bubble th { background: var(--surface); font-weight: 600; color: var(--fg-1); }
+.msg.ai .bubble hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
 
-/* Typing cursor blink for streaming assistant text */
+/* Typing cursor blink for streaming assistant text (teal = Claude is generating). */
 @keyframes caret-blink {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0; }
@@ -151,6 +115,6 @@ body {
   height: 1.05em;
   margin-left: 1px;
   vertical-align: text-bottom;
-  background: #34d399;
+  background: var(--teal);
   animation: caret-blink 1.05s step-end infinite;
 }

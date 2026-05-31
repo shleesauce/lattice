@@ -50,7 +50,7 @@ export function SessionTerminal({ sessionId }: Props) {
     setPhase('connecting')
 
     const term = new Terminal({
-      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+      fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
       fontSize: 12.5,
       lineHeight: 1.2,
       cursorBlink: true,

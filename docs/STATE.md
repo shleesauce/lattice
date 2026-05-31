@@ -132,10 +132,13 @@ Hub-served tarball stays a clean future add (the resolver is the only seam that'
   `/Users/dylanstory/...`; the one-click Open-Editor locality-boosts to the user's machine so this isn't
   hit in practice. A proper fix = per-agent project-path remap, same latent issue as remote claude/term
   project sessions.)* **pc (Windows) still pending: needs the WSL2 spawn path (D30) + pc online.**
-- **Monaco-rail retirement (D31) — now UNBLOCKED on the Macs (code-server fleet-wide there).** Fully removing
-  ProjectFilesPanel/FileViewer/MonacoPanel/useFileBrowser now would regress file browsing on
-  studio/mbp/devices (no code-server there yet). Keep the read-only rail as a graceful fallback; retire
-  it once the editor is on every machine. Sidebar click-file → open-in-embedded-editor is the follow-on.
+- ✅ **Monaco-rail retirement DONE (D31, 2026-05-30).** Deleted the read-only rail
+  (ProjectFilesPanel/FileViewer/MonacoPanel/useFileBrowser) + dropped the `@monaco-editor/react` dep.
+  The embedded VS Code's own EXPLORER is now the file surface. **Project name-click → opens the editor**
+  (create-or-reuse, falls back to expand when no code-server anywhere); **device name-click → device
+  editor** when that machine has code-server (else expand). Verified on mini-ops via Playwright: click a
+  project → VS Code fills the pane, no separate rail, workbench mounts. *(Top-level Phase-2
+  `FileBrowser.tsx` + `/api/agents/{id}/files` left intact — separate dashboard feature.)*
 - Install code-server on studio/mbp/pc and verify the editor cross-machine (Windows = code-server inside
   WSL2, D30 — `codeserver.go`/`detectWSL` already gate this; the spawn path needs a WSL `wsl.exe -e`
   wrapper).

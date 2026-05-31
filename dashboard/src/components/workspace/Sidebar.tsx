@@ -9,21 +9,17 @@ interface Props {
   agents: Agent[]
   projectsState: LoadState
   activeSessionId: string | null
-  // Key of the browse target whose files are open in the right rail, so the
-  // matching row gets the emerald active treatment. Project rows use the
-  // project path; device rows use `device:<agentId>`.
-  activeFilesKey: string | null
   collapsed: boolean
   onToggleCollapse: () => void
   onSelectSession: (id: string) => void
   onNewSession: (project: Project) => void
   onNewDeviceSession: (agent: Agent) => void
   onBeginNewProject: () => void
-  onOpenProjectFiles: (project: Project) => void
-  onOpenDeviceFiles: (agent: Agent) => void
   // One-click embedded editor for a project (create-or-reuse). Shown only when
   // editorAvailable (some online machine has code-server).
   onOpenEditor: (project: Project) => void
+  // One-click embedded editor for a device (create-or-reuse).
+  onOpenDeviceEditor: (agent: Agent) => void
   editorAvailable: boolean
 }
 
@@ -35,16 +31,14 @@ export function Sidebar({
   agents,
   projectsState,
   activeSessionId,
-  activeFilesKey,
   collapsed,
   onToggleCollapse,
   onSelectSession,
   onNewSession,
   onNewDeviceSession,
   onBeginNewProject,
-  onOpenProjectFiles,
-  onOpenDeviceFiles,
   onOpenEditor,
+  onOpenDeviceEditor,
   editorAvailable,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -154,14 +148,9 @@ export function Sidebar({
         {filtered.map((p) => {
           const ps = sessionsByProject.get(p.path) ?? []
           const open = isOpen(p.path)
-          const filesActive = activeFilesKey === p.path
           return (
             <div key={p.path} className="mb-0.5">
-              <div
-                className={`group flex items-center rounded-md ${
-                  filesActive ? 'bg-emerald-500/10' : 'hover:bg-zinc-900/70'
-                }`}
-              >
+              <div className="group flex items-center rounded-md hover:bg-zinc-900/70">
                 <button
                   type="button"
                   onClick={() => setExpanded((e) => ({ ...e, [p.path]: !open }))}
@@ -172,16 +161,12 @@ export function Sidebar({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onOpenProjectFiles(p)}
-                  title="browse files"
+                  onClick={() => editorAvailable ? onOpenEditor(p) : setExpanded((e) => ({ ...e, [p.path]: !open }))}
+                  title={editorAvailable ? 'open editor' : 'expand / collapse'}
                   className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left"
                 >
-                  <FolderIcon active={filesActive || ps.length > 0} />
-                  <span
-                    className={`min-w-0 flex-1 truncate font-display text-[13px] ${
-                      filesActive ? 'text-emerald-200' : 'text-zinc-200'
-                    }`}
-                  >
+                  <FolderIcon active={ps.length > 0} />
+                  <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
                     {p.name}
                   </span>
                   {ps.length > 0 && (
@@ -190,16 +175,6 @@ export function Sidebar({
                     </span>
                   )}
                 </button>
-                {editorAvailable && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenEditor(p)}
-                    title="open editor"
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-800 hover:text-emerald-300 group-hover:opacity-100"
-                  >
-                    <CodeIcon />
-                  </button>
-                )}
                 <button
                   type="button"
                   onClick={() => onNewSession(p)}
@@ -252,13 +227,11 @@ export function Sidebar({
             const ds = sessionsByAgent.get(a.id) ?? []
             const open = isDeviceOpen(a.id)
             const hasClaude = a.capabilities?.claudeInstalled ?? false
-            const filesActive = activeFilesKey === `device:${a.id}`
+            const hasEditor = a.capabilities?.codeServerInstalled ?? false
             return (
               <div key={a.id} className="mb-0.5">
                 <div
-                  className={`group flex items-center rounded-md ${
-                    filesActive ? 'bg-emerald-500/10' : 'hover:bg-zinc-900/70'
-                  } ${a.online ? '' : 'opacity-50'}`}
+                  className={`group flex items-center rounded-md hover:bg-zinc-900/70 ${a.online ? '' : 'opacity-50'}`}
                   title={a.online ? undefined : 'offline — start a session once it comes online'}
                 >
                   <button
@@ -271,17 +244,17 @@ export function Sidebar({
                   </button>
                   <button
                     type="button"
-                    onClick={() => a.online && onOpenDeviceFiles(a)}
+                    onClick={() => {
+                      if (!a.online) return
+                      if (hasEditor) onOpenDeviceEditor(a)
+                      else setDeviceExpanded((e) => ({ ...e, [a.id]: !open }))
+                    }}
                     disabled={!a.online}
-                    title={a.online ? 'browse files' : undefined}
+                    title={a.online ? (hasEditor ? 'open editor' : 'expand / collapse') : undefined}
                     className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left disabled:cursor-default"
                   >
                     <DeviceDot online={a.online} />
-                    <span
-                      className={`min-w-0 flex-1 truncate font-display text-[13px] ${
-                        filesActive ? 'text-emerald-200' : 'text-zinc-200'
-                      }`}
-                    >
+                    <span className="min-w-0 flex-1 truncate font-display text-[13px] text-zinc-200">
                       {a.hostname || a.name || a.id.slice(0, 8)}
                     </span>
                     {hasClaude && (
@@ -434,14 +407,6 @@ function FolderIcon({ active }: { active: boolean }) {
   return (
     <svg viewBox="0 0 24 24" className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-emerald-400/80' : 'text-zinc-500'}`} fill="currentColor" aria-hidden>
       <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  )
-}
-
-function CodeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-      <path d="M8 7l-4 5 4 5M16 7l4 5-4 5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
-import { createSession, deleteSession, resumeSession, setSessionArchived } from '../../api'
-import { Sidebar } from './Sidebar'
+import {
+  createSession,
+  deleteSessionForever,
+  resumeSession,
+  setSessionArchived,
+  setSessionDeleted,
+  trashSession,
+} from '../../api'
+import { Sidebar, type SidebarMode } from './Sidebar'
+import { ConfirmDialog } from './ConfirmDialog'
 import { SessionPane } from './SessionPane'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionTarget } from './NewSessionDialog'
@@ -22,6 +30,8 @@ export function Workspace({ agents }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [mode, setMode] = useState<SidebarMode>('active')
+  const [confirmKill, setConfirmKill] = useState<Session | null>(null)
   // Below md the sidebar overlays the pane instead of sitting beside it.
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -169,34 +179,11 @@ export function Workspace({ agents }: Props) {
     [ws],
   )
 
-  const onCloseSession = useCallback(
-    async (id: string) => {
-      closeTab(id)
-      try {
-        await deleteSession(id)
-      } finally {
-        ws.removeSession(id)
-        void ws.refreshSessions()
-      }
-    },
-    [closeTab, ws],
-  )
+  // Closing a tab (the X) just removes the tab — it does NOT end or delete the
+  // session. Lifecycle changes go through archive / trash / delete below.
+  const onCloseSession = useCallback((id: string) => closeTab(id), [closeTab])
 
-  // Delete a session from the sidebar: drop its tab too, then hard-delete.
-  const onDeleteSession = useCallback(
-    async (id: string) => {
-      closeTab(id)
-      try {
-        await deleteSession(id)
-      } finally {
-        ws.removeSession(id)
-        void ws.refreshSessions()
-      }
-    },
-    [closeTab, ws],
-  )
-
-  // Archive (hide, keep) or restore a session. Archiving also drops its tab.
+  // Archive (hide, keep) or unarchive a session. Archiving drops its open tab.
   const onArchiveSession = useCallback(
     async (id: string, archived: boolean) => {
       if (archived) closeTab(id)
@@ -204,8 +191,50 @@ export function Workspace({ agents }: Props) {
         const updated = await setSessionArchived(id, archived)
         ws.upsertSession(updated)
       } catch {
-        /* surfaced via polling */
+        /* surfaced via the live WS / poll */
       } finally {
+        void ws.refreshSessions()
+      }
+    },
+    [closeTab, ws],
+  )
+
+  // Delete = move to Trash: ends the process, hides it, recoverable for 30 days.
+  const onTrashSession = useCallback(
+    async (id: string) => {
+      closeTab(id)
+      try {
+        await trashSession(id)
+      } finally {
+        void ws.refreshSessions()
+      }
+    },
+    [closeTab, ws],
+  )
+
+  // Restore a session out of Trash back into the active workspace.
+  const onRestoreTrash = useCallback(
+    async (id: string) => {
+      try {
+        const updated = await setSessionDeleted(id, false)
+        ws.upsertSession(updated)
+      } catch {
+        /* surfaced via the live WS / poll */
+      } finally {
+        void ws.refreshSessions()
+      }
+    },
+    [ws],
+  )
+
+  // Permanently delete (from Trash) — confirmed via the in-app dialog.
+  const onDeleteForever = useCallback(
+    async (id: string) => {
+      closeTab(id)
+      try {
+        await deleteSessionForever(id)
+      } finally {
+        ws.removeSession(id)
         void ws.refreshSessions()
       }
     },
@@ -284,6 +313,8 @@ export function Workspace({ agents }: Props) {
           projectsState={ws.projectsState}
           activeSessionId={activeId}
           collapsed={collapsed}
+          mode={mode}
+          onMode={setMode}
           onToggleCollapse={() => setCollapsed((c) => !c)}
           onSelectSession={openSession}
           onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
@@ -292,7 +323,9 @@ export function Workspace({ agents }: Props) {
           onOpenEditor={onOpenEditor}
           onOpenDeviceEditor={onOpenDeviceEditor}
           onArchiveSession={onArchiveSession}
-          onDeleteSession={onDeleteSession}
+          onTrashSession={onTrashSession}
+          onRestoreTrash={onRestoreTrash}
+          onDeleteForever={(s) => setConfirmKill(s)}
           editorAvailable={editorAvailable}
         />
       </div>
@@ -306,6 +339,8 @@ export function Workspace({ agents }: Props) {
             projectsState={ws.projectsState}
             activeSessionId={activeId}
             collapsed={false}
+            mode={mode}
+            onMode={setMode}
             onToggleCollapse={() => setMobileNavOpen(false)}
             onSelectSession={selectFromNav}
             onNewSession={(p) => {
@@ -326,7 +361,9 @@ export function Workspace({ agents }: Props) {
               setMobileNavOpen(false)
             }}
             onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
+            onTrashSession={onTrashSession}
+            onRestoreTrash={onRestoreTrash}
+            onDeleteForever={(s) => setConfirmKill(s)}
             editorAvailable={editorAvailable}
           />
           <button
@@ -392,6 +429,17 @@ export function Workspace({ agents }: Props) {
           projects={ws.projects}
           onClose={() => setWizardOpen(false)}
           onCreated={onProjectCreated}
+        />
+      )}
+
+      {confirmKill && (
+        <ConfirmDialog
+          title="Delete forever?"
+          body={`"${confirmKill.title || confirmKill.kind}" will be permanently deleted. This can't be undone.`}
+          confirmLabel="Delete forever"
+          danger
+          onConfirm={() => onDeleteForever(confirmKill.id)}
+          onClose={() => setConfirmKill(null)}
         />
       )}
     </div>

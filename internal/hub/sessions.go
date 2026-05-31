@@ -124,6 +124,7 @@ type sessionView struct {
 	Pinned          bool   `json:"pinned"`
 	Scope           string `json:"scope"`
 	Archived        bool   `json:"archived"`
+	DeletedAt       string `json:"deletedAt,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	LastActiveAt    string `json:"lastActiveAt"`
 }
@@ -141,9 +142,18 @@ func toSessionView(r SessionRecord) sessionView {
 		Pinned:          r.Pinned,
 		Scope:           r.Scope,
 		Archived:        r.Archived,
+		DeletedAt:       deletedAtStr(r.DeletedAt),
 		CreatedAt:       r.CreatedAt.UTC().Format(time.RFC3339),
 		LastActiveAt:    r.LastActiveAt.UTC().Format(time.RFC3339),
 	}
+}
+
+// deletedAtStr renders a trash timestamp, or "" when the session isn't trashed.
+func deletedAtStr(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // forceApproval reports whether approval mode must be forced for an agent: the

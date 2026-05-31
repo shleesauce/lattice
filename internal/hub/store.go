@@ -44,8 +44,11 @@ type SessionRecord struct {
 	Pinned          bool
 	// Scope is "project" (a synced ~/AI-Hub/projects/* worktree, auto-placeable)
 	// or "device" (machine-local work pinned to one box, cwd = that box's home).
-	Scope        string
-	Archived     bool
+	Scope    string
+	Archived bool
+	// DeletedAt is the trash timestamp. Zero ⇒ not trashed. A trashed session is
+	// hidden from the workspace (lives in Trash) and auto-purged after 30 days.
+	DeletedAt    time.Time
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 }
@@ -94,6 +97,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	pinned            INTEGER DEFAULT 0,
 	scope             TEXT DEFAULT 'project',
 	archived          INTEGER DEFAULT 0,
+	deleted_at        TEXT DEFAULT '',
 	created_at        TEXT,
 	last_active_at    TEXT
 );
@@ -132,6 +136,7 @@ func OpenStore(path string) (*Store, error) {
 	for _, mig := range []string{
 		`ALTER TABLE sessions ADD COLUMN scope TEXT DEFAULT 'project'`,
 		`ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN deleted_at TEXT DEFAULT ''`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -257,9 +262,13 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 	if rec.Archived {
 		archived = 1
 	}
+	deletedAt := ""
+	if !rec.DeletedAt.IsZero() {
+		deletedAt = rec.DeletedAt.UTC().Format(time.RFC3339)
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project_path=excluded.project_path,
 			kind=excluded.kind,
@@ -270,9 +279,10 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 			pinned=excluded.pinned,
 			scope=excluded.scope,
 			archived=excluded.archived,
+			deleted_at=excluded.deleted_at,
 			last_active_at=excluded.last_active_at
 	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
-		rec.Title, rec.Status, pinned, scope, archived, created, active)
+		rec.Title, rec.Status, pinned, scope, archived, deletedAt, created, active)
 	return err
 }
 
@@ -306,6 +316,45 @@ func (s *Store) DeleteSessionRow(id string) error {
 	return err
 }
 
+// SetSessionDeleted moves a session to Trash (deleted=true) or restores it
+// (deleted=false). Trashed sessions are hidden from the workspace and auto-purged
+// after the trash TTL; the row is kept so a trashed session can be restored.
+func (s *Store) SetSessionDeleted(id string, deleted bool, at time.Time) error {
+	val := ""
+	if deleted {
+		val = at.UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.Exec(`UPDATE sessions SET deleted_at=?, last_active_at=? WHERE id=?`,
+		val, at.UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// PurgeDeletedBefore permanently removes trashed sessions whose deleted_at is
+// older than cutoff (the trash TTL), with their audit rows. Returns the count.
+func (s *Store) PurgeDeletedBefore(cutoff time.Time) (int, error) {
+	c := cutoff.UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(`SELECT id FROM sessions WHERE deleted_at != '' AND deleted_at < ?`, c)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
+		if err := s.DeleteSessionRow(id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
 // SetSessionAgent rebinds a session to an agent and records its claude session
 // id. Used on (re-)placement and re-discovery so an orphaned session can resume
 // on a different machine under the same row id (D20).
@@ -318,7 +367,7 @@ func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
 // ListSessions returns every session row, newest activity first.
 func (s *Store) ListSessions() ([]SessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at
 		FROM sessions
 		ORDER BY last_active_at DESC
 	`)
@@ -341,7 +390,7 @@ func (s *Store) ListSessions() ([]SessionRecord, error) {
 // GetSession returns one session row by id. ok=false when no row exists.
 func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at
 		FROM sessions WHERE id=?
 	`, id)
 	rec, err := scanSession(row)
@@ -375,15 +424,21 @@ func scanSession(r scanRow) (SessionRecord, error) {
 		rec       SessionRecord
 		pinned    int
 		archived  int
+		deletedAt string
 		createdAt string
 		activeAt  string
 	)
 	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
-		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &createdAt, &activeAt); err != nil {
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &deletedAt, &createdAt, &activeAt); err != nil {
 		return SessionRecord{}, err
 	}
 	rec.Pinned = pinned != 0
 	rec.Archived = archived != 0
+	if deletedAt != "" {
+		if t, err := time.Parse(time.RFC3339, deletedAt); err == nil {
+			rec.DeletedAt = t
+		}
+	}
 	if rec.Scope == "" {
 		rec.Scope = "project"
 	}

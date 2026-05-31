@@ -133,7 +133,9 @@ export async function createSession(req: CreateSessionRequest): Promise<SessionW
   return json<SessionWithPlacement>(res)
 }
 
-export async function deleteSession(id: string): Promise<void> {
+// Trash a session: ends the process and moves it to Trash (recoverable; the hub
+// auto-purges after 30 days). This is the default DELETE.
+export async function trashSession(id: string): Promise<void> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok && res.status !== 404) {
     const body = await res.text().catch(() => '')
@@ -141,13 +143,32 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
-// Archive (hide, keep) or restore a session via PATCH. Distinct from delete:
-// the row survives and can be restored.
+// Permanently delete a session ("Delete forever" from Trash): drops the row.
+export async function deleteSessionForever(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}?purge=1`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 404) {
+    const body = await res.text().catch(() => '')
+    throw new Error(body || `${res.status} ${res.statusText}`)
+  }
+}
+
+// Archive (hide, keep) or restore a session via PATCH. The row survives.
 export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ archived }),
+  })
+  return json<Session>(res)
+}
+
+// Restore a session out of Trash (deleted=false). Re-trashing goes through
+// trashSession (DELETE) instead.
+export async function setSessionDeleted(id: string, deleted: boolean): Promise<Session> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deleted }),
   })
   return json<Session>(res)
 }

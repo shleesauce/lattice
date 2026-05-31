@@ -274,10 +274,16 @@ func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id str
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	// ?purge=1 hard-removes the row (true delete) after ending the process;
-	// without it, delete is soft (process ends, row kept as exited).
 	if r.URL.Query().Get("purge") == "1" {
+		// Permanent delete (used by "Delete forever" in Trash): drop the row.
 		if err := h.store.DeleteSessionRow(id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	} else {
+		// Default delete = move to Trash: ends the process, hides the session,
+		// and auto-purges after the 30-day TTL. Recoverable until then.
+		if err := h.store.SetSessionDeleted(id, true, time.Now()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -286,11 +292,12 @@ func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id str
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleUpdateSession patches mutable session fields. Currently supports
-// {archived} to hide/restore a session from the active workspace tree.
+// handleUpdateSession patches mutable session fields: {archived} hides/restores
+// from the active tree, {deleted} trashes/restores from Trash.
 func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		Archived *bool `json:"archived"`
+		Deleted  *bool `json:"deleted"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
@@ -311,6 +318,17 @@ func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id str
 			return
 		}
 		rec.Archived = *body.Archived
+	}
+	if body.Deleted != nil {
+		if err := h.store.SetSessionDeleted(id, *body.Deleted, time.Now()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if *body.Deleted {
+			rec.DeletedAt = time.Now()
+		} else {
+			rec.DeletedAt = time.Time{}
+		}
 	}
 	h.broadcastSessions()
 	writeJSON(w, http.StatusOK, toSessionView(rec))

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchProjects, fetchSessions } from './api'
+import { dashboardWsUrl, fetchProjects, fetchSessions } from './api'
 import type { Project, Session } from './types'
 
 export type LoadState = 'loading' | 'ready' | 'error'
@@ -75,9 +75,33 @@ export function useWorkspace(): WorkspaceState {
     void refreshProjects()
     void refreshSessions()
     const t = setInterval(() => void refreshSessions(), SESSION_POLL_MS)
+
+    // Real-time: the hub broadcasts a full session snapshot on every mutation
+    // (create / archive / trash / restore / status change), so the list reflects
+    // instantly instead of waiting for the next poll. Poll stays as a fallback.
+    let ws: WebSocket | null = null
+    try {
+      ws = new WebSocket(dashboardWsUrl())
+      ws.onmessage = (ev) => {
+        if (!aliveRef.current) return
+        try {
+          const m = JSON.parse(ev.data as string)
+          if (m.type === 'sessions' && Array.isArray(m.sessions)) {
+            setSessions(m.sessions as Session[])
+            setSessionsState('ready')
+          }
+        } catch {
+          /* ignore non-JSON frames */
+        }
+      }
+    } catch {
+      /* WS optional — polling covers it */
+    }
+
     return () => {
       aliveRef.current = false
       clearInterval(t)
+      ws?.close()
     }
   }, [refreshProjects, refreshSessions])
 

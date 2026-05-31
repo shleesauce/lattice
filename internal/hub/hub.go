@@ -32,6 +32,11 @@ const offlineAfter = 15 * time.Second
 // sweepInterval is how often the hub re-evaluates agent liveness.
 const sweepInterval = 5 * time.Second
 
+// trashTTL is how long a trashed (soft-deleted) session lives before it is
+// permanently purged. trashSweepInterval is how often the purge runs.
+const trashTTL = 30 * 24 * time.Hour
+const trashSweepInterval = 1 * time.Hour
+
 // agentReadTimeout bounds how long the hub waits for the next frame from an
 // agent. Agents heartbeat every 5s, so a healthy link refreshes this on every
 // read; a half-open socket (sleeping laptop, network partition) trips it and
@@ -100,6 +105,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	srv := &http.Server{Addr: *addr, Handler: mux}
 
 	go h.sweepLoop(ctx)
+	go h.trashSweepLoop(ctx)
 
 	log.Printf("lattice hub %s starting", version)
 	log.Printf("  listen: %s", *addr)
@@ -140,6 +146,33 @@ func (h *Hub) sweepLoop(ctx context.Context) {
 			if h.registry.sweepOffline(offlineAfter) {
 				h.broadcastFleet()
 			}
+		}
+	}
+}
+
+// trashSweepLoop permanently purges trashed sessions older than trashTTL (30d).
+// Runs once at startup, then hourly. Broadcasts only when something was purged.
+func (h *Hub) trashSweepLoop(ctx context.Context) {
+	purge := func() {
+		n, err := h.store.PurgeDeletedBefore(time.Now().Add(-trashTTL))
+		if err != nil {
+			log.Printf("trash sweep: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("trash sweep: purged %d session(s) older than 30d", n)
+			h.broadcastSessions()
+		}
+	}
+	purge()
+	ticker := time.NewTicker(trashSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			purge()
 		}
 	}
 }

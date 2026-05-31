@@ -17,6 +17,8 @@ interface Props {
   onBeginNewProject: () => void
   onOpenEditor: (project: Project) => void
   onOpenDeviceEditor: (agent: Agent) => void
+  onArchiveSession: (id: string, archived: boolean) => void
+  onDeleteSession: (id: string) => void
   editorAvailable: boolean
 }
 
@@ -57,13 +59,30 @@ export function Sidebar({
   onBeginNewProject,
   onOpenEditor,
   onOpenDeviceEditor,
+  onArchiveSession,
+  onDeleteSession,
   editorAvailable,
 }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
 
+  // Confirm a destructive delete inline (no native dialog).
+  const confirmDelete = (s: Session) => {
+    if (window.confirm(`Delete session "${s.title || s.kind}"? This removes it permanently.`)) {
+      onDeleteSession(s.id)
+    }
+  }
+
+  // Active (non-archived) project sessions feed the tree; archived ones are
+  // collected separately for the Archived section.
   const projectSessions = useMemo(
-    () => sessions.filter((s) => s.scope !== 'device'),
+    () => sessions.filter((s) => s.scope !== 'device' && !s.archived),
+    [sessions],
+  )
+
+  const archivedSessions = useMemo(
+    () => sessions.filter((s) => s.archived),
     [sessions],
   )
 
@@ -281,6 +300,8 @@ export function Sidebar({
                         session={s}
                         active={s.id === activeSessionId}
                         onSelect={() => onSelectSession(s.id)}
+                        onArchive={() => onArchiveSession(s.id, true)}
+                        onDelete={() => confirmDelete(s)}
                       />
                     ))
                   )}
@@ -289,6 +310,31 @@ export function Sidebar({
             </div>
           )
         })}
+
+        {/* ── ARCHIVED ─────────────────────────────────────────── */}
+        {archivedSessions.length > 0 && (
+          <>
+            <div
+              className="rail-sec"
+              style={{ marginTop: 8, cursor: 'pointer' }}
+              onClick={() => setShowArchived((v) => !v)}
+            >
+              <Caret open={showArchived} />
+              <span style={{ marginLeft: 2 }}>Archived</span>
+              <span className="ct">{archivedSessions.length}</span>
+            </div>
+            {showArchived &&
+              archivedSessions.map((s) => (
+                <ArchivedSessionRow
+                  key={s.id}
+                  session={s}
+                  agentName={agents.find((a) => a.id === s.agentId)?.hostname ?? s.agentId}
+                  onRestore={() => onArchiveSession(s.id, false)}
+                  onDelete={() => confirmDelete(s)}
+                />
+              ))}
+          </>
+        )}
 
         {/* ── DEVICES ──────────────────────────────────────────── */}
         <div className="rail-sec" style={{ marginTop: 8 }}>
@@ -371,22 +417,120 @@ function ProjectSessionRow({
   session,
   active,
   onSelect,
+  onArchive,
+  onDelete,
 }: {
   session: Session
   active: boolean
   onSelect: () => void
+  onArchive: () => void
+  onDelete: () => void
 }) {
   const dotCls = sessionDotClass(session.status)
   return (
-    <div
-      className={`srow${active ? ' on' : ''}`}
-      onClick={onSelect}
-      style={{ paddingLeft: 18 }}
-    >
+    <div className={`srow${active ? ' on' : ''}`} onClick={onSelect} style={{ paddingLeft: 18 }}>
       <span className={dotCls} />
       <KindGlyph kind={session.kind} />
       <span className="nm">{session.title || session.kind}</span>
+      <span className="srow-actions">
+        <button
+          type="button"
+          className="srow-act"
+          title="Archive session"
+          onClick={(e) => {
+            e.stopPropagation()
+            onArchive()
+          }}
+        >
+          <ArchiveIcon />
+        </button>
+        <button
+          type="button"
+          className="srow-act danger"
+          title="Delete session"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+        >
+          <TrashIcon />
+        </button>
+      </span>
     </div>
+  )
+}
+
+function ArchivedSessionRow({
+  session,
+  agentName,
+  onRestore,
+  onDelete,
+}: {
+  session: Session
+  agentName: string
+  onRestore: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div className="srow" style={{ paddingLeft: 18, opacity: 0.7 }}>
+      <span className={sessionDotClass(session.status)} />
+      <KindGlyph kind={session.kind} />
+      <span className="nm" title={agentName}>
+        {session.title || session.kind}
+      </span>
+      <span className="srow-actions">
+        <button
+          type="button"
+          className="srow-act"
+          title="Restore session"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRestore()
+          }}
+        >
+          <RestoreIcon />
+        </button>
+        <button
+          type="button"
+          className="srow-act danger"
+          title="Delete session"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+        >
+          <TrashIcon />
+        </button>
+      </span>
+    </div>
+  )
+}
+
+function ArchiveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+      <path d="M10 12h4" />
+    </svg>
+  )
+}
+
+function RestoreIcon() {
+  return (
+    <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 7v6h6" />
+      <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
+    </svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
   )
 }
 

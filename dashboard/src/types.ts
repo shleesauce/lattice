@@ -144,6 +144,7 @@ export interface Session {
   title?: string
   status: SessionStatus
   pinned: boolean
+  archived?: boolean
   createdAt: string // RFC3339
   lastActiveAt: string // RFC3339
 }

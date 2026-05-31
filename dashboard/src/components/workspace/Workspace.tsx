@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
 import { useWorkspace } from '../../useWorkspace'
-import { createSession, deleteSession, resumeSession } from '../../api'
+import { createSession, deleteSession, resumeSession, setSessionArchived } from '../../api'
 import { Sidebar } from './Sidebar'
 import { SessionPane } from './SessionPane'
 import { NewSessionDialog } from './NewSessionDialog'
@@ -182,6 +182,36 @@ export function Workspace({ agents }: Props) {
     [closeTab, ws],
   )
 
+  // Delete a session from the sidebar: drop its tab too, then hard-delete.
+  const onDeleteSession = useCallback(
+    async (id: string) => {
+      closeTab(id)
+      try {
+        await deleteSession(id)
+      } finally {
+        ws.removeSession(id)
+        void ws.refreshSessions()
+      }
+    },
+    [closeTab, ws],
+  )
+
+  // Archive (hide, keep) or restore a session. Archiving also drops its tab.
+  const onArchiveSession = useCallback(
+    async (id: string, archived: boolean) => {
+      if (archived) closeTab(id)
+      try {
+        const updated = await setSessionArchived(id, archived)
+        ws.upsertSession(updated)
+      } catch {
+        /* surfaced via polling */
+      } finally {
+        void ws.refreshSessions()
+      }
+    },
+    [closeTab, ws],
+  )
+
   const activeSession = activeId ? sessionById(activeId) : undefined
 
   // ─────────── D29: pair a Claude chat to the editor (chrome-first) ───────────
@@ -261,6 +291,8 @@ export function Workspace({ agents }: Props) {
           onBeginNewProject={() => setWizardOpen(true)}
           onOpenEditor={onOpenEditor}
           onOpenDeviceEditor={onOpenDeviceEditor}
+          onArchiveSession={onArchiveSession}
+          onDeleteSession={onDeleteSession}
           editorAvailable={editorAvailable}
         />
       </div>

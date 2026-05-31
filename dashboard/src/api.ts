@@ -141,6 +141,17 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
+// Archive (hide, keep) or restore a session via PATCH. Distinct from delete:
+// the row survives and can be restored.
+export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  })
+  return json<Session>(res)
+}
+
 export async function resumeSession(
   id: string,
   opts: { userAgentId?: string; pinAgentId?: string } = {},

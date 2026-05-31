@@ -61,6 +61,12 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .srow.on { background: var(--surface); }
 .srow .nm { font-family: var(--font-mono); font-size: 12px; color: var(--fg-1); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow .loc { font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); }
+/* per-session hover actions (archive / restore / delete) */
+.srow-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0; transition: opacity var(--dur) var(--ease); flex: none; }
+.srow:hover .srow-actions { opacity: 1; }
+.srow-act { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; color: var(--fg-3); transition: all var(--dur) var(--ease); }
+.srow-act:hover { background: var(--raised-2); color: var(--fg-1); }
+.srow-act.danger:hover { background: color-mix(in oklch, var(--st-danger) 16%, transparent); color: var(--st-danger); }
 
 /* status dot + breathing */
 .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }

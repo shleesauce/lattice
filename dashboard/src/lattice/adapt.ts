@@ -1,7 +1,7 @@
-/* Adapt the hub's real Agent + Session data into the mesh control-room shape
-   (the "Machine" the FleetMap canvas and side panel render). Pure derivation —
-   no mock data. */
-import type { Agent, Session } from '../types'
+/* Adapt the hub's unified Device list (agents + Tailscale + SSH, /api/devices)
+   plus live Sessions into the mesh control-room shape (the "Machine" the
+   FleetMap canvas + side panel render). Pure derivation — no mock data. */
+import type { Device, Session } from '../types'
 import { humanUptime } from '../format'
 
 export interface MachineSession {
@@ -16,9 +16,10 @@ export interface Machine {
   label: string
   hostname: string
   kind: string
-  status: string // live | idle | detached | exited(offline)
+  status: string // live | idle | detached | reachable | starting | exited(offline)
   online: boolean
   offline: boolean
+  hasAgent: boolean
   cores: number
   cpu: number // 0–100, derived from loadAvg1 / cpuCount
   memUsed: number // GB
@@ -28,6 +29,12 @@ export interface Machine {
   locLabel: string
   uptime: string
   mac?: string
+  os: string
+  sources: string[] // agent | tailscale | ssh
+  sshAlias?: string
+  sshUser?: string
+  sshHost?: string
+  tailscaleIP?: string
   hasClaude: boolean
   hasEditor: boolean
   sessions: MachineSession[]
@@ -37,20 +44,13 @@ export interface Machine {
 
 const GiB = 1024 * 1024 * 1024
 
-function kindFor(a: Agent): string {
-  const n = `${a.name} ${a.hostname}`.toLowerCase()
-  if (/iphone|ipad|phone|android|pixel/.test(n)) return 'smartphone'
-  if (/mbp|macbook|book|air|laptop/.test(n)) return 'monitor'
-  return 'server'
-}
-
-// Stable, pleasing scatter: a ring around centre, the local/hub node pulled in.
+// Stable, pleasing scatter: golden-angle ring around centre, local node pulled in.
 function layout(i: number, n: number): { x: number; y: number } {
-  if (n === 1) return { x: 0.42, y: 0.46 }
-  const golden = 2.399963229728653 // golden angle (rad) — even, non-clumping spread
+  if (n <= 1) return { x: 0.46, y: 0.48 }
+  const golden = 2.399963229728653
   const a = i * golden + 0.6
-  const r = 0.26 + 0.12 * ((i % 3) / 2) // vary radius so edges aren't all equal
-  return { x: 0.46 + r * Math.cos(a), y: 0.48 + r * 0.82 * Math.sin(a) }
+  const r = 0.24 + 0.13 * ((i % 3) / 2)
+  return { x: 0.47 + r * Math.cos(a), y: 0.49 + r * 0.82 * Math.sin(a) }
 }
 
 function durSince(iso: string): string {
@@ -59,51 +59,58 @@ function durSince(iso: string): string {
   return humanUptime(Math.max(0, (Date.now() - t) / 1000))
 }
 
-export function agentsToMachines(agents: Agent[], sessions: Session[]): Machine[] {
-  // Hub/local first, then online, then offline; stable by name within a group.
-  const ordered = [...agents].sort((a, b) => {
-    if (!!a.local !== !!b.local) return a.local ? -1 : 1
+export function devicesToMachines(devices: Device[], sessions: Session[]): Machine[] {
+  // Order: local/hub first, then online, then by name — so layout is stable.
+  const ordered = [...devices].sort((a, b) => {
+    if (a.local !== b.local) return a.local ? -1 : 1
     if (a.online !== b.online) return a.online ? -1 : 1
-    return (a.name || a.hostname).localeCompare(b.name || b.hostname)
+    if (a.hasAgent !== b.hasAgent) return a.hasAgent ? -1 : 1
+    return a.name.localeCompare(b.name)
   })
 
-  return ordered.map((a, i) => {
-    const mine = sessions.filter((s) => s.agentId === a.id && s.status !== 'exited')
+  return ordered.map((d, i) => {
+    // Sessions only attach to agent-backed devices (matched by agentId).
+    const mine = d.hasAgent && d.agentId ? sessions.filter((s) => s.agentId === d.agentId && s.status !== 'exited') : []
     const live = mine.filter((s) => s.status === 'live')
     const detached = mine.filter((s) => s.status === 'detached' || s.status === 'orphaned')
-    const status = !a.online
-      ? 'exited'
-      : live.length > 0
-        ? 'live'
-        : detached.length > 0
-          ? 'detached'
-          : 'idle'
+
+    let status: string
+    if (!d.online) status = 'exited'
+    else if (live.length > 0) status = 'live'
+    else if (d.hasAgent) status = detached.length > 0 ? 'detached' : 'idle'
+    else status = 'reachable' // online via tailscale/ssh, no agent
+
+    const memTotal = (d.memTotal ?? 0) / GiB
+    const memUsed = (memTotal * (d.memUsedPct ?? 0)) / 100
     const pos = layout(i, ordered.length)
+
     return {
-      id: a.id,
-      label: a.name || a.hostname,
-      hostname: a.hostname,
-      kind: kindFor(a),
+      id: d.id,
+      label: d.name,
+      hostname: d.host,
+      kind: d.kind,
       status,
-      online: a.online,
-      offline: !a.online,
-      cores: a.cpuCount || 0,
-      cpu: a.cpuCount ? Math.min(100, Math.max(0, Math.round((a.loadAvg1 / a.cpuCount) * 100))) : 0,
-      memUsed: (a.memTotal * (a.memUsedPct / 100)) / GiB,
-      memTotal: a.memTotal / GiB,
+      online: d.online,
+      offline: !d.online,
+      hasAgent: d.hasAgent,
+      cores: d.cpuCount ?? 0,
+      cpu: d.cpuCount ? Math.min(100, Math.max(0, Math.round(((d.loadAvg1 ?? 0) / d.cpuCount) * 100))) : 0,
+      memUsed,
+      memTotal,
       net: '—',
-      locality: a.local ? 0 : 1,
-      locLabel: a.local ? 'this mac' : a.online ? 'lan' : 'offline',
-      uptime: a.online ? humanUptime(a.uptimeSec) : '—',
-      mac: a.macs?.[0],
-      hasClaude: a.capabilities?.claudeInstalled ?? false,
-      hasEditor: a.capabilities?.codeServerInstalled ?? false,
-      sessions: mine.map((s) => ({
-        id: s.id,
-        name: s.title || s.kind,
-        status: s.status,
-        dur: durSince(s.createdAt),
-      })),
+      locality: d.local ? 0 : 1,
+      locLabel: d.local ? 'this mac' : d.online ? (d.sources.includes('tailscale') ? 'tailnet' : 'lan') : 'offline',
+      uptime: d.online && d.uptimeSec ? humanUptime(d.uptimeSec) : '—',
+      mac: d.macs?.[0],
+      os: d.os,
+      sources: d.sources,
+      sshAlias: d.sshAlias,
+      sshUser: d.sshUser,
+      sshHost: d.sshHost,
+      tailscaleIP: d.tailscaleIP,
+      hasClaude: d.capabilities?.claudeInstalled ?? false,
+      hasEditor: d.capabilities?.codeServerInstalled ?? false,
+      sessions: mine.map((s) => ({ id: s.id, name: s.title || s.kind, status: s.status, dur: durSince(s.createdAt) })),
       x: pos.x,
       y: pos.y,
     }
@@ -112,13 +119,13 @@ export function agentsToMachines(agents: Agent[], sessions: Session[]): Machine[
 
 export const STATUS_LABEL: Record<string, string> = {
   live: 'live', starting: 'waking', detached: 'detached',
-  idle: 'idle', orphaned: 'orphaned', exited: 'offline',
+  idle: 'idle', orphaned: 'orphaned', reachable: 'reachable', exited: 'offline',
 }
 
 /* Local placement-fit heuristic for the side panel's bar (the New-session
    dialog uses the hub's real /api/placement scoring). free RAM + headroom + locality. */
 export function fitScore(m: Machine): number {
-  if (m.offline) return 0
+  if (m.offline || !m.hasAgent) return 0
   const freeRAM = m.memTotal - m.memUsed
   const ramScore = Math.min(freeRAM / 64, 1) * 40
   const loadScore = (1 - Math.min(m.cpu / 100, 1)) * 35

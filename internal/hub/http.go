@@ -27,6 +27,7 @@ func (h *Hub) routes() http.Handler {
 
 	mux.HandleFunc("/api/health", h.handleHealth)
 	mux.HandleFunc("/api/fleet", h.handleFleet)
+	mux.HandleFunc("/api/devices", h.handleDevices)
 	mux.HandleFunc("/api/enroll", h.handleEnroll)
 	mux.HandleFunc("/api/agents/", h.handleAgentSub)
 
@@ -68,6 +69,16 @@ func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Hub) handleFleet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents": h.fleet(),
+	})
+}
+
+// handleDevices returns the unified fleet: lattice agents merged with Tailscale
+// peers and SSH-config hosts, deduped per physical machine. This is the
+// superset the dashboard fleet map renders — including phones and machines that
+// don't run the lattice agent.
+func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"devices": h.devices(),
 	})
 }
 

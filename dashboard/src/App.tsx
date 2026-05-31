@@ -1,10 +1,12 @@
-/* App root — real fleet + workspace. Fleet view is the live mesh control room;
+/* App root — unified fleet + workspace. Fleet view is the live mesh control
+   room over /api/devices (agents + Tailscale + SSH: Macs, PCs, phones).
    Workspace view is the real session workspace (Claude / terminal / editor). */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFleet, type ConnState } from './useFleet'
+import { useDevices } from './useDevices'
 import { useWorkspace } from './useWorkspace'
 import { wakeAgent } from './api'
-import { agentsToMachines } from './lattice/adapt'
+import { devicesToMachines, type Machine } from './lattice/adapt'
 import { Fleet } from './lattice/Fleet'
 import { Workspace } from './components/workspace/Workspace'
 import { NewSessionDialog, type NewSessionTarget } from './components/workspace/NewSessionDialog'
@@ -16,6 +18,7 @@ type View = 'fleet' | 'workspace'
 
 export default function App() {
   const { agents, health, conn } = useFleet()
+  const { devices } = useDevices()
   const ws = useWorkspace()
   const [view, setView] = useState<View>('fleet')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -30,25 +33,25 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), 3000)
   }
 
-  // Real machines for the mesh map, with any in-flight wakes shown as "starting".
+  // Unified device list → mesh machines, with in-flight wakes shown as "starting".
   const machines = useMemo(() => {
-    const base = agentsToMachines(agents, ws.sessions)
+    const base = devicesToMachines(devices, ws.sessions)
     if (wakingIds.size === 0) return base
     return base.map((m) => (wakingIds.has(m.id) && m.offline ? { ...m, status: 'starting', offline: false } : m))
-  }, [agents, ws.sessions, wakingIds])
+  }, [devices, ws.sessions, wakingIds])
 
-  const onlineCount = agents.filter((a) => a.online).length
+  const onlineCount = machines.filter((m) => m.online).length
   const liveSessions = ws.sessions.filter((s) => s.status === 'live').length
   const senderId = useMemo(() => agents.find((a) => a.online)?.id ?? null, [agents])
 
-  // Default-select the hub/local machine (or first) once the fleet lands.
+  // Default-select the hub/local machine (or first online) once devices land.
   useEffect(() => {
     if (selectedId && machines.some((m) => m.id === selectedId)) return
     const first = machines.find((m) => m.locality === 0) ?? machines.find((m) => m.online) ?? machines[0]
     setSelectedId(first ? first.id : null)
   }, [machines, selectedId])
 
-  // Recent projects = those with an active session, else the first few.
+  // Recent projects = those with an active session, else first few.
   const recentProjects = useMemo(() => {
     const active = ws.sessions.filter((s) => s.status !== 'exited' && s.projectPath)
     const names: string[] = []
@@ -61,9 +64,8 @@ export default function App() {
     return names.slice(0, 5)
   }, [ws.sessions, ws.projects])
 
-  const onWake = (mId: string) => {
-    const m = machines.find((x) => x.id === mId)
-    if (!m || !m.mac || !senderId) return
+  const onWake = (m: Machine) => {
+    if (!m.mac || !senderId) return
     setWakingIds((s) => new Set(s).add(m.id))
     flash(`Waking ${m.label} → routing power through the mesh`)
     void wakeAgent(senderId, m.mac).catch(() => {})
@@ -76,13 +78,16 @@ export default function App() {
     }, 9000)
   }
 
-  const openDeviceSession = (mId: string) => {
-    const a = agents.find((x) => x.id === mId)
-    if (!a) return
-    if (!a.online) {
-      onWake(mId)
+  // Start a session on a device. Only agent-backed machines can host a lattice
+  // session; for others we surface their SSH reach instead.
+  const onNewSession = (m: Machine) => {
+    if (!m.hasAgent || !m.agentId) {
+      if (m.sshAlias) flash(`${m.label}: ssh ${m.sshAlias}  (no lattice agent — install to run sessions here)`)
+      else flash(`${m.label} has no lattice agent — install it to run sessions here`)
       return
     }
+    const a = agents.find((x) => x.id === m.agentId)
+    if (!a) return
     setNewTarget({ kind: 'device', agent: a })
   }
 
@@ -99,8 +104,8 @@ export default function App() {
             connLabel={conn === 'live' ? 'mesh' : conn === 'connecting' ? 'linking' : 'offline'}
             canWake={!!senderId}
             onSelect={setSelectedId}
-            onWake={(m) => onWake(m.id)}
-            onNewSession={(m) => openDeviceSession(m.id)}
+            onWake={onWake}
+            onNewSession={onNewSession}
             onOpenWorkspace={() => setView('workspace')}
           />
         ) : (

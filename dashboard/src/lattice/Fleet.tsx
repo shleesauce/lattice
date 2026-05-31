@@ -233,7 +233,7 @@ function SidePanel({
         </div>
       )}
 
-      {!m.offline && !waking && (
+      {!m.offline && !waking && m.hasAgent && (
         <div className="panel">
           <div className="panel-h">
             <span className="t">Sessions</span>
@@ -261,7 +261,7 @@ function SidePanel({
         </div>
       )}
 
-      {!m.offline && !waking && (
+      {!m.offline && !waking && m.hasAgent && (
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" style={{ flex: 1, justifyContent: 'center' }} onClick={onOpenWorkspace}>
             <Icon name="terminal" />
@@ -273,6 +273,41 @@ function SidePanel({
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+// Online device with no lattice agent (Tailscale/SSH-reachable only): show how
+// to reach it + how to enroll it, instead of agent-only metrics/sessions.
+function ReachableCard({ m }: { m: Machine }) {
+  return (
+    <div className="wake-card">
+      <div className="ttl">
+        <Icon name="link" size={16} />
+        {m.label} is reachable
+      </div>
+      <p>
+        On the mesh via {m.sources.filter((s) => s !== 'agent').join(' + ') || 'the network'}, but it isn't running the
+        lattice agent yet — so it can't host sessions. Install the agent to weave it fully into the fabric.
+      </p>
+      <div className="metric-grid" style={{ gridTemplateColumns: '1fr', gap: 8 }}>
+        {m.sshAlias && (
+          <div className="metric">
+            <div className="lab">SSH</div>
+            <div className="mono" style={{ fontSize: 13, color: 'var(--fg-1)', marginTop: 3 }}>
+              ssh {m.sshAlias}
+            </div>
+          </div>
+        )}
+        {m.tailscaleIP && (
+          <div className="metric">
+            <div className="lab">Tailscale</div>
+            <div className="mono" style={{ fontSize: 13, color: 'var(--fg-1)', marginTop: 3 }}>
+              {m.tailscaleIP}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

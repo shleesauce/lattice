@@ -94,7 +94,15 @@ export function FleetMap({
     const EXIT = '#4A5560'
     const accentOf = (n: Node) => (n.alive ? GREEN : n.starting ? YELLOW : null)
     const colorFor = (n: Node) =>
-      n.m.offline ? EXIT : n.starting ? YELLOW : n.m.status === 'detached' ? BLUE : n.alive ? GREEN : COOL
+      n.m.offline
+        ? EXIT
+        : n.starting
+          ? YELLOW
+          : n.m.status === 'detached' || n.m.status === 'reachable'
+            ? BLUE
+            : n.alive
+              ? GREEN
+              : COOL
 
     const draw = (t: number) => {
       const S = stateRef.current

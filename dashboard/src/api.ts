@@ -1,5 +1,6 @@
 import type {
   Agent,
+  Device,
   AuditEntry,
   CreateProjectRequest,
   CreateProjectResult,
@@ -28,6 +29,11 @@ async function json<T>(res: Response): Promise<T> {
 export async function fetchFleet(): Promise<Agent[]> {
   const data = await json<{ agents: Agent[] | null }>(await fetch('/api/fleet'))
   return data.agents ?? []
+}
+
+export async function fetchDevices(): Promise<Device[]> {
+  const data = await json<{ devices: Device[] | null }>(await fetch('/api/devices'))
+  return data.devices ?? []
 }
 
 export async function fetchHealth(): Promise<Health> {

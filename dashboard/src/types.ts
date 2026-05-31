@@ -30,6 +30,39 @@ export interface Agent {
   }
 }
 
+// Unified fleet device (mirrors hub Device — /api/devices). The superset of
+// every known machine: lattice agents merged with Tailscale peers + SSH-config
+// hosts, deduped per physical machine. Agent-backed devices (hasAgent) carry
+// live telemetry and can run sessions; the rest are reachability-only (phones,
+// machines without the agent) shown for presence + SSH.
+export interface Device {
+  id: string
+  name: string
+  host: string
+  os: string // darwin | windows | android | ios | linux
+  kind: string // monitor | server | smartphone
+  status: string // online | reachable | exited(offline)
+  online: boolean
+  local: boolean
+  sources: string[] // agent | tailscale | ssh
+  hasAgent: boolean
+  agentId?: string
+  arch?: string
+  uptimeSec?: number
+  memTotal?: number
+  memUsedPct?: number
+  diskUsedPct?: number
+  loadAvg1?: number
+  cpuCount?: number
+  lastSeen?: string
+  macs?: string[]
+  capabilities?: Agent['capabilities']
+  tailscaleIP?: string
+  sshAlias?: string
+  sshUser?: string
+  sshHost?: string
+}
+
 // File browser (mirrors hub FileListResultPayload / FileEntry).
 export interface FileEntry {
   name: string

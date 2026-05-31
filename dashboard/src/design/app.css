@@ -67,6 +67,7 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .dot.live { background: var(--st-live); animation: pulseDot 2.4s var(--ease) infinite; }
 .dot.starting { background: var(--st-starting); animation: pulseStart 1.1s var(--ease) infinite; }
 .dot.detached { background: var(--st-detached); }
+.dot.reachable { background: var(--st-detached); opacity: .85; }
 .dot.idle { background: var(--st-idle); }
 .dot.orphaned { background: var(--st-orphaned); }
 .dot.exited { background: var(--st-exited); }

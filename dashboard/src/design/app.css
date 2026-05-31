@@ -1,5 +1,4 @@
-/* Lattice — Mesh & Workspace. Chrome + component styles. Tokens from colors_and_type.css */
-@import url('colors_and_type.css');
+/* Lattice — Mesh & Workspace. Chrome + component styles. Tokens from colors_and_type.css (imported by index.css). */
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }

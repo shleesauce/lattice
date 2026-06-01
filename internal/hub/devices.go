@@ -27,9 +27,16 @@ type Device struct {
 	OS       string   `json:"os"`   // darwin | windows | android | ios | linux
 	Kind     string   `json:"kind"` // monitor(laptop) | server(desktop) | smartphone
 	Status   string   `json:"status"`
-	Online   bool     `json:"online"`
+	Online   bool     `json:"online"` // host reachable (agent live OR tailscale/ssh)
 	Local    bool     `json:"local"`
 	Sources  []string `json:"sources"` // agent | tailscale | ssh
+
+	// AgentLive is true only when the lattice agent itself is checked in with a
+	// fresh heartbeat — distinct from Online, which also goes true on mere
+	// tailnet/ssh reachability. A box whose agent died but whose host still
+	// answers Tailscale is Online=true, AgentLive=false ⇒ "reachable", not a
+	// false-green "online". Drives deviceStatus so the color never lies.
+	AgentLive bool `json:"agentLive"`
 
 	// Agent-backed only — enables sessions + live telemetry.
 	HasAgent     bool               `json:"hasAgent"`
@@ -161,7 +168,11 @@ func (h *Hub) devices() []Device {
 
 	out := make([]Device, 0, len(groups))
 	for _, g := range groups {
-		out = append(out, foldGroup(g))
+		d := foldGroup(g)
+		if isExcludedDevice(d) {
+			continue // other people's machines: on the tailnet, but not OUR fleet
+		}
+		out = append(out, d)
 	}
 	// Online first, then agent-backed, then name.
 	sort.Slice(out, func(i, j int) bool {
@@ -238,6 +249,7 @@ func foldGroup(g []fragment) Device {
 		d.OS = best.OS
 		d.Arch = best.Arch
 		d.Online = best.Online
+		d.AgentLive = best.Online // agent's own check-in, before tailscale can flip Online
 		d.Local = best.Local
 		d.UptimeSec = best.UptimeSec
 		d.MemTotal = best.MemTotal
@@ -301,20 +313,45 @@ func betterAgent(a, b *Agent) bool {
 	return a.LastSeen > b.LastSeen // RFC3339 sorts lexicographically
 }
 
-// deviceStatus: live/idle/detached are layered on by the dashboard from
-// sessions for agent machines; here we report the base reachability so
-// non-agent devices still get a color.
-//   online + agent  → "online"   (dashboard upgrades to live/idle/detached)
-//   online, no agent → "reachable"
-//   offline          → "exited"
-func deviceStatus(d Device) string {
-	if !d.Online {
-		return "exited"
+// excludedDevices are machines that live on the tailnet but are NOT part of the
+// Lattice fleet — other people's boxes Dylan occasionally reaches but doesn't
+// manage here. Matched against the device's identity tokens (name + host), so
+// "M"/pc-kinzie and "Kinz's MacBook Air" fold out regardless of which source
+// surfaced them. Lower-cased, alphanumeric-collapsed substrings.
+var excludedDevices = []string{"kinzie", "kinz", "pckinzie"}
+
+// isExcludedDevice reports whether a folded device should be hidden from the
+// fleet. Checks the name and host against the exclude list via idTokens so the
+// match is robust to DNS suffixes and punctuation ("Kinz's MacBook Air" → kinz).
+func isExcludedDevice(d Device) bool {
+	toks := append(idTokens(d.Name), idTokens(d.Host)...)
+	for _, t := range toks {
+		for _, ex := range excludedDevices {
+			if strings.Contains(t, ex) {
+				return true
+			}
+		}
 	}
-	if d.HasAgent {
+	return false
+}
+
+// deviceStatus reports a device's base color. An agent machine is only "online"
+// when its agent is ACTUALLY checked in (best.Online, which the registry gates
+// on a fresh heartbeat). A box that is merely reachable over Tailscale/SSH —
+// including one whose agent process has died but whose host still answers the
+// tailnet — is "reachable", never a false "online". This keeps the dashboard
+// honest: green/teal ⇒ a live agent you can run on; blue ⇒ visible only.
+//   agent checked-in   → "online"   (dashboard upgrades to live/idle/detached)
+//   reachable, no live agent → "reachable"
+//   unreachable        → "exited"
+func deviceStatus(d Device) string {
+	if d.HasAgent && d.AgentLive {
 		return "online"
 	}
-	return "reachable"
+	if d.Online {
+		return "reachable"
+	}
+	return "exited"
 }
 
 func deviceID(d Device) string {

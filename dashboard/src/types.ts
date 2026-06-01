@@ -42,7 +42,12 @@ export interface Device {
   os: string // darwin | windows | android | ios | linux
   kind: string // monitor | server | smartphone
   status: string // online | reachable | exited(offline)
-  online: boolean
+  online: boolean // host reachable (agent live OR tailscale/ssh)
+  // agentLive is true only when the lattice agent itself is checked in with a
+  // fresh heartbeat. A box whose agent died but whose host still answers
+  // Tailscale is online=true, agentLive=false ⇒ render "reachable", not a
+  // false-green node. Absent (older hub) ⇒ treat as online for back-compat.
+  agentLive?: boolean
   local: boolean
   sources: string[] // agent | tailscale | ssh
   hasAgent: boolean

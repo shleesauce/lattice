@@ -385,6 +385,37 @@ device view still shows a non-agent machine "online" purely from Tailscale reach
 is dead — cosmetic; the watchdog keys off the agent's own `lastSeen`, not that flag, so recovery is correct
 regardless. Phone/tablet leaves (S26, etc.) have no agent yet and are out of scope here.
 
+## D34 — Fleet hygiene: exclude other-people's machines, truthful agent status, one-command fleet-sync
+**Why (Dylan, 2026-06-01, from a network audit):** three issues surfaced. (a) Two of Kinzie's machines
+("Kinz's MacBook Air", "M"/`pc-kinzie`) sit on Dylan's tailnet — fine, he occasionally runs local sessions
+on them — but they cluttered the Lattice fleet view and he doesn't manage them here. (b) The device view
+showed a box as a healthy "online" agent node even when its agent process was DEAD, as long as the host
+still answered Tailscale (the `foldGroup` merge flipped `Online=true` from tailnet reachability, and both
+hub `deviceStatus` and the dashboard adapter keyed "is this a runnable node" off `Online`+`hasAgent`). So a
+dead agent rendered green — the dashboard lied about what you could run on. (c) The four agents had drifted
+onto THREE different builds (studio 563dbc5, mbp 7582584, emu+mini-ops f37a25b) because there was no
+mechanism to keep them in lockstep — only `deploy-fleet.sh` (nohup, no persistence) and ad-hoc installs.
+**Decisions:**
+- **Exclude list** (`internal/hub/devices.go`, `excludedDevices`/`isExcludedDevice`): machines whose
+  identity tokens match kinzie/kinz/pckinzie fold OUT of `/api/devices`. They stay on the tailnet and SSH
+  still works; they're just not part of OUR fleet. Token-based so it's robust to DNS suffixes/punctuation.
+- **Truthful status** — new `Device.AgentLive` field, set from the agent's OWN check-in (`best.Online`)
+  BEFORE the tailscale-reachability merge can flip `Online`. `deviceStatus` now returns "online" only when
+  `HasAgent && AgentLive`; a reachable-but-dead-agent box is "reachable" (blue), never false-green. The
+  dashboard adapter (`adapt.ts`) mirrors this: `agentLive = hasAgent && (d.agentLive ?? true)` gates the
+  idle/detached (green/teal) states; sessions only attach to a live agent. The `?? true` keeps back-compat
+  if an older hub omits the field. Net: green/teal ⇒ a live agent you can run on; blue ⇒ visible only.
+- **fleet-sync** (`scripts/fleet-sync.sh`): the durable cure for skew. Rebuilds (dashboard embed + all
+  targets), restarts the local hub, then re-runs the HUB INSTALLER on each agent over SSH — which downloads
+  the fresh binary AND re-lays OS-native persistence (launchd / scheduled task), so a sync never downgrades
+  durability the way `deploy-fleet.sh`'s nohup would. Verifies every agent is back with a fresh heartbeat.
+**Verified:** fleet dropped 8→6 devices (Kinzie ×2 gone, S26 stays reachable); `agentLive` true on all 5
+agents; ran fleet-sync → all 5 agents identical at fdd2dd7 (skew gone); hub tests pass; dashboard rebuilds.
+**Rejected:** Tailscale ACLs to fence Kinzie's boxes (heavier, and Dylan wants tailnet access retained —
+just not in this UI); a one-off manual binary push (doesn't prevent the next drift — fleet-sync is the
+repeatable mechanism). **Note:** run `scripts/fleet-sync.sh` after any agent/proto change to keep the fleet
+in lockstep; it's the companion to D33's always-on persistence.
+
 ## Open / deferred for the IDE milestone
 - **D9** product name — still provisional ("Lattice"); finalize before any public release (target P4).
 - **Tauri packaging** (D15) — P4: wrap the SPA + bundle the agent sidecar; then a public distribution channel.

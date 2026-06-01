@@ -70,16 +70,22 @@ export function devicesToMachines(devices: Device[], sessions: Session[]): Machi
   })
 
   return ordered.map((d, i) => {
-    // Sessions only attach to agent-backed devices (matched by agentId).
-    const mine = d.hasAgent && d.agentId ? sessions.filter((s) => s.agentId === d.agentId && s.status !== 'exited') : []
+    // An agent box only counts as a runnable node when its agent is actually
+    // checked in (agentLive). If the agent died but the host still answers
+    // Tailscale/SSH (online=true, agentLive=false) it's reachable-only — never a
+    // false-green idle node. agentLive may be absent on an older hub ⇒ fall back
+    // to hasAgent so we don't regress.
+    const agentLive = d.hasAgent && (d.agentLive ?? true)
+    // Sessions only attach to a LIVE agent (matched by agentId).
+    const mine = agentLive && d.agentId ? sessions.filter((s) => s.agentId === d.agentId && s.status !== 'exited') : []
     const live = mine.filter((s) => s.status === 'live')
     const detached = mine.filter((s) => s.status === 'detached' || s.status === 'orphaned')
 
     let status: string
     if (!d.online) status = 'exited'
     else if (live.length > 0) status = 'live'
-    else if (d.hasAgent) status = detached.length > 0 ? 'detached' : 'idle'
-    else status = 'reachable' // online via tailscale/ssh, no agent
+    else if (agentLive) status = detached.length > 0 ? 'detached' : 'idle'
+    else status = 'reachable' // reachable via tailscale/ssh; no live agent
 
     const memTotal = (d.memTotal ?? 0) / GiB
     const memUsed = (memTotal * (d.memUsedPct ?? 0)) / 100

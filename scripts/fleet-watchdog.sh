@@ -34,10 +34,11 @@ NTFY_TOPIC="${LATTICE_NTFY_TOPIC:-homebase-mini-ops-1b595c0d11a1}"
 # (pm2-managed) so it's intentionally excluded — it can't watchdog itself.
 ssh_alias() {
   case "$1" in
-    Dylans-Mac-Studio.local|studio) echo studio ;;
-    mbp)                            echo mbp ;;
-    pc)                             echo pc ;;
-    *)                              echo "" ;;   # unknown ⇒ no recovery path
+    Dylans-Mac-Studio.local|studio)        echo studio ;;
+    mbp)                                   echo mbp ;;
+    pc)                                     echo pc ;;
+    emu|Emulation*|*Mac\ mini*)            echo emu ;;
+    *)                                      echo "" ;;   # unknown ⇒ no recovery path
   esac
 }
 

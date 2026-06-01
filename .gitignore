@@ -35,3 +35,6 @@ Thumbs.db
 lattice.db-wal
 lattice.db-shm
 *.tsbuildinfo
+
+# Local Claude Code config (machine-specific)
+.claude/

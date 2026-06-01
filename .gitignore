@@ -38,3 +38,7 @@ lattice.db-shm
 
 # Local Claude Code config (machine-specific)
 .claude/
+
+# watchdog runtime logs
+watchdog.out.log
+watchdog.err.log

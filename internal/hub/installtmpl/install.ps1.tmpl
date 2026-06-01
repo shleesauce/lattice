@@ -39,21 +39,33 @@ Start-Sleep -Milliseconds 300
 Move-Item -Force -Path $tmp -Destination $binPath
 Write-Host "lattice: installed binary at $binPath"
 
-# Register a per-user logon scheduled task (no admin required) and start it now.
+# Register an always-on scheduled task and start it now. Mirrors the macOS
+# launchd LaunchAgent (D22): start at BOTH logon and boot so the agent comes up
+# even after a headless reboot with nobody logged in, and restart-on-failure
+# (999x @1min) so a crash self-heals — KeepAlive parity. Runs as the interactive
+# user (NOT SYSTEM) so the agent keeps the user's credential/Tailscale context,
+# which claude auth depends on (D22).
 $taskName = 'LatticeAgent'
 $agentArgs = "agent --hub $Hub --token $Token --name `"$Name`""
 $action  = New-ScheduledTaskAction -Execute $binPath -Argument $agentArgs
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+$triggers = @(
+  (New-ScheduledTaskTrigger -AtLogOn),
+  (New-ScheduledTaskTrigger -AtStartup)
+)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+# Bind to THIS machine's local account ("<ComputerName>\<user>") — the workgroup
+# box's USERDOMAIN can read as WORKGROUP over a remote session, which won't
+# register, so derive it from $env:COMPUTERNAME explicitly.
+$principal = New-ScheduledTaskPrincipal -UserId "$($env:COMPUTERNAME)\$($env:USERNAME)" -LogonType Interactive -RunLevel Highest
 
 # Idempotent: drop any prior registration first.
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
 try {
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal `
     -Description 'Lattice agent' -Force | Out-Null
   Start-ScheduledTask -TaskName $taskName
-  Write-Host "lattice: scheduled task '$taskName' installed (runs at logon) and started"
+  Write-Host "lattice: scheduled task '$taskName' installed (logon+boot, restart-on-fail) and started"
 }
 catch {
   Write-Warning "lattice: scheduled task registration failed ($_); starting detached process instead"

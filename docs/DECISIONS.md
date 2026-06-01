@@ -351,6 +351,40 @@ box" payoff from D20 is intentionally given up for predictability; the transcrip
 *new* session could be started elsewhere against the same project if ever needed — it just won't happen
 automatically.
 
+## D33 — Fleet "always-on": OS-native persistence per leaf + a hub-host watchdog that recovers-then-alerts
+**Why (Dylan, 2026-05-31):** "bring everything on, keep it running, keep things in check if they crash or
+disconnect, reach out to them." Resilience is layered, cheapest-first:
+1. **Agent reconnect loop** (already built, `internal/agent/agent.go`): exponential backoff redial so a hub
+   blip or network drop self-heals without restarting the session processes.
+2. **OS-native process persistence** = the real "always on". macOS leaves run a launchd LaunchAgent
+   `sh.lattice.agent` with `RunAtLoad`+`KeepAlive` (start on login, auto-restart on crash). The Windows
+   leaf (`pc`) was the weak link — its task was **logon-only / InteractiveToken**, so a headless reboot
+   left it down (found it dead with a 24h-stale heartbeat while Tailscale still showed the box "online").
+   Fixed: re-registered `LatticeAgent` with **both** a LogonTrigger AND a BootTrigger, `RunLevel Highest`,
+   restart-on-failure 999×@1min — KeepAlive parity. Kept it as the **interactive user** (bound by the
+   machine-local `COMPUTERNAME\user` SID, NOT SYSTEM) because the agent needs the user session context for
+   claude auth (D22); SYSTEM would reintroduce the D22 "Not logged in" failure. The install template
+   (`installtmpl/install.ps1.tmpl`) was updated to match so fresh installs are hardened.
+3. **Hub-host watchdog** (`scripts/fleet-watchdog.sh`, pm2 `lattice-watchdog`): for the case the lower
+   layers can't catch (agent process wedged but box up, or total unreachability). Every 60s it polls
+   `/api/devices`, flags any agent-backed machine that's offline or whose `lastSeen` is >90s stale, and
+   recovers it over SSH using that machine's OWN primitive — macOS `launchctl kickstart -k gui/<uid>/
+   sh.lattice.agent`, Windows `schtasks /run /tn LatticeAgent`. After 3 consecutive failed cycles it
+   pushes ONE alert to ntfy (reusing the homebase `homebase-mini-ops-…` topic the phone already
+   subscribes to) and stays quiet until recovery, then sends a single "recovered" note.
+**Why the watchdog is a hub-HOST script, not in the hub binary:** D2 keeps the hub free of any inbound/SSH
+dependency on leaves. Recovery is an operator action, so it lives beside `deploy-fleet.sh` and reuses the
+same SSH aliases; the hub binary stays pure. mini-ops (the hub host) is excluded from watchdog targets —
+it's pm2-managed with a launchd startup item and can't watchdog itself.
+**Verified:** all 4 agents online with fresh heartbeats; killed mbp's agent → launchd KeepAlive revived it
+in ~2s (before the watchdog's sweep — proves the layering); ntfy test push delivered; `pm2 save` persists
+hub+agent+watchdog across reboot. **Rejected:** SYSTEM-context Windows task (breaks D22 claude auth);
+putting recovery in the hub (violates D2); alert-only with no auto-recovery and auto-recovery with no alert
+(Dylan chose recover-THEN-alert — self-heal silently, escalate only real failures). **Deferred:** the
+device view still shows a non-agent machine "online" purely from Tailscale reachability even when its agent
+is dead — cosmetic; the watchdog keys off the agent's own `lastSeen`, not that flag, so recovery is correct
+regardless. Phone/tablet leaves (S26, etc.) have no agent yet and are out of scope here.
+
 ## Open / deferred for the IDE milestone
 - **D9** product name — still provisional ("Lattice"); finalize before any public release (target P4).
 - **Tauri packaging** (D15) — P4: wrap the SPA + bundle the agent sidecar; then a public distribution channel.

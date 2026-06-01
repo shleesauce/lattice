@@ -325,6 +325,32 @@ rail trio `ProjectFilesPanel.tsx` / `FileViewer.tsx` / `MonacoPanel.tsx` / `useF
 Phase-2 `/api/agents/{id}/files` endpoints + the FLEET-tab `FileBrowser` stay (still used there).
 **Rejected:** keep Monaco as a quick-peek fallback (UX overlap + extra surface to maintain).
 
+## D32 — A session is pinned to its creation device FOR LIFE; project sessions default to the Studio  (amends D20)
+**Why (Dylan, 2026-05-31):** D20 made a project/Claude session re-placeable on resume — the scorer
+could land it on whatever machine ranked best, so a session could silently jump hosts between runs.
+That breaks the mental model Dylan wants: "once it runs on the Studio, it IS on the Studio." His fleet
+has one true coding box (the Mac Studio) where ~90% of sessions belong, and a wandering host is a
+footgun, not a feature. **Decision:** every session is `pinned=true` at creation (the `pinned` column
+existed since D18 but was never written — now it is), and **resume always returns to the session's
+original `agent_id`** — it never re-places. The scorer still runs on resume, but only to confirm that
+host is currently eligible; the chosen host is forced to the original. If that box is offline/ineligible,
+resume **fails** with `"can't resume on its device (…): <reason> — wake it in Fleet"` instead of
+migrating the work. This loses no liveness: per D18 the process already survives sleep/disconnect
+(orphaned → re-adopted on reconnect), and the browser still attaches/detaches from ANY device — only
+the *host* is frozen, never the viewer. A new `primary_agent` setting holds the default coding machine
+(set to `dylans-mac-studio.local-darwin`); a **project** session created with no explicit device pick
+**soft-pins** there — honoured by `ScorePlacement` only when the Studio is actually eligible, otherwise
+normal placement fallback — so the 90%-on-Studio case is one click while device sessions (already
+strict per D24) are unchanged. Settings GET now returns `primaryAgent`; the whitelisted settable keys
+grew `primary_agent`.
+**Rejected:** keep D20's re-placement as default with pin-on-demand (closest to old code, but leaves
+the wandering-host footgun as the default path — Dylan explicitly chose always-pin); a hard pin that
+fails creation when the Studio is offline (too brittle for the default — a soft pin that falls back is
+the right ergonomic). **Tradeoff accepted:** the synced-mesh "resume the same conversation on another
+box" payoff from D20 is intentionally given up for predictability; the transcript is still synced, so a
+*new* session could be started elsewhere against the same project if ever needed — it just won't happen
+automatically.
+
 ## Open / deferred for the IDE milestone
 - **D9** product name — still provisional ("Lattice"); finalize before any public release (target P4).
 - **Tauri packaging** (D15) — P4: wrap the SPA + bundle the agent sidecar; then a public distribution channel.

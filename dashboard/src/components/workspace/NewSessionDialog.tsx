@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { createSession, previewPlacement } from '../../api'
+import { useEffect, useRef, useState } from 'react'
+import { createSession, fetchSettings, previewPlacement } from '../../api'
 import type { Agent, PlacementCandidate, PlacementResult, Project, SessionKind, SessionWithPlacement } from '../../types'
 
 // Either start a session inside a synced project (auto-placed across the mesh)
@@ -50,9 +50,25 @@ function ProjectSessionDialog({
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // D32: the primary coding machine (the Studio). The picker pre-selects it for
+  // every project session so the 90% case is one click; a manual pick wins and
+  // is never overridden once the user touches the list.
+  const [primaryAgent, setPrimaryAgent] = useState<string>('')
+  const userPinnedRef = useRef(false)
+
   // Capability gates — computed from agents list
   const claudeAvailable = agents.some((a) => a.online && (a.capabilities?.claudeInstalled ?? false))
   const editorAvailable = agents.some((a) => a.online && (a.capabilities?.codeServerInstalled ?? false))
+
+  useEffect(() => {
+    let cancelled = false
+    fetchSettings()
+      .then((s) => !cancelled && setPrimaryAgent(s.primaryAgent ?? ''))
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -63,12 +79,25 @@ function ProjectSessionDialog({
         if (cancelled) return
         setPreview(r)
         setPreviewState('idle')
+        // Pre-select the Studio when it can actually host this kind, unless the
+        // user has already chosen a machine. Falls back to the server's `chosen`.
+        if (!userPinnedRef.current) {
+          const primaryEligible = r.candidates.some((c) => c.agentId === primaryAgent && c.eligible)
+          setPinAgentId(primaryEligible ? primaryAgent : '')
+        }
       })
       .catch(() => !cancelled && setPreviewState('error'))
     return () => {
       cancelled = true
     }
-  }, [kind, project.path])
+  }, [kind, project.path, primaryAgent])
+
+  // A manual pick (or unpin) freezes the default — the Studio won't re-assert
+  // itself on the next preview refresh.
+  const handlePin = (id: string) => {
+    userPinnedRef.current = true
+    setPinAgentId(id)
+  }
 
   const noEligible = preview ? preview.candidates.every((c) => !c.eligible) : false
 
@@ -121,7 +150,7 @@ function ProjectSessionDialog({
           preview={preview}
           agents={agents}
           pinAgentId={pinAgentId}
-          onPin={setPinAgentId}
+          onPin={handlePin}
         />
 
         {noEligible && (

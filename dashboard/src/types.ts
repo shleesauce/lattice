@@ -230,6 +230,9 @@ export interface AuditEntry {
 export interface Settings {
   globalApproval?: boolean
   perMachineApproval?: Record<string, boolean>
+  // primaryAgent (D32) is the default coding machine — the device picker for a
+  // new project session pre-selects it (when eligible) so the common case is one click.
+  primaryAgent?: string
 }
 
 // ───────── /ws/session wire frames (hub → browser) ─────────

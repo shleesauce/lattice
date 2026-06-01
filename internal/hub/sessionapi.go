@@ -138,11 +138,20 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// D32: a project session with no explicit pick defaults to the primary
+	// coding machine (the Studio) so the 90% case is one click and the session is
+	// pinned there for life. An explicit pick always wins; the default is only a
+	// soft pin and is ignored when that box is offline/ineligible (placement then
+	// falls back to the best eligible host).
+	pin := body.PinAgentID
+	if scope == "project" && pin == "" {
+		pin = h.defaultPin()
+	}
 	req := PlacementRequest{
 		Kind:        kind,
 		ProjectPath: projectPath,
 		UserAgentID: body.UserAgentID,
-		PinAgentID:  body.PinAgentID,
+		PinAgentID:  pin,
 	}
 	placement := ScorePlacement(req, h.fleet(), time.Now())
 	if placement.Chosen == "" {
@@ -206,12 +215,15 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 	skipPerms := kind == proto.SessionClaude && !h.forceApproval(agentID)
 
 	rec := SessionRecord{
-		ID:           sessionID,
-		ProjectPath:  projectPath,
-		Kind:         string(kind),
-		AgentID:      agentID,
-		Title:        title,
-		Status:       proto.SessionStarting,
+		ID:          sessionID,
+		ProjectPath: projectPath,
+		Kind:        string(kind),
+		AgentID:     agentID,
+		Title:       title,
+		Status:      proto.SessionStarting,
+		// D32: every session is pinned to its chosen device for life — the host is
+		// frozen at creation and resume always returns here (see handleResumeSession).
+		Pinned:       true,
 		Scope:        scope,
 		CreatedAt:    now,
 		LastActiveAt: now,
@@ -376,21 +388,23 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	var body resumeBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	// A device session is bound to its machine — resume it there, not elsewhere.
-	pin := body.PinAgentID
-	if rec.Scope == "device" {
-		pin = rec.AgentID
-	}
+	// D32 (amends D20): a session is pinned to the device it was created on — that
+	// is THE device for its whole life. Resume goes back to the original host and
+	// never re-places onto a different machine. We still run the scorer (purely to
+	// confirm that host is currently eligible and to hand the UI a breakdown), but
+	// the chosen host is forced to rec.AgentID. If that box is offline/ineligible,
+	// resume fails with a clear reason instead of silently migrating the work.
 	req := PlacementRequest{
 		Kind:        proto.SessionClaude,
 		ProjectPath: rec.ProjectPath,
 		UserAgentID: body.UserAgentID,
-		PinAgentID:  pin,
+		PinAgentID:  rec.AgentID,
 	}
 	placement := ScorePlacement(req, h.fleet(), time.Now())
-	if placement.Chosen == "" {
+	if placement.Chosen != rec.AgentID {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "no eligible agent to resume on", "placement": placement,
+			"error":     "can't resume on its device (" + rec.AgentID + "): " + deviceExcludeReason(placement, rec.AgentID) + " — wake it in Fleet",
+			"placement": placement,
 		})
 		return
 	}
@@ -399,7 +413,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, placement.Chosen, resumeID)
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -420,11 +434,21 @@ func (h *Hub) handlePlacement(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "kind must be terminal, claude, or editor"})
 		return
 	}
+	// Mirror the create-time default (D32) so the preview pre-selects the Studio
+	// for an un-pinned project session.
+	scope := strings.TrimSpace(body.Scope)
+	if scope == "" {
+		scope = "project"
+	}
+	pin := body.PinAgentID
+	if scope == "project" && pin == "" {
+		pin = h.defaultPin()
+	}
 	result := ScorePlacement(PlacementRequest{
 		Kind:        kind,
 		ProjectPath: body.ProjectPath,
 		UserAgentID: body.UserAgentID,
-		PinAgentID:  body.PinAgentID,
+		PinAgentID:  pin,
 	}, h.fleet(), time.Now())
 	writeJSON(w, http.StatusOK, result)
 }
@@ -454,8 +478,10 @@ func (h *Hub) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		global, _, _ := h.store.GetSetting("force_approval_global")
+		primary, _, _ := h.store.GetSetting("primary_agent")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"forceApprovalGlobal": isTrue(global),
+			"primaryAgent":        strings.TrimSpace(primary),
 		})
 	case http.MethodPost:
 		var body struct {
@@ -480,8 +506,11 @@ func (h *Hub) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// isApprovalKey whitelists the settable approval keys so arbitrary settings can't
-// be written through the public endpoint.
+// isApprovalKey whitelists the settable keys so arbitrary settings can't be
+// written through the public endpoint: the approval toggles (D21) and the
+// primary coding machine (D32).
 func isApprovalKey(key string) bool {
-	return key == "force_approval_global" || strings.HasPrefix(key, "force_approval:")
+	return key == "force_approval_global" ||
+		strings.HasPrefix(key, "force_approval:") ||
+		key == "primary_agent"
 }

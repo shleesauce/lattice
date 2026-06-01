@@ -156,6 +156,19 @@ func deletedAtStr(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// defaultPin returns the configured primary coding machine (D32) as a soft pin
+// for project sessions created without an explicit device pick. Empty when unset.
+// The pin is only honoured by ScorePlacement when that agent is actually eligible
+// for the requested kind, so an offline/unsuitable primary transparently falls
+// back to the best available host.
+func (h *Hub) defaultPin() string {
+	v, ok, _ := h.store.GetSetting("primary_agent")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
 // forceApproval reports whether approval mode must be forced for an agent: the
 // global kill switch OR a per-machine override (D21). When forced, sessions run
 // with --permission-mode default (SkipPerms=false).

@@ -16,6 +16,13 @@ Do not reintroduce headless mode until Dylan **explicitly** authorizes it. See *
 ---
 
 ## Current phase
+**D35 SHIPPED & VERIFIED on the fleet (2026-06-01):** headless `claude -p` purged everywhere; the Claude
+tab is now an interactive `claude` in a PTY (xterm). Committed on branch `feat/d35-no-headless-claude`
+(8642fea), fleet-synced to all 5 agents. Verified live: studio Claude session runs
+`claude --session-id … --permission-mode bypassPermissions` (zero headless flags); mbp correctly rejected
+("claude not installed"). Still TODO (best done in-browser): type a prompt → confirm a real response, and
+confirm scrollback survives a `pm2 restart lattice-hub` (the replay-kind gate was fixed in XtermSession).
+
 **Phases 1, 2, 3 (Workspace) & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS
 CRITERION (packageable) is MET and the workspace is built + verified (D15–D25).
 

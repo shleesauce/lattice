@@ -241,78 +241,14 @@ export interface Settings {
 }
 
 // ───────── /ws/session wire frames (hub → browser) ─────────
+// Since D35 a claude session is an interactive PTY, so it speaks the same
+// terminal frames as a terminal session (replay/output/exit).
 export type SessionInbound =
   | { type: 'replay'; kind: 'terminal'; data: string } // base64 scrollback
-  | { type: 'replay'; kind: 'claude'; events: ClaudeRaw[] }
   | { type: 'output'; data: string } // base64 terminal frame
-  | { type: 'claude_event'; subtype?: string; raw: ClaudeRaw }
   | { type: 'exit' }
 
 // ───────── /ws/session wire frames (browser → hub) ─────────
 export type SessionOutbound =
   | { type: 'input'; data: string } // base64 keystrokes
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'claude_input'; text: string }
-  | { type: 'claude_permission'; toolUseId: string; allow: boolean }
-
-// ───────── Claude Code stream-json events (rendered defensively) ─────────
-export interface ClaudeContentBlock {
-  type: string
-  text?: string
-  // tool_use
-  id?: string
-  name?: string
-  input?: unknown
-  // tool_result
-  tool_use_id?: string
-  content?: unknown
-  is_error?: boolean
-}
-
-export interface ClaudeMessage {
-  role?: string
-  model?: string
-  content?: ClaudeContentBlock[] | string
-  usage?: ClaudeUsage
-  stop_reason?: string
-}
-
-export interface ClaudeUsage {
-  input_tokens?: number
-  output_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
-}
-
-export interface ClaudeStreamDelta {
-  type?: string
-  text?: string
-  partial_json?: string
-}
-
-export interface ClaudeStreamEvent {
-  type?: string
-  delta?: ClaudeStreamDelta
-  content_block?: ClaudeContentBlock
-  index?: number
-}
-
-// Top-level stream-json event. Fields are optional because we branch on `type`.
-export interface ClaudeRaw {
-  type: string
-  subtype?: string
-  session_id?: string
-  model?: string
-  message?: ClaudeMessage
-  event?: ClaudeStreamEvent
-  usage?: ClaudeUsage
-  total_cost_usd?: number
-  duration_ms?: number
-  num_turns?: number
-  is_error?: boolean
-  result?: string
-  // permission requests surfaced in approval mode
-  tool_use_id?: string
-  tool_name?: string
-  [extra: string]: unknown
-}

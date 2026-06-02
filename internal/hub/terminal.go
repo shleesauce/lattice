@@ -11,18 +11,13 @@ import (
 )
 
 // browserTermMsg is the JSON framing the browser sends to the hub over the
-// terminal/session WebSocket. It is a superset covering both terminal frames
-// (input/resize) and claude frames (claude_input/claude_permission).
+// terminal/session WebSocket. Terminal and claude sessions share it (D35): claude
+// is now an interactive PTY, so it speaks input/resize exactly like a shell.
 type browserTermMsg struct {
-	Type string `json:"type"` // "input" | "resize" | "claude_input" | "claude_permission"
+	Type string `json:"type"` // "input" | "resize"
 	Data string `json:"data"` // base64, for "input"
 	Cols uint16 `json:"cols"` // for "resize"
 	Rows uint16 `json:"rows"` // for "resize"
-	// claude_input
-	Text string `json:"text"`
-	// claude_permission
-	ToolUseID string `json:"toolUseId"`
-	Allow     bool   `json:"allow"`
 }
 
 // handleTerminalWS bridges a browser interactive terminal to an agent PTY.
@@ -123,10 +118,8 @@ func (h *Hub) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 //	GET /ws/session?session=<id>&cols=<n>&rows=<n>
 //
 // Browser→hub framing: {"type":"input","data":b64} / {"type":"resize",cols,rows}
-// for terminal; {"type":"claude_input","text":…} / {"type":"claude_permission",
-// "toolUseId":…,"allow":bool} for claude. Hub→browser: {"type":"replay",…} then
-// {"type":"output","data":b64} (terminal) or {"type":"claude_event",…} (claude),
-// and {"type":"exit"}.
+// for BOTH terminal and claude (claude is an interactive PTY now, D35). Hub→browser:
+// {"type":"replay",…} then {"type":"output","data":b64} and {"type":"exit"}.
 func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
@@ -213,18 +206,6 @@ func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		case "resize":
 			if err := ac.send(proto.TypeTermResize, proto.TermResizePayload{
 				TermID: sessionID, Cols: msg.Cols, Rows: msg.Rows,
-			}); err != nil {
-				return
-			}
-		case "claude_input":
-			if err := ac.send(proto.TypeClaudeInput, proto.ClaudeInputPayload{
-				SessionID: sessionID, Text: msg.Text,
-			}); err != nil {
-				return
-			}
-		case "claude_permission":
-			if err := ac.send(proto.TypeClaudePermission, proto.ClaudePermissionPayload{
-				SessionID: sessionID, ToolUseID: msg.ToolUseID, Allow: msg.Allow,
 			}); err != nil {
 				return
 			}

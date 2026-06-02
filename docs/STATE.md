@@ -5,6 +5,16 @@ done, what's in flight, what's next, what's blocked. This is the source of truth
 
 ---
 
+## ⛔ HARD RULE — NO headless `claude -p` (D35, 2026-06-01)
+The Claude tab is an **interactive `claude` in a PTY**, NOT headless stream-json. Do **not** add
+`-p` / `--print` / `--output-format stream-json` / `--input-format stream-json` /
+`--include-partial-messages` / `--replay-user-messages` anywhere in Lattice — headless usage moved to a
+separate capped Agent SDK credit pool on June 15 2026; interactive stays on normal subscription limits.
+The launch seam is `claudeCommand()` in `internal/agent/terminal.go` (guardrail comment lives there).
+Do not reintroduce headless mode until Dylan **explicitly** authorizes it. See **D35** (supersedes D17/D21).
+
+---
+
 ## Current phase
 **Phases 1, 2, 3 (Workspace) & 4 COMPLETE & verified on the real fleet (2026-05-29).** The SUCCESS
 CRITERION (packageable) is MET and the workspace is built + verified (D15–D25).
@@ -166,14 +176,14 @@ token in `.lattice-token`; push to `origin/master`.
 
 ## Prior milestone (Phase 3 Workspace) — DONE & VERIFIED, kept for reference below
 The reframed Phase 3 shipped: Projects→Sessions + Devices sidebar, long-lived Terminal + Claude
-(stream-json, Max subscription) sessions surviving browser detach + hub restart, smart placement, the
+(interactive `claude` in a PTY since D35; originally stream-json, Max subscription) sessions surviving browser detach + hub restart, smart placement, the
 onboarding wizard, and the (now-to-be-retired) read-only Monaco file rail. Full detail follows.
 
 ## Phase 3 (Workspace) — DECIDED (D15–D25), BUILT & VERIFIED  [D16 superseded by D26 for the IDE milestone]
 - **D15** shell: browser-first SPA now → **Tauri** wrapper later (bundles the Go agent as a
   sidecar). **D16** editor: lean (file tree + Monaco + the two tabs), code-server dropped.
   **D17** Claude tab: the LOCAL `claude` binary headless in stream-json (subscription; verified
-  flags) — NOT the pay-per-token Managed Agents API. **D18** persistence: first-class Session
+  flags) — NOT the pay-per-token Managed Agents API. *(SUPERSEDED by D35: now interactive `claude` in a PTY.)* **D18** persistence: first-class Session
   entity, processes outlive the browser (the core fix — today PTYs die with the browser WS).
   **D19** placement: capability filter (Claude needs `claude` present — mbp lacks it) + headroom +
   locality boost, visible/overridable. **D20** portability: placed + resumable (not live-migrated).

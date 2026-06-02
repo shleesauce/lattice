@@ -71,13 +71,6 @@ const (
 	TypeSessionExit       MessageType = "session_exit"        // the session process ended
 	TypeSessionListResult MessageType = "session_list_result" // live sessions (also sent post-register)
 
-	// --- Phase 3: Claude session channel (streaming, keyed by SessionID) ---
-	// Hub → Agent
-	TypeClaudeInput      MessageType = "claude_input"      // a user turn written to the claude stdin
-	TypeClaudePermission MessageType = "claude_permission" // approve/deny a tool call (approval mode)
-	// Agent → Hub
-	TypeClaudeEvent MessageType = "claude_event" // one stream-json event from claude, verbatim
-
 	// --- Phase 3: agent capabilities (also folded into register + heartbeat) ---
 	// Agent → Hub
 	TypeCapabilities MessageType = "capabilities" // standalone capability refresh
@@ -187,7 +180,13 @@ type SessionKind string
 
 const (
 	SessionTerminal SessionKind = "terminal"
-	SessionClaude   SessionKind = "claude"
+	// SessionClaude is an INTERACTIVE `claude` process in a PTY (D35, supersedes
+	// D17/D21). It speaks the SAME frames as a terminal — output/replay (base64 PTY
+	// bytes) out, input/resize in. It is NOT headless stream-json: starting June 15
+	// 2026, headless `claude -p`/Agent-SDK usage on subscription plans bills against
+	// a separate capped credit pool, while interactive claude in a real TTY stays on
+	// normal subscription limits. The agent launches it via the ptySession path.
+	SessionClaude SessionKind = "claude"
 	// SessionEditor is an embedded code-server instance (IDE milestone, D28). It
 	// reuses the long-lived session lifecycle; the agent spawns code-server bound
 	// to loopback and the hub proxies it over the yamux tunnel.
@@ -203,9 +202,6 @@ const (
 	SessionExited   = "exited"   // process ended (natural or closed)
 	SessionOrphaned = "orphaned" // agent went offline; resumable elsewhere
 )
-
-// ClaudeEventRingMax bounds the per-claude-session replay tail (events).
-const ClaudeEventRingMax = 200
 
 // TermRingBytes bounds the per-terminal-session scrollback ring.
 const TermRingBytes = 256 << 10 // 256 KiB
@@ -224,7 +220,6 @@ type SessionCreatePayload struct {
 	Cols      uint16      `json:"cols,omitempty"`     // terminal only
 	Rows      uint16      `json:"rows,omitempty"`     // terminal only
 	ResumeID  string      `json:"resumeId,omitempty"` // claude: prior claudeSessionId to --resume
-	SkipPerms bool        `json:"skipPerms"`          // claude: bypassPermissions (D21); false ⇒ approval mode
 }
 
 // SessionCreatedPayload acks a session_create.
@@ -264,14 +259,13 @@ type SessionAttachPayload struct {
 }
 
 // SessionReplayPayload dumps recent output so a re-attaching browser sees context.
-// terminal: Data is base64 PTY scrollback. claude: Events is the recent stream-json
-// event tail (each element is one verbatim event object).
+// Data is base64 PTY scrollback for BOTH terminal and claude sessions (D35): claude
+// is now an interactive PTY, so it replays raw bytes exactly like a shell.
 type SessionReplayPayload struct {
-	SessionID string            `json:"sessionId"`
-	Kind      SessionKind       `json:"kind"`
-	Data      string            `json:"data,omitempty"`   // terminal scrollback, base64
-	Events    []json.RawMessage `json:"events,omitempty"` // claude event tail
-	Truncated bool              `json:"truncated,omitempty"`
+	SessionID string      `json:"sessionId"`
+	Kind      SessionKind `json:"kind"`
+	Data      string      `json:"data,omitempty"` // PTY scrollback, base64
+	Truncated bool        `json:"truncated,omitempty"`
 }
 
 // SessionControlPayload references a session for detach / close / exit.
@@ -279,33 +273,6 @@ type SessionControlPayload struct {
 	SessionID string `json:"sessionId"`
 	ExitCode  int    `json:"exitCode,omitempty"`
 	Error     string `json:"error,omitempty"`
-}
-
-// --- Phase 3 payloads: Claude session channel ---
-
-// ClaudeInputPayload is a user turn sent to a claude session's stdin. The agent
-// wraps Text in the stream-json user-message envelope the CLI expects.
-type ClaudeInputPayload struct {
-	SessionID string `json:"sessionId"`
-	Text      string `json:"text"`
-}
-
-// ClaudeEventPayload carries ONE structured stream-json event verbatim from the
-// claude process stdout (assistant message, tool_use, tool_result, usage, result,
-// system/init…). The hub forwards Raw to dashboards untouched and inspects Subtype
-// for audit logging. Subtype is the event's top-level "type" field, lifted out for
-// cheap routing without re-parsing Raw.
-type ClaudeEventPayload struct {
-	SessionID string          `json:"sessionId"`
-	Subtype   string          `json:"subtype"`
-	Raw       json.RawMessage `json:"raw"`
-}
-
-// ClaudePermissionPayload answers a tool-permission prompt when approval mode is on.
-type ClaudePermissionPayload struct {
-	SessionID string `json:"sessionId"`
-	ToolUseID string `json:"toolUseId"`
-	Allow     bool   `json:"allow"`
 }
 
 // --- Phase 3 payloads: capabilities ---

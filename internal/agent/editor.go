@@ -53,7 +53,7 @@ func (s *editorSession) release() {
 }
 
 // editorSessions is the process-global registry of live code-server processes,
-// keyed by sessionId. Mirrors terminals/claudeSessions; NOT torn down on the
+// keyed by sessionId. Mirrors terminals; NOT torn down on the
 // agent↔hub disconnect (D18), so an editor survives a hub restart and is
 // re-adopted via the post-register session list.
 type editorSessions struct {

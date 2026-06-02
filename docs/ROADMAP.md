@@ -30,8 +30,8 @@ The proof the model works.
 ## Phase 3 — Workspace  ✅ DONE & VERIFIED (reframed 2026-05-29; the real product)
 **Reframed** from "proxy code-server" (old D8) into a Claude-Code/VS-Code-style mesh workspace —
 see docs/VISION-WORKSPACE.md + decisions D15–D21. A Projects→Sessions sidebar over the synced
-`~/AI-Hub/projects/*`; per session a **Terminal** tab and an already-live **Claude** tab (local
-`claude` headless stream-json on Dylan's subscription); cross-machine sessions with smart-but-
+`~/AI-Hub/projects/*`; per session a **Terminal** tab and an already-live **Claude** tab (interactive
+local `claude` in a PTY on Dylan's subscription, D35 — was headless stream-json); cross-machine sessions with smart-but-
 visible/overridable hub placement; sessions that outlive the browser; later a Tauri desktop app.
 
 Build order (parallel workstreams; proto gates):

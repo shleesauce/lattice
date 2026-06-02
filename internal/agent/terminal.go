@@ -94,19 +94,25 @@ func (t *terminals) remove(id string) {
 	delete(t.sessions, id)
 }
 
-// descriptors snapshots the live terminal sessions for re-discovery (F).
+// descriptors snapshots the live PTY sessions for re-discovery (F). Both terminal
+// and claude sessions live here now (D35); each reports its own kind. A claude
+// session's ClaudeSessionID equals its sessionId (the hub-assigned --session-id).
 func (t *terminals) descriptors() []proto.SessionDescriptor {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	out := make([]proto.SessionDescriptor, 0, len(t.sessions))
 	for _, s := range t.sessions {
-		out = append(out, proto.SessionDescriptor{
+		d := proto.SessionDescriptor{
 			SessionID: s.id,
-			Kind:      proto.SessionTerminal,
+			Kind:      s.kind,
 			Cwd:       s.cwd,
 			PID:       s.pid,
 			StartedAt: s.startedAt.UTC().Format(time.RFC3339),
-		})
+		}
+		if s.kind == proto.SessionClaude {
+			d.ClaudeSessionID = s.id
+		}
+		out = append(out, d)
 	}
 	return out
 }
@@ -149,11 +155,28 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 		return 0, err
 	}
 
-	name, args := shellForTerminal()
+	// Branch the command on kind: a claude session is an INTERACTIVE claude in this
+	// same PTY (D35), a terminal is the OS shell. The claude launch also runs under
+	// the scrubbed child env so it uses the Max subscription (OAuth), never an API
+	// key — both correct and cost-critical.
+	kind := p.Kind
+	if kind == "" {
+		kind = proto.SessionTerminal
+	}
+	var name string
+	var args []string
 	ctx, cancel := context.WithCancel(t.baseCtx)
+	if kind == proto.SessionClaude {
+		name, args = claudeCommand(p)
+	} else {
+		name, args = shellForTerminal()
+	}
 	cmd := pt.CommandContext(ctx, name, args...)
 	if p.Cwd != "" {
 		cmd.Dir = p.Cwd
+	}
+	if kind == proto.SessionClaude {
+		cmd.Env = claudeChildEnv()
 	}
 
 	cols, rows := normalizeWinsize(p.Cols, p.Rows)
@@ -169,7 +192,7 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 
 	sess := &ptySession{
 		id:        p.SessionID,
-		kind:      proto.SessionTerminal,
+		kind:      kind,
 		cwd:       p.Cwd,
 		startedAt: time.Now(),
 		pty:       pt,
@@ -250,7 +273,7 @@ func (t *terminals) attach(p proto.SessionAttachPayload) (proto.SessionReplayPay
 	data, truncated := sess.ring.snapshot()
 	return proto.SessionReplayPayload{
 		SessionID: p.SessionID,
-		Kind:      proto.SessionTerminal,
+		Kind:      sess.kind,
 		Data:      base64.StdEncoding.EncodeToString(data),
 		Truncated: truncated,
 	}, true
@@ -325,6 +348,29 @@ func normalizeWinsize(cols, rows uint16) (uint16, uint16) {
 		rows = 24
 	}
 	return cols, rows
+}
+
+// GUARDRAIL (D35): NEVER add -p/--print/--output-format stream-json here. Headless mode bills against the separate Agent SDK credit pool (June 15 2026+). The Claude tab is INTENTIONALLY an interactive claude in a PTY. Do not reintroduce headless mode unless Dylan explicitly authorizes it.
+//
+// claudeCommand builds the argv for an INTERACTIVE claude launched in this PTY.
+// The hub assigns --session-id so the Lattice sessionId IS the claude session id;
+// --resume reattaches a prior conversation from the Syncthing-synced transcript
+// (D20). bypassPermissions is always on (D35 supersedes the D21 approval mode).
+func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
+	name = resolveClaude()
+	if name == "" {
+		// Fall back to the bare name; exec will surface a clear not-found error
+		// (placement should have excluded this agent, so this is defensive).
+		name = "claude"
+	}
+	args = []string{
+		"--session-id", p.SessionID,
+		"--permission-mode", "bypassPermissions",
+	}
+	if p.ResumeID != "" {
+		args = append(args, "--resume", p.ResumeID)
+	}
+	return name, args
 }
 
 // shellForTerminal picks the OS default interactive shell + args.

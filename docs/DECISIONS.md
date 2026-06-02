@@ -120,7 +120,12 @@ agent.
 every agent — anti-packageable — and it duplicates what Claude Code already does); no-editor-at-all
 (Monaco is cheap and worth having for quick edits).
 
-## D17 — Claude tab = the LOCAL `claude` binary headless in stream-json (subscription auth)
+## D17 — Claude tab = the LOCAL `claude` binary headless in stream-json (subscription auth)  [SUPERSEDED by D35]
+> **SUPERSEDED 2026-06-01 by D35.** Headless `-p`/stream-json moves to a separate, capped Agent SDK
+> credit pool on June 15 2026 — defeating this decision's whole cost premise. The Claude tab is now an
+> **interactive `claude` in a PTY** (which stays on normal subscription limits). The text below is kept
+> for history; the headless argv it describes is forbidden — see D35.
+
 **Why:** "exactly like the Claude Code desktop app" means driving Dylan's real Claude Max
 subscription against local synced files. Verified the local binary does it all:
 `claude -p --input-format stream-json --output-format stream-json --include-partial-messages
@@ -164,7 +169,12 @@ Claude conversation resumes on another capable agent via `--resume`.
 **Rejected:** live migration (infeasible cross-OS, would sink the timeline); pinned-only with no
 resume (throws away the synced-mesh payoff).
 
-## D21 — Trust: skip-permissions default + audit log + per-machine approval kill switch
+## D21 — Trust: skip-permissions default + audit log + per-machine approval kill switch  [SUPERSEDED by D35]
+> **SUPERSEDED 2026-06-01 by D35.** The structured audit log and the in-UI approve/deny prompts both
+> fed on stream-json tool events, which no longer exist once the Claude tab is interactive (D35). The
+> interactive `claude` runs with `--permission-mode bypassPermissions` and surfaces its OWN y/n prompts
+> in the terminal. The `audit_log` table is retained (unused) for a future revival. Kept for history.
+
 **Why:** auto-launching `claude --dangerously-skip-permissions` across the mesh adds NO new risk
 floor — the fleet already has a full SSH mesh + passwordless sudo, so "tailnet access = full fleet
 control" is the existing bar (and Dylan already aliases claude to bypass on studio). Keep the gate =
@@ -415,6 +425,39 @@ agents; ran fleet-sync → all 5 agents identical at fdd2dd7 (skew gone); hub te
 just not in this UI); a one-off manual binary push (doesn't prevent the next drift — fleet-sync is the
 repeatable mechanism). **Note:** run `scripts/fleet-sync.sh` after any agent/proto change to keep the fleet
 in lockstep; it's the companion to D33's always-on persistence.
+
+## D35 — NO headless `claude -p`; the Claude tab is an interactive `claude` in a PTY  (supersedes D17, D21)
+**Why (Dylan, 2026-06-01):** Starting **June 15 2026**, Anthropic moves Agent SDK + `claude -p` (headless)
+usage on subscription plans into a **separate monthly Agent SDK credit pool** — roughly the plan fee, no
+rollover, overage billed pay-per-token — *separate from interactive usage limits*
+(code.claude.com/docs/en/headless). D17 chose headless `-p` precisely to ride the Max subscription and avoid
+metered cost; this change defeats that premise. The billing line is drawn at `-p`/SDK: an **interactive
+`claude`** (a human typing into a real TTY/PTY) stays on normal subscription interactive limits. Interactive
+mode supports everything the tab needs — `--session-id`, `--resume`, `--model`, and the `/model` command
+(code.claude.com/docs/en/cli-reference). Dylan's actual goal for the tab is "the Claude Code desktop
+experience" = a Claude session with surrounding panels (files, changes, preview); those panels are built from
+the agent's filesystem/git access and never needed structured chat JSON. The only thing `-p` bought was
+bubble-rendering + a tool-parsed audit + an approve/deny UI — all explicitly traded away.
+**Decision:**
+- The `claude` session kind launches an **interactive `claude` in a PTY**, reusing the Phase-2 terminal
+  engine (`ptySession`, D12). Argv: `claude --session-id <id> --permission-mode bypassPermissions [--resume
+  <id>]`. **Forbidden in that argv: `-p`, `--print`, `--input-format`/`--output-format stream-json`,
+  `--include-partial-messages`, `--replay-user-messages`.** A guardrail comment lives at the launch seam
+  (`claudeCommand` in `internal/agent/terminal.go`).
+- Claude sessions now speak the **same WS frames as terminal sessions** (`output`/`replay` bytes, `input`
+  keystrokes, `resize`). Removed: the stream-json engine (`internal/agent/claude.go`), `claude_event` /
+  `claude_input` / `claude_permission` (proto + hub + dashboard), the structured chat renderer
+  (`SessionClaude` chat body, `claudeModel.ts`), and the tool-parsed audit path (`auditClaudeEvent`).
+  **Preserved:** `claudeChildEnv()` (still scrubs `ANTHROPIC_API_KEY`/`CLAUDECODE`/`CLAUDE_CODE_*` to force
+  subscription OAuth), the `ClaudeInstalled` placement gate (D19), `--resume` portability (D20/D32), and the
+  `audit_log` table (left in place, unused, recoverable).
+- The onboarding wizard (D25) seeds its interactive claude by sending the brief as **PTY keystrokes**, not a
+  structured `claude_input` message.
+- **HARD RULE:** do not reintroduce headless `-p`/stream-json anywhere in Lattice until Dylan **explicitly**
+  authorizes it. Deferred to a later pass (NOT this one): model-selector dropdown, changes tab, preview tab.
+**Rejected:** keeping `-p` and absorbing the new credit-pool cost (reintroduces the metered billing D17 set
+out to avoid); a degraded raw-scrollback audit (low-fidelity plumbing for little value — table mothballed
+instead); pay-per-token API-key auth for the tab (violates the subscription-only cost rule).
 
 ## Open / deferred for the IDE milestone
 - **D9** product name — still provisional ("Lattice"); finalize before any public release (target P4).

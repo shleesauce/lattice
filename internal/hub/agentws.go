@@ -209,7 +209,7 @@ func (h *Hub) readLoop(ac *agentConn) {
 			}
 			h.registry.resolvePending(res.ReqID, env)
 
-		// --- Phase 3: session lifecycle + claude channel ---
+		// --- Phase 3: session lifecycle ---
 		case proto.TypeSessionCreated:
 			var res proto.SessionCreatedPayload
 			if err := proto.As(env, &res); err != nil {
@@ -236,28 +236,14 @@ func (h *Hub) readLoop(ac *agentConn) {
 				continue
 			}
 			if t, ok := h.registry.getTerminal(p.SessionID); ok {
-				msg := map[string]any{"type": "replay", "kind": string(p.Kind), "truncated": p.Truncated}
-				if p.Kind == proto.SessionClaude {
-					msg["events"] = p.Events
-				} else {
-					msg["data"] = p.Data
+				// Both terminal and claude sessions replay as base64 PTY bytes (D35).
+				msg := map[string]any{
+					"type":      "replay",
+					"kind":      string(p.Kind),
+					"truncated": p.Truncated,
+					"data":      p.Data,
 				}
 				if err := t.send(msg); err != nil {
-					t.close()
-					h.registry.removeTerminal(p.SessionID)
-				}
-			}
-
-		case proto.TypeClaudeEvent:
-			var p proto.ClaudeEventPayload
-			if err := proto.As(env, &p); err != nil {
-				continue
-			}
-			h.auditClaudeEvent(ac.id, p)
-			if t, ok := h.registry.getTerminal(p.SessionID); ok {
-				if err := t.send(map[string]any{
-					"type": "claude_event", "subtype": p.Subtype, "raw": p.Raw,
-				}); err != nil {
 					t.close()
 					h.registry.removeTerminal(p.SessionID)
 				}

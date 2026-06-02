@@ -9,10 +9,10 @@ import (
 // Run() and survives every WebSocket reconnect, so terminal + claude processes
 // outlive the browser and the hub link. Each connection (session()) hands its
 // outbound channel to the state via setSink; with no live connection the sink is
-// nil and pumps write to their ring/event buffers only.
+// nil and pumps write to their ring buffers only. Claude sessions are interactive
+// PTYs (D35), so they live in the terms registry alongside terminals.
 type agentState struct {
 	terms   *terminals
-	claudes *claudeSessions
 	editors *editorSessions
 }
 
@@ -22,7 +22,6 @@ type agentState struct {
 func newAgentState(baseCtx context.Context) *agentState {
 	return &agentState{
 		terms:   newTerminals(baseCtx),
-		claudes: newClaudeSessions(baseCtx),
 		editors: newEditorSessions(baseCtx),
 	}
 }
@@ -32,7 +31,6 @@ func newAgentState(baseCtx context.Context) *agentState {
 // swaps the destination without restarting any process or racing a stale chan.
 func (s *agentState) setSink(outbound chan []byte) {
 	s.terms.sink.set(outbound)
-	s.claudes.sink.set(outbound)
 	s.editors.sink.set(outbound)
 }
 

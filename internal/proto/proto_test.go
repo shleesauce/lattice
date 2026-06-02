@@ -1,7 +1,6 @@
 package proto
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -12,7 +11,7 @@ func TestPhase3RoundTrip(t *testing.T) {
 	t.Run("SessionCreate", func(t *testing.T) {
 		in := SessionCreatePayload{
 			ReqID: "r1", SessionID: "s1", Kind: SessionClaude, Cwd: "/p",
-			ResumeID: "old", SkipPerms: true,
+			ResumeID: "old",
 		}
 		var out SessionCreatePayload
 		roundTrip(t, TypeSessionCreate, in, &out)
@@ -43,9 +42,10 @@ func TestPhase3RoundTrip(t *testing.T) {
 	})
 
 	t.Run("SessionReplayClaude", func(t *testing.T) {
+		// D35: claude replays as base64 PTY bytes, exactly like a terminal.
 		in := SessionReplayPayload{
 			SessionID: "s1", Kind: SessionClaude,
-			Events:    []json.RawMessage{json.RawMessage(`{"type":"assistant"}`)},
+			Data:      "aGVsbG8=",
 			Truncated: true,
 		}
 		var out SessionReplayPayload
@@ -53,26 +53,8 @@ func TestPhase3RoundTrip(t *testing.T) {
 		if out.SessionID != in.SessionID || out.Kind != in.Kind || !out.Truncated {
 			t.Fatalf("scalar mismatch: %+v", out)
 		}
-		if len(out.Events) != 1 || string(out.Events[0]) != `{"type":"assistant"}` {
-			t.Fatalf("events mismatch: %v", out.Events)
-		}
-	})
-
-	t.Run("ClaudeEvent", func(t *testing.T) {
-		in := ClaudeEventPayload{SessionID: "s1", Subtype: "tool_use", Raw: json.RawMessage(`{"type":"tool_use","name":"Bash"}`)}
-		var out ClaudeEventPayload
-		roundTrip(t, TypeClaudeEvent, in, &out)
-		if out.SessionID != in.SessionID || out.Subtype != in.Subtype || string(out.Raw) != string(in.Raw) {
-			t.Fatalf("got %+v want %+v", out, in)
-		}
-	})
-
-	t.Run("ClaudePermission", func(t *testing.T) {
-		in := ClaudePermissionPayload{SessionID: "s1", ToolUseID: "tu_1", Allow: true}
-		var out ClaudePermissionPayload
-		roundTrip(t, TypeClaudePermission, in, &out)
-		if in != out {
-			t.Fatalf("got %+v want %+v", out, in)
+		if out.Data != in.Data {
+			t.Fatalf("data mismatch: %q", out.Data)
 		}
 	})
 

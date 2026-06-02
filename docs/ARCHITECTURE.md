@@ -57,8 +57,8 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
 ### 7. Workspace (phase 3) — DONE
 The Phase-3 workspace shipped as a Claude-Code/VS-Code-style mesh workspace (NOT a code-server
 proxy — see D16): a Projects→Sessions + Devices sidebar over the synced `~/AI-Hub/projects/*`; per
-session a **Terminal** tab (PTY) and an already-live **Claude** tab (the local `claude` binary
-headless in stream-json on the Max subscription, D17); long-lived sessions that survive browser
+session a **Terminal** tab (PTY) and an already-live **Claude** tab (an interactive local `claude`
+in a PTY on the Max subscription, D35 — formerly headless stream-json, D17); long-lived sessions that survive browser
 detach AND hub restart (first-class Session entity, agent owns the process + scrollback ring, D18);
 capability+headroom+locality placement (D19); device-scoped sessions (D24); a new-project onboarding
 wizard (D25). The session lifecycle runs over the single dial-out agent WS as JSON envelopes

@@ -211,9 +211,6 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		scope = "project"
 	}
 
-	// Approval kill switch (D21): skip permissions unless approval is forced.
-	skipPerms := kind == proto.SessionClaude && !h.forceApproval(agentID)
-
 	rec := SessionRecord{
 		ID:          sessionID,
 		ProjectPath: projectPath,
@@ -241,7 +238,6 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		SessionID: sessionID,
 		Kind:      kind,
 		Cwd:       projectPath,
-		SkipPerms: skipPerms,
 	}
 	if isResume {
 		create.ResumeID = resumeID
@@ -471,17 +467,14 @@ func (h *Hub) handleAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"audit": entries})
 }
 
-// handleSettings reads (GET) or writes (POST) the approval kill-switch toggles
-// (D21). POST body: {"key":"force_approval_global"|"force_approval:<agentId>",
-// "value":"true"|"false"}.
+// handleSettings reads (GET) or writes (POST) hub settings. POST body:
+// {"key":"primary_agent","value":"<agentId>"}.
 func (h *Hub) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		global, _, _ := h.store.GetSetting("force_approval_global")
 		primary, _, _ := h.store.GetSetting("primary_agent")
 		writeJSON(w, http.StatusOK, map[string]any{
-			"forceApprovalGlobal": isTrue(global),
-			"primaryAgent":        strings.TrimSpace(primary),
+			"primaryAgent": strings.TrimSpace(primary),
 		})
 	case http.MethodPost:
 		var body struct {
@@ -492,7 +485,7 @@ func (h *Hub) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
 			return
 		}
-		if !isApprovalKey(body.Key) {
+		if !isSettableKey(body.Key) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported settings key"})
 			return
 		}
@@ -506,11 +499,9 @@ func (h *Hub) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// isApprovalKey whitelists the settable keys so arbitrary settings can't be
-// written through the public endpoint: the approval toggles (D21) and the
-// primary coding machine (D32).
-func isApprovalKey(key string) bool {
-	return key == "force_approval_global" ||
-		strings.HasPrefix(key, "force_approval:") ||
-		key == "primary_agent"
+// isSettableKey whitelists the keys writable through the public settings endpoint
+// so arbitrary settings can't be written: currently just the primary coding
+// machine (D32).
+func isSettableKey(key string) bool {
+	return key == "primary_agent"
 }

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -381,13 +382,21 @@ func (h *Hub) launchOnboardingSession(projDir string, s projectSpec) (*sessionVi
 		return nil, warnings
 	}
 
-	if ac, online := h.registry.getAgent(agentID); online {
-		if err := ac.send(proto.TypeClaudeInput, proto.ClaudeInputPayload{
-			SessionID: rec.ID,
-			Text:      onboardingSeedPrompt,
-		}); err != nil {
-			warnings = append(warnings, "session created but seeding the onboarding prompt failed: "+err.Error())
-		}
+	if _, online := h.registry.getAgent(agentID); online {
+		// D35: the Claude session is an interactive PTY now, so the onboarding brief
+		// is typed in as keystrokes (the same client→agent input path the terminal
+		// uses) — the prompt text followed by a carriage return to submit the turn.
+		// A short delay lets the claude TUI finish booting before it receives input,
+		// otherwise the first keystrokes land before the prompt is ready.
+		go func(agentID, sessionID string) {
+			time.Sleep(onboardingSeedDelay)
+			cur, online := h.registry.getAgent(agentID)
+			if !online {
+				return
+			}
+			data := base64.StdEncoding.EncodeToString([]byte(onboardingSeedPrompt + "\r"))
+			_ = cur.send(proto.TypeTermInput, proto.TermDataPayload{TermID: sessionID, Data: data})
+		}(agentID, rec.ID)
 	} else {
 		warnings = append(warnings, "session created but the agent went offline before seeding the onboarding prompt")
 	}
@@ -395,6 +404,10 @@ func (h *Hub) launchOnboardingSession(projDir string, s projectSpec) (*sessionVi
 	view := toSessionView(rec)
 	return &view, warnings
 }
+
+// onboardingSeedDelay gives the interactive claude TUI time to boot before the
+// onboarding brief is typed in, so the keystrokes aren't dropped pre-prompt (D35).
+const onboardingSeedDelay = 3 * time.Second
 
 // onboardingSeedPrompt is the single user turn injected into the new Claude
 // session so it picks up the brief and finishes setup autonomously.

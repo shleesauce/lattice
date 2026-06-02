@@ -252,8 +252,7 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 // session_list_result. reqID is empty for the post-register volunteer and set
 // when answering a session_list request.
 func sendSessionList(ctx context.Context, outbound chan<- []byte, state *agentState, reqID string) {
-	descs := append(state.terms.descriptors(), state.claudes.descriptors()...)
-	descs = append(descs, state.editors.descriptors()...)
+	descs := append(state.terms.descriptors(), state.editors.descriptors()...)
 	frame, err := proto.Encode(proto.TypeSessionListResult, proto.SessionListResultPayload{
 		ReqID:    reqID,
 		Sessions: descs,
@@ -412,20 +411,6 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 			_ = proto.As(env, &p)
 			sendSessionList(ctx, outbound, state, p.ReqID)
 
-		// --- Phase 3: claude channel ---
-		case proto.TypeClaudeInput:
-			var p proto.ClaudeInputPayload
-			if err := proto.As(env, &p); err != nil {
-				continue
-			}
-			state.claudes.input(p)
-		case proto.TypeClaudePermission:
-			var p proto.ClaudePermissionPayload
-			if err := proto.As(env, &p); err != nil {
-				continue
-			}
-			state.claudes.permission(p)
-
 		case proto.TypeFileList:
 			var p proto.FileReqPayload
 			if err := proto.As(env, &p); err != nil {
@@ -466,14 +451,6 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 	p.Cwd = resolveCwd(p.Cwd)
 
 	switch p.Kind {
-	case proto.SessionClaude:
-		pid, err := state.claudes.start(ctx, p)
-		if err != nil {
-			ack.Error = err.Error()
-		} else {
-			ack.PID = pid
-			ack.ClaudeSessionID = p.SessionID // hub-assigned via --session-id
-		}
 	case proto.SessionEditor:
 		pid, err := state.editors.start(ctx, p)
 		if err != nil {
@@ -481,12 +458,15 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 		} else {
 			ack.PID = pid
 		}
-	default: // terminal
+	default: // terminal OR claude — both are interactive PTYs (D35)
 		pid, err := state.terms.start(ctx, p)
 		if err != nil {
 			ack.Error = err.Error()
 		} else {
 			ack.PID = pid
+			if p.Kind == proto.SessionClaude {
+				ack.ClaudeSessionID = p.SessionID // hub-assigned via --session-id
+			}
 		}
 	}
 
@@ -543,9 +523,7 @@ func handleSessionAttach(ctx context.Context, outbound chan<- []byte, state *age
 		ok     bool
 	)
 	if replay, ok = state.terms.attach(p); !ok {
-		if replay, ok = state.claudes.attach(p); !ok {
-			replay, ok = state.editors.attach(p) // editors have no replay (ok=false)
-		}
+		replay, ok = state.editors.attach(p) // editors have no replay (ok=false)
 	}
 	if !ok {
 		return
@@ -565,10 +543,6 @@ func handleSessionAttach(ctx context.Context, outbound chan<- []byte, state *age
 func closeSession(state *agentState, sessionID string) {
 	if state.terms.close(sessionID) {
 		state.terms.sendExit(sessionID, 0, "")
-		return
-	}
-	if state.claudes.close(sessionID) {
-		state.claudes.sendExit(sessionID, 0, "")
 		return
 	}
 	if state.editors.close(sessionID) {

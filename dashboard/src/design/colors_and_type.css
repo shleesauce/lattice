@@ -1,0 +1,192 @@
+/* ============================================================================
+   LATTICE — colors_and_type.css
+   "Cool Fabric, Warm Life" — a glowing wireframe lattice on near-true-black.
+   DARK-ONLY. Cool = structure/idle. Warm = a session is ALIVE here.
+   Import fonts/fonts.css before this file (or alongside it).
+   ============================================================================ */
+
+@import url('fonts/fonts.css');
+
+:root {
+  /* ---- Layered near-true-black backgrounds (depth from darkness, not shadow) */
+  --void:        #000000; /* editor / terminal canvas */
+  --base:        #07090C; /* app background */
+  --surface:     #0E1218; /* panels, cards */
+  --raised:      #171D25; /* raised panels, menus, popovers */
+  --raised-2:    #20272F; /* hover row / nested raised */
+
+  /* ---- Text */
+  --fg-1:        #E9EFF1; /* primary */
+  --fg-2:        #A4B0B8; /* secondary */
+  --fg-3:        #6E7B84; /* tertiary / muted / placeholder */
+  --fg-on-warm:  #1A0F00; /* text on a warm fill */
+  --fg-on-cool:  #021014; /* text on a cool fill */
+
+  /* ---- Cool accents — STRUCTURE / IDLE (the lattice at rest) */
+  --teal:        #2DE2C0;
+  --blue:        #38BDF8;
+  --teal-dim:    #1B8C79;
+  --blue-dim:    #1F6E94;
+
+  /* ---- Warm — kept for "where you're working" (editor caret/active tab) + brand mark */
+  --amber:       #F5A623;
+  --amber-soft:  #FFC24B;
+  --ember:       #F2792E;
+
+  /* ---- Green — ALIVE / good / running (conventional status) */
+  --green:       #2FD98A;
+  --green-dim:   #1C8A58;
+
+  /* ---- Semantic status (dots, badges, glows) — conventional traffic-light
+     green = alive/good · yellow = idle/waiting · red = error/disconnected · then blue/purple/orange */
+  --st-live:     var(--green);     /* alive, running — green breathing bloom */
+  --st-starting: #FFD37A;          /* spinning up — soft yellow */
+  --st-idle:     #F5C04B;          /* ready, no work — yellow */
+  --st-detached: var(--blue);      /* reachable but unattached — blue */
+  --st-queued:   #9D8CFF;          /* placed, awaiting a node — purple */
+  --st-orphaned: var(--ember);     /* lost its parent — orange warning */
+  --st-exited:   #4A5560;          /* stopped / gone — gray */
+  --st-danger:   #FF5C6C;          /* crashed / disconnected / danger — red */
+
+  /* ---- Lattice line + node tokens (wireframe rendering) */
+  --line-cool:   color-mix(in oklch, var(--teal) 38%, transparent);
+  --line-cool-strong: color-mix(in oklch, var(--teal) 64%, transparent);
+  --line-warm:   color-mix(in oklch, var(--amber) 55%, transparent);
+  --node-cool:   var(--teal);
+  --node-warm:   var(--amber);
+
+  /* ---- Hairline borders (luminous, never gray-flat) */
+  --border:      color-mix(in oklch, var(--teal) 14%, #1a2228);
+  --border-soft: color-mix(in oklch, var(--teal) 8%, #141a20);
+  --border-warm: color-mix(in oklch, var(--amber) 40%, transparent);
+  --border-alive: color-mix(in oklch, var(--green) 45%, transparent);
+  --border-focus: color-mix(in oklch, var(--blue) 70%, transparent);
+
+  /* ---- Glows (the only "depth" — luminosity, NOT drop shadow) */
+  --glow-cool:   0 0 0 1px color-mix(in oklch, var(--teal) 30%, transparent),
+                 0 0 16px -2px color-mix(in oklch, var(--teal) 35%, transparent);
+  --glow-warm:   0 0 0 1px color-mix(in oklch, var(--amber) 45%, transparent),
+                 0 0 22px -2px color-mix(in oklch, var(--amber) 50%, transparent),
+                 0 0 48px -8px color-mix(in oklch, var(--amber) 38%, transparent);
+  --glow-alive:  0 0 0 1px color-mix(in oklch, var(--green) 45%, transparent),
+                 0 0 22px -2px color-mix(in oklch, var(--green) 48%, transparent),
+                 0 0 48px -8px color-mix(in oklch, var(--green) 36%, transparent);
+  --glow-focus:  0 0 0 1px color-mix(in oklch, var(--blue) 55%, transparent),
+                 0 0 14px -2px color-mix(in oklch, var(--blue) 45%, transparent);
+
+  /* ---- Tinted fills (translucent, for chips/hover/selection) */
+  --fill-cool:   color-mix(in oklch, var(--teal) 12%, transparent);
+  --fill-cool-2: color-mix(in oklch, var(--teal) 20%, transparent);
+  --fill-warm:   color-mix(in oklch, var(--amber) 14%, transparent);
+  --fill-warm-2: color-mix(in oklch, var(--amber) 24%, transparent);
+  --fill-alive:  color-mix(in oklch, var(--green) 15%, transparent);
+  --fill-blue:   color-mix(in oklch, var(--blue) 14%, transparent);
+
+  /* ============ TYPE ============ */
+  --font-ui:    'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:  'IBM Plex Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;
+
+  /* Fluid display sizes (humanist grotesk, NOT all-caps-heavy) */
+  --t-display:  clamp(40px, 6vw, 72px);
+  --t-h1:       clamp(30px, 3.6vw, 44px);
+  --t-h2:       28px;
+  --t-h3:       21px;
+  --t-h4:       17px;
+  --t-body:     15px;
+  --t-small:    13px;
+  --t-micro:    11px;
+
+  --lh-tight:   1.06;
+  --lh-snug:    1.28;
+  --lh-body:    1.55;
+
+  /* ---- Soft radii (6–20px) */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+
+  /* ---- 4-based spacing */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --sp-12: 48px; --sp-16: 64px; --sp-20: 80px;
+
+  /* ---- Motion: breathing pulse for ALIVE nodes; calm cool easing */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur: 220ms;
+  --dur-slow: 420ms;
+}
+
+/* ============ SEMANTIC ELEMENT DEFAULTS ============ */
+.ds-display, h1.display {
+  font-family: var(--font-ui);
+  font-size: var(--t-display);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.022em;
+  color: var(--fg-1);
+}
+.ds-h1, h1 {
+  font-family: var(--font-ui);
+  font-size: var(--t-h1);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.018em;
+  color: var(--fg-1);
+}
+.ds-h2, h2 {
+  font-family: var(--font-ui);
+  font-size: var(--t-h2);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  letter-spacing: -0.014em;
+  color: var(--fg-1);
+}
+.ds-h3, h3 {
+  font-family: var(--font-ui);
+  font-size: var(--t-h3);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  letter-spacing: -0.01em;
+  color: var(--fg-1);
+}
+.ds-h4, h4 {
+  font-family: var(--font-ui);
+  font-size: var(--t-h4);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  color: var(--fg-1);
+}
+.ds-body, p {
+  font-family: var(--font-ui);
+  font-size: var(--t-body);
+  font-weight: 400;
+  line-height: var(--lh-body);
+  color: var(--fg-2);
+}
+.ds-small { font-size: var(--t-small); line-height: 1.45; color: var(--fg-2); font-family: var(--font-ui); }
+
+/* Eyebrow / label — restrained uppercase, mono, tracked. Used sparingly. */
+.ds-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--fg-3);
+}
+
+/* Mono — PRIMARY face for code, terminal, metrics, IDs */
+.ds-mono, code, kbd, samp, .metric, .id {
+  font-family: var(--font-mono);
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--fg-1);
+  font-feature-settings: "ss01" 1, "zero" 1;
+}
+.metric { font-weight: 500; letter-spacing: -0.01em; }
+.id { color: var(--fg-3); letter-spacing: 0.02em; }

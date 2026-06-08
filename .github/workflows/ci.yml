@@ -1,0 +1,69 @@
+name: CI
+
+# Gate that nothing broken lands on the fleet. All jobs are blocking: the Go lint
+# backlog was cleared (golangci-lint reports 0 issues) and ESLint has 0 errors, so
+# lint now walls off regressions instead of merely reporting them.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Least privilege: CI only needs to read the repo. The default token on
+# pull_request runs is otherwise broad — scope it down explicitly.
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go build / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      # v9 (not v6): golangci-lint v2 requires golangci-lint-action v7+. v9 is
+      # also Node24-native (avoids the Node20-runner deprecation).
+      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        with:
+          # Pinned (not "latest") so lint results are reproducible and the tool
+          # isn't fetched nondeterministically at runtime. Bump deliberately.
+          version: v2.12.2
+
+  dashboard:
+    name: Dashboard tsc / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npx tsc -b
+      - run: npm run build
+      # Blocking on errors; the eslint config still permits warnings (a handful of
+      # react-hooks/exhaustive-deps remain as a tracked frontend cleanup item).
+      - run: npm run lint

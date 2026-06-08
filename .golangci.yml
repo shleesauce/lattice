@@ -1,0 +1,31 @@
+# Conservative baseline — the high-signal, low-noise linters. govet + the
+# default set (errcheck, ineffassign, staticcheck, unused) catch the classes the
+# audit cared about (swallowed errors, dead code, ineffectual assigns) without
+# drowning the codebase in style nits. Tighten over time.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    paths:
+      # Vendored third-party Go shipped inside a JS dependency — not ours to lint.
+      - dashboard/node_modules
+    rules:
+      # A Close() (deferred or cleanup-path) whose error we can't meaningfully act
+      # on is idiomatic Go; don't flag it. Writes/copies that matter are checked
+      # explicitly in code. No flagged site is a writable-file close (data-loss).
+      - linters: [errcheck]
+        source: '\.Close\(\)'
+      # Deadline setters fail only on an already-broken conn, which the next
+      # Read/Write surfaces — ignoring the setter's own error is conventional.
+      - linters: [errcheck]
+        source: '\.Set(Read|Write)Deadline\('
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

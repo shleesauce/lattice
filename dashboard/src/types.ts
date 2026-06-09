@@ -211,6 +211,26 @@ export interface ReleasesResponse {
   releases: ReleaseInfo[]
 }
 
+// One agent's outcome in a fleet update (mirrors hub agentUpdateOutcome).
+export interface AgentUpdateOutcome {
+  agentId: string
+  name: string
+  ok: boolean
+  restarted?: string
+  error?: string
+}
+
+// Response from POST /api/update (mirrors the hub handleUpdate summary). The hub
+// has already swapped its own binary and is restarting in the background when this
+// returns, so the dashboard shows the progress view then reconnects to the new build.
+export interface UpdateResult {
+  ok: boolean
+  updating: boolean
+  from: string
+  to: string
+  agents: AgentUpdateOutcome[]
+}
+
 export interface PlacementRequest {
   kind: SessionKind
   projectPath: string

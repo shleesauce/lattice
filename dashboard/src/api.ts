@@ -20,6 +20,7 @@ import type {
   SetupStatus,
   SetupSubmit,
   Transcript,
+  UpdateResult,
   WakeResult,
 } from './types'
 
@@ -63,6 +64,10 @@ export async function fetchHealth(): Promise<Health> {
 
 export async function fetchReleases(): Promise<ReleasesResponse> {
   return json<ReleasesResponse>(await fetch('/api/releases'))
+}
+
+export async function startUpdate(): Promise<UpdateResult> {
+  return json<UpdateResult>(await fetch('/api/update', { method: 'POST' }))
 }
 
 export async function fetchFiles(agentId: string, path: string): Promise<FileListResult> {

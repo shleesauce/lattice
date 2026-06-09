@@ -58,6 +58,25 @@ func TestPhase3RoundTrip(t *testing.T) {
 		}
 	})
 
+	t.Run("Update", func(t *testing.T) {
+		// v0.1.5 (H): the hub→agent fleet-update request and its result.
+		in := UpdatePayload{ReqID: "u1", Base: "http://127.0.0.1:9/dl", Version: "v0.1.5"}
+		var out UpdatePayload
+		roundTrip(t, TypeUpdate, in, &out)
+		if in != out {
+			t.Fatalf("update got %+v want %+v", out, in)
+		}
+	})
+
+	t.Run("UpdateResult", func(t *testing.T) {
+		in := UpdateResultPayload{ReqID: "u1", OK: true, Restarted: "sh.lattice.agent"}
+		var out UpdateResultPayload
+		roundTrip(t, TypeUpdateResult, in, &out)
+		if in != out {
+			t.Fatalf("update_result got %+v want %+v", out, in)
+		}
+	})
+
 	t.Run("CapabilitiesInRegister", func(t *testing.T) {
 		in := RegisterPayload{
 			Token: "t", Hostname: "h", OS: "darwin", Arch: "arm64", Protocol: ProtocolVersion,

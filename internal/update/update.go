@@ -25,6 +25,93 @@ import (
 
 const defaultBase = "https://github.com/shleesauce/lattice/releases/latest/download"
 
+// Options configures Apply, the programmatic self-updater shared by the CLI
+// (`lattice update`) and the in-process callers (the hub's POST /api/update and
+// the agent's TypeUpdate handler).
+type Options struct {
+	// Base is the download base URL. Empty ⇒ resolveBase ($LATTICE_DOWNLOAD_BASE
+	// or the GitHub Releases latest base). The hub threads its own resolved base
+	// down to every agent so the whole fleet pulls the SAME build (lockstep, D34).
+	Base string
+	// Insecure skips SHA256SUMS verification. NEVER set from the network-facing
+	// callers; the only path that sets it is the CLI's explicit --insecure flag.
+	Insecure bool
+}
+
+// Apply downloads the release asset matching this OS/arch, verifies its checksum
+// (FAIL CLOSED unless Insecure), and atomically replaces the running binary. It
+// does NOT restart — call Restart separately so callers can sequence the restart
+// (e.g. the hub restarts itself only after every agent has swapped). The returned
+// string is the resolved download base actually used, so the hub can hand the
+// identical base to the agents and guarantee one fleet-wide build.
+func Apply(ctx context.Context, opts Options) (string, error) {
+	resolvedBase := strings.TrimRight(resolveBase(opts.Base), "/")
+	asset := assetName()
+
+	target, err := targetPath()
+	if err != nil {
+		return resolvedBase, fmt.Errorf("locate binary: %w", err)
+	}
+	dir := filepath.Dir(target)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	// Download the new binary into the SAME directory as the target so the final
+	// rename stays on one filesystem and is atomic.
+	tmp, err := os.CreateTemp(dir, ".lattice-update-*")
+	if err != nil {
+		return resolvedBase, fmt.Errorf("temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	assetURL := resolvedBase + "/" + asset
+	sum, err := download(ctx, client, assetURL, tmp)
+	_ = tmp.Close()
+	if err != nil {
+		cleanup()
+		return resolvedBase, fmt.Errorf("download %s: %w", asset, err)
+	}
+
+	// Verify against SHA256SUMS — FAIL CLOSED. This is a self-updater that swaps the
+	// running binary, so a missing/unreachable/incomplete sums file must ABORT, not
+	// proceed: an attacker who can block (or strip the asset's line from) just the
+	// sums file would otherwise defeat integrity entirely while still serving a
+	// tampered binary. The only escape hatch is the explicit --insecure flag.
+	want, err := fetchChecksum(ctx, client, resolvedBase+"/SHA256SUMS", asset)
+	switch {
+	case opts.Insecure:
+		// caller explicitly opted out of verification (CLI --insecure only).
+	case err != nil:
+		cleanup()
+		return resolvedBase, fmt.Errorf("SHA256SUMS unavailable (%w); aborting (binary NOT replaced)", err)
+	case want == "":
+		cleanup()
+		return resolvedBase, fmt.Errorf("%s not listed in SHA256SUMS; aborting (binary NOT replaced)", asset)
+	case !strings.EqualFold(want, sum):
+		cleanup()
+		return resolvedBase, fmt.Errorf("checksum mismatch for %s: expected %s, got %s (aborting, binary NOT replaced)", asset, want, sum)
+	}
+
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		cleanup()
+		return resolvedBase, fmt.Errorf("chmod: %w", err)
+	}
+
+	if err := replace(tmpPath, target); err != nil {
+		cleanup()
+		return resolvedBase, fmt.Errorf("replace binary: %w", err)
+	}
+
+	return resolvedBase, nil
+}
+
+// Restart best-effort restarts whichever Lattice service (hub or agent) is
+// installed on this box, applying the freshly-swapped binary. Returns the label
+// restarted (or "" if none found). Exposed so the hub/agent update handlers can
+// re-exec themselves after Apply.
+func Restart() string { return restartService() }
+
 // Run downloads the release asset matching this OS/arch, verifies its checksum,
 // and atomically replaces the running binary. version is the current build's
 // stamped main.Version (for the result message).
@@ -37,65 +124,17 @@ func Run(ctx context.Context, args []string, version string) error {
 		return err
 	}
 
-	resolvedBase := strings.TrimRight(resolveBase(*base), "/")
-	asset := assetName()
-
-	target, err := targetPath()
-	if err != nil {
-		return fmt.Errorf("update: locate binary: %w", err)
-	}
-	dir := filepath.Dir(target)
-
-	client := &http.Client{Timeout: 60 * time.Second}
-
-	// Download the new binary into the SAME directory as the target so the final
-	// rename stays on one filesystem and is atomic.
-	tmp, err := os.CreateTemp(dir, ".lattice-update-*")
-	if err != nil {
-		return fmt.Errorf("update: temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-
-	assetURL := resolvedBase + "/" + asset
-	fmt.Printf("lattice: downloading %s\n", assetURL)
-	sum, err := download(ctx, client, assetURL, tmp)
-	_ = tmp.Close()
-	if err != nil {
-		cleanup()
-		return fmt.Errorf("update: download %s: %w", asset, err)
-	}
-
-	// Verify against SHA256SUMS — FAIL CLOSED. This is a self-updater that swaps the
-	// running binary, so a missing/unreachable/incomplete sums file must ABORT, not
-	// proceed: an attacker who can block (or strip the asset's line from) just the
-	// sums file would otherwise defeat integrity entirely while still serving a
-	// tampered binary. The only escape hatch is the explicit --insecure flag.
-	want, err := fetchChecksum(ctx, client, resolvedBase+"/SHA256SUMS", asset)
-	switch {
-	case *insecure:
+	if *insecure {
 		fmt.Fprintln(os.Stderr, "lattice: warning: --insecure set; installing WITHOUT checksum verification")
-	case err != nil:
-		cleanup()
-		return fmt.Errorf("update: SHA256SUMS unavailable (%w); aborting (binary NOT replaced). Re-run with --insecure to override", err)
-	case want == "":
-		cleanup()
-		return fmt.Errorf("update: %s not listed in SHA256SUMS; aborting (binary NOT replaced). Re-run with --insecure to override", asset)
-	case !strings.EqualFold(want, sum):
-		cleanup()
-		return fmt.Errorf("update: checksum mismatch for %s: expected %s, got %s (aborting, binary NOT replaced)", asset, want, sum)
-	default:
-		fmt.Printf("lattice: checksum verified (%s)\n", sum)
 	}
+	fmt.Printf("lattice: downloading %s/%s\n", strings.TrimRight(resolveBase(*base), "/"), assetName())
 
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
-		cleanup()
-		return fmt.Errorf("update: chmod: %w", err)
-	}
-
-	if err := replace(tmpPath, target); err != nil {
-		cleanup()
-		return fmt.Errorf("update: replace binary: %w", err)
+	target, _ := targetPath()
+	if _, err := Apply(ctx, Options{Base: *base, Insecure: *insecure}); err != nil {
+		if *insecure {
+			return fmt.Errorf("update: %w", err)
+		}
+		return fmt.Errorf("update: %w. Re-run with --insecure to override", err)
 	}
 
 	fmt.Printf("lattice: updated the binary at %s (was %s)\n", target, version)

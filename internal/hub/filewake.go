@@ -27,6 +27,13 @@ func errFromAgent(msg string) error { return errors.New(msg) }
 // via the pending-request map keyed by reqId. The registry lock is never held
 // across the wait, so this cannot deadlock the read loop.
 func (h *Hub) roundTrip(agentID, reqID string, t proto.MessageType, payload any) (proto.Envelope, error) {
+	return h.roundTripT(agentID, reqID, pendingTimeout, t, payload)
+}
+
+// roundTripT is roundTrip with an explicit deadline, for requests whose agent-side
+// work legitimately runs longer than the default pendingTimeout (e.g. a fleet
+// update, where the agent downloads + verifies + swaps a binary before replying).
+func (h *Hub) roundTripT(agentID, reqID string, timeout time.Duration, t proto.MessageType, payload any) (proto.Envelope, error) {
 	ac, ok := h.registry.liveAgent(agentID)
 	if !ok {
 		return proto.Envelope{}, errors.New("agent offline")
@@ -41,7 +48,7 @@ func (h *Hub) roundTrip(agentID, reqID string, t proto.MessageType, payload any)
 	select {
 	case env := <-ch:
 		return env, nil
-	case <-time.After(pendingTimeout):
+	case <-time.After(timeout):
 		h.registry.clearPending(reqID)
 		return proto.Envelope{}, errRoundTripTimeout
 	}

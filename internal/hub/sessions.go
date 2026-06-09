@@ -62,6 +62,7 @@ type sessionView struct {
 	Archived        bool   `json:"archived"`
 	DeletedAt       string `json:"deletedAt,omitempty"`
 	NotifyOnIdle    bool   `json:"notifyOnIdle,omitempty"`
+	Model           string `json:"model,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	LastActiveAt    string `json:"lastActiveAt"`
 }
@@ -81,6 +82,7 @@ func toSessionView(r SessionRecord) sessionView {
 		Archived:        r.Archived,
 		DeletedAt:       deletedAtStr(r.DeletedAt),
 		NotifyOnIdle:    r.NotifyOnIdle,
+		Model:           r.Model,
 		CreatedAt:       r.CreatedAt.UTC().Format(time.RFC3339),
 		LastActiveAt:    r.LastActiveAt.UTC().Format(time.RFC3339),
 	}

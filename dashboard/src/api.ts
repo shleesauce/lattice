@@ -149,6 +149,8 @@ export async function createSession(req: CreateSessionRequest): Promise<SessionW
   if (req.pinAgentId) body.pinAgentId = req.pinAgentId
   if (req.permissionMode) body.permissionMode = req.permissionMode
   if (req.notifyOnIdle) body.notifyOnIdle = req.notifyOnIdle
+  if (req.model) body.model = req.model
+  if (req.fastMode) body.fastMode = req.fastMode
   const res = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

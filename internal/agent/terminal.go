@@ -502,6 +502,37 @@ func permissionMode(m string) string {
 	return "bypassPermissions"
 }
 
+// claudeModels is the allow-list of --model values Lattice will pass through. An
+// operator-chosen model must be on this list or it's dropped (claudeModel returns
+// ""), so a bad/spoofed value can never reach the launch — claude then falls back
+// to its own configured default. The 1M-context variants use the `[1m]` suffix
+// form (verified accepted by `claude --model … --help` on claude 2.1.137); the
+// `[1m]` is a literal part of the model string, NOT a placement filter. Legacy ids
+// are kept so a resumed conversation pinned to an older model still relaunches.
+var claudeModels = map[string]bool{
+	"claude-fable-5":      true,
+	"claude-fable-5[1m]":  true,
+	"claude-opus-4-8":     true,
+	"claude-opus-4-8[1m]": true, // Lattice default (Opus 4.8, 1M context)
+	"claude-sonnet-4-6":   true,
+	"claude-haiku-4-5":    true,
+	"claude-opus-4-7":     true,
+	"claude-opus-4-7[1m]": true,
+	"claude-opus-4-6":     true,
+}
+
+// claudeModel validates an operator-chosen model id against the allow-list. An
+// empty or unrecognised value returns "" — the caller then omits --model entirely,
+// leaving claude on its own configured default rather than launching with a bogus
+// model string.
+func claudeModel(m string) string {
+	m = strings.TrimSpace(m)
+	if claudeModels[m] {
+		return m
+	}
+	return ""
+}
+
 // claudeCommand builds the argv for an INTERACTIVE claude launched in this PTY.
 // The hub assigns --session-id so the Lattice sessionId IS the claude session id;
 // --resume reattaches a prior conversation from the Syncthing-synced transcript
@@ -527,6 +558,16 @@ func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
 		cArgs = []string{"--resume", p.ResumeID, "--permission-mode", mode}
 	} else {
 		cArgs = []string{"--session-id", p.SessionID, "--permission-mode", mode}
+	}
+	// Operator-chosen model (validated against the allow-list). Empty ⇒ omit
+	// --model so claude keeps its own default; a recognised id (incl. the `[1m]`
+	// 1M-context form) is passed through verbatim.
+	if model := claudeModel(p.Model); model != "" {
+		cArgs = append(cArgs, "--model", model)
+	}
+	// Fast mode ⇒ claude's low-effort setting (verified flag on claude 2.1.137).
+	if p.FastMode {
+		cArgs = append(cArgs, "--effort", "low")
 	}
 
 	// Windows: exec claude.exe directly — its PATH is fine and there's no login-shell

@@ -55,6 +55,10 @@ type SessionRecord struct {
 	// when it goes quiet (waiting on input) or exits, the hub pushes to ntfy. Set
 	// at creation; preserved across re-adopt/resume (never reset by a reconnect).
 	NotifyOnIdle bool
+	// Model is the claude --model this session launched with (full model id, e.g.
+	// claude-opus-4-8[1m]). Empty ⇒ claude's own default. Persisted so --resume
+	// relaunches the same model and keeps one logical identity (D20).
+	Model        string
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 }
@@ -93,6 +97,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	archived          INTEGER DEFAULT 0,
 	deleted_at        TEXT DEFAULT '',
 	notify_on_idle    INTEGER DEFAULT 0,
+	model             TEXT DEFAULT '',
 	created_at        TEXT,
 	last_active_at    TEXT
 );
@@ -152,6 +157,7 @@ func OpenStore(path string) (*Store, error) {
 		`ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN deleted_at TEXT DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN notify_on_idle INTEGER DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -563,12 +569,14 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 	if rec.NotifyOnIdle {
 		notify = 1
 	}
-	// notify_on_idle is set on INSERT only — deliberately absent from the conflict
-	// UPDATE so a re-adopt/resume (which rebuilds the record with the flag zeroed)
-	// can't silently turn off an operator's fire-and-forget opt-in.
+	// notify_on_idle and model are set on INSERT only — deliberately absent from the
+	// conflict UPDATE so a re-adopt/resume (which rebuilds the record) can't silently
+	// turn off an operator's fire-and-forget opt-in or wipe the launched model. The
+	// resume path reads the stored model and threads it back in, so the value carries
+	// forward intact (D20 — one logical identity, same model on every relaunch).
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, model, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project_path=excluded.project_path,
 			kind=excluded.kind,
@@ -582,7 +590,7 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 			deleted_at=excluded.deleted_at,
 			last_active_at=excluded.last_active_at
 	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
-		rec.Title, rec.Status, pinned, scope, archived, deletedAt, notify, created, active)
+		rec.Title, rec.Status, pinned, scope, archived, deletedAt, notify, rec.Model, created, active)
 	return err
 }
 
@@ -678,7 +686,7 @@ func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
 // ListSessions returns every session row, newest activity first.
 func (s *Store) ListSessions() ([]SessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, model, created_at, last_active_at
 		FROM sessions
 		ORDER BY last_active_at DESC
 	`)
@@ -701,7 +709,7 @@ func (s *Store) ListSessions() ([]SessionRecord, error) {
 // GetSession returns one session row by id. ok=false when no row exists.
 func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, model, created_at, last_active_at
 		FROM sessions WHERE id=?
 	`, id)
 	rec, err := scanSession(row)
@@ -801,7 +809,7 @@ func scanSession(r scanRow) (SessionRecord, error) {
 		activeAt  string
 	)
 	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
-		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &deletedAt, &notify, &createdAt, &activeAt); err != nil {
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &deletedAt, &notify, &rec.Model, &createdAt, &activeAt); err != nil {
 		return SessionRecord{}, err
 	}
 	rec.Pinned = pinned != 0

@@ -4,6 +4,19 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-06-08
+
+A bugfix release — critical for multi-machine meshes; found in first-run testing.
+
+### Fixed
+- **A second machine could not join a self-installed hub.** The hub served agent binaries from a
+  `dist/` folder resolved relative to its working directory, but a hub installed by `get.sh` has no
+  populated `dist/` and its service runs from `/` — so every `/dl/<binary>` request 404'd and the
+  agent download inside the join command failed. The hub now **redirects `/dl/` to the public
+  release** when a binary isn't present locally, so a `get.sh`-installed hub can hand out the agent
+  for **any** OS/arch (e.g. a Mac hub enrolling a Windows machine) with nothing bundled. Hubs built
+  from source with a populated `dist/` still serve locally; honors `LATTICE_DOWNLOAD_BASE`.
+
 ## [0.1.2] - 2026-06-08
 
 First public release. Focused on making Lattice trustworthy and dead-simple for someone you hand
@@ -141,6 +154,7 @@ The first installable release — built and published by `.github/workflows/rele
   token compare; shared websocket-send and `requireMethod` helpers; one shared agent reconnect
   loop; centralized dashboard hub-error parsing.
 
+[0.1.3]: https://github.com/shleesauce/lattice/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shleesauce/lattice/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shleesauce/lattice/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shleesauce/lattice/releases/tag/v0.1.0

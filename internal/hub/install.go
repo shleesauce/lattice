@@ -4,11 +4,30 @@ import (
 	"bytes"
 	"embed"
 	"net/http"
+	"os"
 	"path"
 	"regexp"
 	"strings"
 	"text/template"
 )
+
+// agentDownloadBaseDefault is where /dl/ redirects when a requested agent binary
+// isn't in the local dist dir. A hub installed by get.sh has only its OWN binary
+// (no cross-compiled set) and its service runs with no populated dist/, so without
+// this fallback every enrolling machine's binary download 404s and no second
+// machine can ever join. Redirecting to the public release also lets a hub of one
+// OS enroll an agent of another (a Mac hub serving a Windows agent) with nothing
+// bundled. Mirrors the base used by get.sh and `lattice update`.
+const agentDownloadBaseDefault = "https://github.com/shleesauce/lattice/releases/latest/download"
+
+// agentDownloadBase honors LATTICE_DOWNLOAD_BASE (for a custom/air-gapped mirror),
+// matching get.sh and the self-updater, else the public release.
+func agentDownloadBase() string {
+	if env := os.Getenv("LATTICE_DOWNLOAD_BASE"); env != "" {
+		return strings.TrimRight(env, "/")
+	}
+	return agentDownloadBaseDefault
+}
 
 // installTmplFS embeds the canonical installer templates. They are rendered per
 // request with the hub URL derived from the inbound request, so the same binary
@@ -90,8 +109,19 @@ func (h *Hub) handleDownloadBinary(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	http.ServeFile(w, r, path.Join(h.distDir, name))
+	// Serve from the local dist dir when the binary is present (a dev/fleet hub
+	// built by build.sh). When it's absent — the common case for a get.sh-installed
+	// hub, which has no populated dist/ — redirect to the public release so the
+	// enrolling machine fetches the official binary for ITS os/arch. The agent
+	// installer's curl -fsSL / irm follow the redirect transparently. name is
+	// already validated by safeBinaryName, so this is not an open redirect.
+	local := path.Join(h.distDir, name)
+	if _, err := os.Stat(local); err == nil {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeFile(w, r, local)
+		return
+	}
+	http.Redirect(w, r, agentDownloadBase()+"/"+name, http.StatusFound)
 }
 
 // handleInstallSh renders the POSIX sh installer with the hub URL baked in.

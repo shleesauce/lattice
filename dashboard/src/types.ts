@@ -183,6 +183,7 @@ export interface CreateSessionRequest {
   title?: string
   userAgentId?: string
   pinAgentId?: string
+  permissionMode?: string
 }
 
 export interface SessionWithPlacement {

@@ -411,10 +411,29 @@ func normalizeWinsize(cols, rows uint16) (uint16, uint16) {
 
 // GUARDRAIL (D35): NEVER add -p/--print/--output-format stream-json here. Headless mode bills against the separate Agent SDK credit pool (June 15 2026+). The Claude tab is INTENTIONALLY an interactive claude in a PTY. Do not reintroduce headless mode unless the maintainer explicitly authorizes it.
 //
+// claudePermissionModes is the set of values claude's --permission-mode accepts.
+// Anything outside it falls back to the Lattice default so a bad/empty value can
+// never reach the launch.
+var claudePermissionModes = map[string]bool{
+	"default": true, "acceptEdits": true, "plan": true,
+	"auto": true, "bypassPermissions": true, "dontAsk": true,
+}
+
+// permissionMode validates an operator-chosen mode, defaulting to bypassPermissions
+// (D35 — Lattice Claude sessions run in a browser and are often unattended, so the
+// no-prompt default keeps them from blocking; the dashboard lets you pick another).
+func permissionMode(m string) string {
+	if claudePermissionModes[m] {
+		return m
+	}
+	return "bypassPermissions"
+}
+
 // claudeCommand builds the argv for an INTERACTIVE claude launched in this PTY.
 // The hub assigns --session-id so the Lattice sessionId IS the claude session id;
 // --resume reattaches a prior conversation from the Syncthing-synced transcript
-// (D20). bypassPermissions is always on (D35 supersedes the D21 approval mode).
+// (D20). --permission-mode defaults to bypassPermissions (D35) but is per-session
+// selectable from the dashboard (proto.SessionCreatePayload.PermissionMode).
 func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
 	claude := resolveClaude()
 	if claude == "" {
@@ -429,11 +448,12 @@ func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
 	// identity guarantee (D20/D32). So on resume pass ONLY `--resume` (it already
 	// pins the conversation id); on a fresh start pass `--session-id` so the Lattice
 	// sessionId IS the claude session id.
+	mode := permissionMode(p.PermissionMode)
 	var cArgs []string
 	if p.ResumeID != "" {
-		cArgs = []string{"--resume", p.ResumeID, "--permission-mode", "bypassPermissions"}
+		cArgs = []string{"--resume", p.ResumeID, "--permission-mode", mode}
 	} else {
-		cArgs = []string{"--session-id", p.SessionID, "--permission-mode", "bypassPermissions"}
+		cArgs = []string{"--session-id", p.SessionID, "--permission-mode", mode}
 	}
 
 	// Windows: exec claude.exe directly — its PATH is fine and there's no login-shell

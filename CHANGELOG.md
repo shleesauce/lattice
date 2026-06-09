@@ -4,6 +4,15 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.5] - 2026-06-08
+
+### Added
+- **Choose Claude's permission mode per session.** The New Session dialog has a permission-mode
+  picker for Claude sessions — Ask / Accept edits / Plan / Auto / Bypass (defaults to Bypass) — and
+  the Claude pane has a one-click control to cycle the mode live (sends Shift+Tab to the TUI, so it
+  works on a phone where Shift+Tab isn't available). Groundwork for unattended runs: start an agent
+  in Bypass/Accept-edits so it doesn't block waiting for approvals.
+
 ## [0.1.4] - 2026-06-08
 
 A bugfix release — found in first-run testing.
@@ -166,6 +175,7 @@ The first installable release — built and published by `.github/workflows/rele
   token compare; shared websocket-send and `requireMethod` helpers; one shared agent reconnect
   loop; centralized dashboard hub-error parsing.
 
+[0.1.5]: https://github.com/shleesauce/lattice/releases/tag/v0.1.5
 [0.1.4]: https://github.com/shleesauce/lattice/releases/tag/v0.1.4
 [0.1.3]: https://github.com/shleesauce/lattice/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shleesauce/lattice/releases/tag/v0.1.2

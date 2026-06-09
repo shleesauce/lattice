@@ -253,6 +253,10 @@ type SessionCreatePayload struct {
 	Cols      uint16      `json:"cols,omitempty"`     // terminal only
 	Rows      uint16      `json:"rows,omitempty"`     // terminal only
 	ResumeID  string      `json:"resumeId,omitempty"` // claude: prior claudeSessionId to --resume
+	// PermissionMode is the claude --permission-mode for this session (default,
+	// acceptEdits, plan, auto, bypassPermissions, dontAsk). Empty/invalid ⇒
+	// bypassPermissions (the Lattice default — sessions are often unattended).
+	PermissionMode string `json:"permissionMode,omitempty"`
 	// SeedInput, if set, is typed into the session ONCE the interactive TUI has
 	// settled (claude: the onboarding brief). The agent waits for output to go quiet
 	// before injecting, so the keystrokes aren't dropped during boot/first render.

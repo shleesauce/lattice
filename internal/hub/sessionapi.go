@@ -102,12 +102,13 @@ func (h *Hub) handleListSessions(w http.ResponseWriter, r *http.Request) {
 // (default — a synced project, auto-placeable) or "device" (machine-local work
 // pinned to PinAgentId, cwd = that device's home).
 type createSessionBody struct {
-	Kind        string `json:"kind"`
-	Scope       string `json:"scope"`
-	ProjectPath string `json:"projectPath"`
-	Title       string `json:"title"`
-	UserAgentID string `json:"userAgentId"`
-	PinAgentID  string `json:"pinAgentId"`
+	Kind           string `json:"kind"`
+	Scope          string `json:"scope"`
+	ProjectPath    string `json:"projectPath"`
+	Title          string `json:"title"`
+	UserAgentID    string `json:"userAgentId"`
+	PinAgentID     string `json:"pinAgentId"`
+	PermissionMode string `json:"permissionMode"` // claude only; agent validates + defaults
 }
 
 func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +174,7 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "")
+	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -202,7 +203,7 @@ func deviceExcludeReason(p PlacementResult, agentID string) string {
 // chosen agent, and flips the row to live on ack. resumeID is non-empty only for
 // a resume onto a (possibly different) agent. The session row id is reused on
 // resume so the logical conversation keeps one identity (D20).
-func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput string) (SessionRecord, error) {
+func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string) (SessionRecord, error) {
 	now := time.Now()
 	sessionID := resumeID
 	isResume := resumeID != ""
@@ -236,11 +237,12 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 
 	reqID := newReqID()
 	create := proto.SessionCreatePayload{
-		ReqID:     reqID,
-		SessionID: sessionID,
-		Kind:      kind,
-		Cwd:       projectPath,
-		SeedInput: seedInput,
+		ReqID:          reqID,
+		SessionID:      sessionID,
+		Kind:           kind,
+		Cwd:            projectPath,
+		SeedInput:      seedInput,
+		PermissionMode: permissionMode,
 	}
 	if isResume {
 		create.ResumeID = resumeID
@@ -427,7 +429,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "")
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "")
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return

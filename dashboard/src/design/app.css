@@ -306,6 +306,12 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .rank .fitbar > i { display: block; height: 100%; border-radius: 999px; background: var(--teal); }
 .rank.on .fitbar > i { background: var(--green); }
 
+/* permission-mode segmented control (new-session dialog) */
+.perm-seg { display: flex; flex-wrap: wrap; gap: 5px; }
+.perm-seg-opt { flex: 1 1 auto; text-align: center; padding: 7px 10px; border-radius: 8px; background: var(--void); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); cursor: pointer; transition: all var(--dur) var(--ease); white-space: nowrap; }
+.perm-seg-opt:hover { border-color: var(--border-soft); color: var(--fg-1); }
+.perm-seg-opt.on { background: var(--fill-blue); border-color: var(--border-focus); color: var(--blue); box-shadow: var(--glow-focus); }
+
 /* ---- Workspace ---- */
 .ws { display: flex; height: 100%; min-height: 0; }
 .editor { background: var(--void); display: flex; flex-direction: column; min-width: 0; flex: 1; }

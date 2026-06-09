@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { sessionWsUrl } from '../../api'
 import { decodeB64, encodeB64 } from '../../lib/b64'
+
+export interface XtermSessionHandle {
+  sendInput: (data: string) => void
+}
 
 interface Props {
   sessionId: string
@@ -52,9 +56,14 @@ const theme = {
 // kill the process — the hub keeps it alive and replays scrollback on reattach.
 // We manage the socket directly here (rather than a hook) so xterm sizing and the
 // first resize stay in lockstep.
-export function XtermSession({ sessionId, liveLabel, makeUrl, initialInput, bare }: Props) {
+export const XtermSession = forwardRef<XtermSessionHandle, Props>(function XtermSession(
+  { sessionId, liveLabel, makeUrl, initialInput, bare }: Props,
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [phase, setPhase] = useState<Phase>('connecting')
+  // Stable ref to the live WebSocket so imperative sendInput can reach it.
+  const wsRef = useRef<WebSocket | null>(null)
 
   // Hold the latest makeUrl/initialInput in refs so the socket effect can read
   // them without listing them as deps — they may be recreated by the parent each
@@ -94,6 +103,7 @@ export function XtermSession({ sessionId, liveLabel, makeUrl, initialInput, bare
 
     const urlFor = makeUrlRef.current ?? ((c: number, r: number) => sessionWsUrl(sessionId, c, r))
     const ws = new WebSocket(urlFor(term.cols, term.rows))
+    wsRef.current = ws
     let closedByUs = false
 
     ws.onopen = () => {
@@ -143,12 +153,22 @@ export function XtermSession({ sessionId, liveLabel, makeUrl, initialInput, bare
 
     return () => {
       closedByUs = true
+      wsRef.current = null
       ro.disconnect()
       onData.dispose()
       ws.close()
       term.dispose()
     }
   }, [sessionId])
+
+  useImperativeHandle(ref, () => ({
+    sendInput(data: string) {
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data: encodeB64(new TextEncoder().encode(data)) }))
+      }
+    },
+  }))
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-zinc-950">
@@ -169,7 +189,7 @@ export function XtermSession({ sessionId, liveLabel, makeUrl, initialInput, bare
       </div>
     </div>
   )
-}
+})
 
 function phaseLabel(p: Phase, liveLabel?: string): string {
   switch (p) {

@@ -102,6 +102,7 @@ function ProjectSessionDialog({
   const [picking, setPicking] = useState(initialProject == null)
   const [kind, setKind] = useState<SessionKind>('claude')
   const [title, setTitle] = useState('')
+  const [permissionMode, setPermissionMode] = useState('bypassPermissions')
   const [pinAgentId, setPinAgentId] = useState<string>('')
   const [preview, setPreview] = useState<PlacementResult | null>(null)
   const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -177,6 +178,7 @@ function ProjectSessionDialog({
         projectPath: project.path,
         title: title.trim() || undefined,
         pinAgentId: pinAgentId || undefined,
+        permissionMode: kind === 'claude' ? permissionMode : undefined,
       })
       onCreated(res)
     } catch (e) {
@@ -221,6 +223,16 @@ function ProjectSessionDialog({
               onChange={(e) => setTitle(e.target.value)}
               autoFocus
             />
+
+            {kind === 'claude' && (
+              <>
+                <label className="flabel">
+                  Permissions
+                  <span className="hint">how much Claude asks before acting</span>
+                </label>
+                <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+              </>
+            )}
 
             <label className="flabel">
               Place on
@@ -388,6 +400,7 @@ function DeviceSessionDialog({
   const editorReady = agent.capabilities?.codeServerInstalled ?? false
   const [kind, setKind] = useState<SessionKind>(claudeReady ? 'claude' : 'terminal')
   const [title, setTitle] = useState('')
+  const [permissionMode, setPermissionMode] = useState('bypassPermissions')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -403,6 +416,7 @@ function DeviceSessionDialog({
         scope: 'device',
         pinAgentId: agent.id,
         title: title.trim() || undefined,
+        permissionMode: kind === 'claude' ? permissionMode : undefined,
       })
       onCreated(res)
     } catch (e) {
@@ -443,6 +457,16 @@ function DeviceSessionDialog({
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
         />
+
+        {kind === 'claude' && (
+          <>
+            <label className="flabel">
+              Permissions
+              <span className="hint">how much Claude asks before acting</span>
+            </label>
+            <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+          </>
+        )}
 
         {/* Pinned machine row */}
         <div
@@ -731,6 +755,33 @@ function RankRow({ candidate, label, badgeLabel, isChosen, isBest, isSelected, o
           <i style={{ width: `${barWidth}%` }} />
         </div>
       </div>
+    </div>
+  )
+}
+
+// ───────────────────────────── permission mode selector ─────────────────────────────
+
+const PERMISSION_MODES: { value: string; label: string }[] = [
+  { value: 'bypassPermissions', label: 'Bypass permissions' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'acceptEdits', label: 'Accept edits' },
+  { value: 'plan', label: 'Plan mode' },
+  { value: 'default', label: 'Ask permissions' },
+]
+
+function PermissionModeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="perm-seg">
+      {PERMISSION_MODES.map((m) => (
+        <button
+          key={m.value}
+          type="button"
+          className={`perm-seg-opt${value === m.value ? ' on' : ''}`}
+          onClick={() => onChange(m.value)}
+        >
+          {m.label}
+        </button>
+      ))}
     </div>
   )
 }

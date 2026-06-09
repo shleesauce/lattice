@@ -505,6 +505,25 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .set-about > div:last-child { border-bottom: none; }
 .set-about .k { font-size: 12.5px; color: var(--fg-3); }
 .set-about .v { font-size: 12px; color: var(--fg-1); }
+.set-about-action { display: flex; align-items: center; gap: 9px; width: 100%; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 11px; background: transparent; color: var(--fg-1); font-size: 12.5px; cursor: pointer; transition: border-color var(--dur), background var(--dur); }
+.set-about-action:hover { border-color: var(--border-alive); background: color-mix(in oklch, var(--teal) 6%, transparent); }
+
+/* release notes / what's new */
+.rn-head { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border-soft); }
+.rn-title { display: flex; align-items: center; gap: 8px; }
+.rn-update { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
+.rn-update.on { color: var(--teal); }
+.rn-x { margin-left: auto; display: inline-flex; padding: 6px; border: none; background: transparent; color: var(--fg-3); border-radius: 8px; cursor: pointer; }
+.rn-x:hover { background: var(--raised); color: var(--fg-1); }
+.rn-body { padding: 4px 18px 18px; overflow-y: auto; max-height: min(70vh, 640px); }
+.rn-msg { font-family: var(--font-mono); font-size: 12px; color: var(--fg-3); padding: 18px 0; }
+.rn-msg.err { color: var(--st-danger); }
+.rn-rel { padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
+.rn-rel:last-child { border-bottom: none; }
+.rn-rel.current { margin: 0 -18px; padding: 16px 18px; background: color-mix(in oklch, var(--teal) 4%, transparent); border-left: 2px solid var(--teal); }
+.rn-rel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rn-rel-ver { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--fg-1); }
+.rn-rel-date { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
 
 /* toast */
 .toast { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--raised); border: 1px solid var(--border-alive); box-shadow: var(--glow-alive); border-radius: 12px; padding: 10px 16px; display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 13px; color: var(--fg-1); z-index: 40; animation: toastIn var(--dur) var(--ease-out); }

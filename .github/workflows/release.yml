@@ -51,10 +51,28 @@ jobs:
       - name: Stage installers as assets
         run: cp install/get.sh install/get.ps1 install/uninstall.sh install/uninstall.ps1 dist/
 
+      - name: Extract changelog notes for this tag
+        # CHANGELOG.md is the single source of truth for release notes. Pull the
+        # "## [x.y.z]" section matching the tag (minus the leading v) and use it as
+        # the GitHub Release body — which the in-app "What's new" panel renders via
+        # /api/releases. Falls back to the tag name if there's no matching section.
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { grab=1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            printf 'Release %s\n' "$GITHUB_REF_NAME" > RELEASE_NOTES.md
+          fi
+          echo "release notes: $(wc -l < RELEASE_NOTES.md) lines"
+
       - name: Publish release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           # A partial build (missing binary) would otherwise publish a release
           # whose SHA256SUMS only covers whatever happened to be present. Fail

@@ -141,6 +141,9 @@ type Hub struct {
 	// v0.1.5): armed when a session goes idle, consumed by the ntfy action link.
 	approvals *approvalStore
 
+	// releases memoizes the GitHub release list (release-notes panel + update check).
+	releases *releaseCache
+
 	// fleetDirty is set when a heartbeat changed fleet metrics; the coalescing
 	// flushFleetLoop broadcasts at most once per fleetBroadcastInterval when set.
 	fleetMu    sync.Mutex
@@ -216,6 +219,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		sessions:      newSessionStore(),
 		loginLimiter:  newLoginLimiter(),
 		approvals:     newApprovalStore(),
+		releases:      newReleaseCache(),
 	}
 
 	// Secure-by-default: a fully-configured hub (setup done) with NO admin password

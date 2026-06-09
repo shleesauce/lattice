@@ -22,6 +22,11 @@ All notable changes to Lattice are documented here. The format follows
   is recorded to the `audit_log`. Tune the quiet threshold with `LATTICE_IDLE_SECS` (default 45s);
   notifications reuse the watchdog's `LATTICE_NTFY_TOPIC` / `LATTICE_NTFY_URL`, and the Approve/Deny
   buttons require the hub's canonical URL (`hubUrl` in `~/.lattice/config.json`).
+- **Release notes in the app.** Settings → **Release notes** shows what each version brought, pulled
+  live from GitHub releases through the hub (cached), with the version you're running flagged and an
+  honest "up to date / vX available" line. Release notes now come straight from `CHANGELOG.md`: the
+  release pipeline publishes each version's changelog section as the GitHub Release body, so the repo
+  and the in-app panel always say the same thing. Groundwork for one-click updates.
 
 ## [0.1.4] - 2026-06-08
 

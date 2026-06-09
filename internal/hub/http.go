@@ -65,6 +65,9 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/sessions/", h.requireAuth(h.handleSessions))
 	mux.HandleFunc("/api/placement", h.requireAuth(h.handlePlacement))
 	mux.HandleFunc("/api/settings", h.requireAuth(h.handleSettings))
+	// Release notes + update check (v0.1.5): recent GitHub releases with the running
+	// build flagged. Admin-gated like the rest of the workspace API.
+	mux.HandleFunc("/api/releases", h.requireAuth(h.handleReleases))
 
 	// Fire-and-forget approve/deny (v0.1.5) — OPEN by design: the unguessable
 	// single-use nonce in the path is a capability credential (see handleApproval).

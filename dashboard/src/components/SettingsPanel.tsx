@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { canHostClaude, type Agent } from '../types'
 import { fetchSettings, logout, setPrimaryAgent } from '../api'
 import { Modal } from './Modal'
+import { ReleaseNotes } from './ReleaseNotes'
 import { Icon } from '../lattice/Icon'
 
 interface Props {
@@ -25,6 +26,7 @@ export function SettingsPanel({ agents, version, onlineCount, totalCount, onClos
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [showNotes, setShowNotes] = useState(false)
 
   // Log out clears the session cookie then reloads — the App gate then shows the
   // Login screen (or stays on the dashboard if auth is off, which is harmless).
@@ -113,7 +115,14 @@ export function SettingsPanel({ agents, version, onlineCount, totalCount, onClos
             <span className="k">Hub URL</span>
             <span className="v mono" style={{ color: 'var(--teal)' }}>{location.host}</span>
           </div>
+          <button type="button" className="set-about-action" onClick={() => setShowNotes(true)}>
+            <Icon name="sparkles" size={14} color="var(--teal)" />
+            <span>Release notes</span>
+            <Icon name="chevron-right" size={14} color="var(--fg-3)" style={{ marginLeft: 'auto' }} />
+          </button>
         </div>
+
+        {showNotes && <ReleaseNotes onClose={() => setShowNotes(false)} />}
 
         <div className="mt-5 flex justify-end">
           <button

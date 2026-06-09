@@ -193,6 +193,24 @@ export interface SessionWithPlacement {
   placement: PlacementResult
 }
 
+export interface ReleaseInfo {
+  version: string // tag, e.g. "v0.1.5"
+  name: string
+  body: string // markdown release notes
+  publishedAt: string
+  prerelease: boolean
+  url: string
+  current: boolean // == the running build
+  newer: boolean // strictly newer than the running build
+}
+
+export interface ReleasesResponse {
+  current: string
+  latest: string
+  updateAvailable: boolean
+  releases: ReleaseInfo[]
+}
+
 export interface PlacementRequest {
   kind: SessionKind
   projectPath: string

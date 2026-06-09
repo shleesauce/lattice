@@ -12,6 +12,7 @@ import type {
   PlacementRequest,
   PlacementResult,
   Project,
+  ReleasesResponse,
   RootCheck,
   Session,
   SessionWithPlacement,
@@ -58,6 +59,10 @@ export async function fetchDevices(): Promise<Device[]> {
 
 export async function fetchHealth(): Promise<Health> {
   return json<Health>(await fetch('/api/health'))
+}
+
+export async function fetchReleases(): Promise<ReleasesResponse> {
+  return json<ReleasesResponse>(await fetch('/api/releases'))
 }
 
 export async function fetchFiles(agentId: string, path: string): Promise<FileListResult> {

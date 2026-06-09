@@ -2,6 +2,8 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -110,7 +112,21 @@ type createSessionBody struct {
 	PinAgentID     string `json:"pinAgentId"`
 	PermissionMode string `json:"permissionMode"` // claude only; agent validates + defaults
 	NotifyOnIdle   bool   `json:"notifyOnIdle"`   // claude only; ping my phone when it waits or finishes
+	// WakeOnPlace turns a manual two-step (wake in Fleet, then place) into ONE
+	// action: if the pinned device is asleep but otherwise eligible, the hub wakes
+	// it via a same-subnet relay, waits for the agent to rejoin, THEN starts the
+	// session. Only meaningful with an explicit PinAgentID. (v0.1.5 Phase F.)
+	WakeOnPlace bool `json:"wakeOnPlace"`
 }
+
+// agentWakeRejoinTimeout bounds how long handleCreateSession waits for a woken
+// machine's agent to heartbeat back in before giving up. A cold boot + agent
+// reconnect typically lands well under this; past it we report a clear timeout
+// rather than hanging the request.
+const agentWakeRejoinTimeout = 90 * time.Second
+
+// agentWakePollInterval is how often the wake-then-place wait re-checks liveness.
+const agentWakePollInterval = 2 * time.Second
 
 func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body createSessionBody
@@ -151,6 +167,18 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if scope == "project" && pin == "" {
 		pin = h.defaultPin()
 	}
+
+	// Wake-then-place: if the pinned target is asleep, wake it via a same-subnet
+	// relay and wait for its agent to rejoin BEFORE scoring placement — so the
+	// machine is online and eligible by the time we choose a host. One action
+	// instead of "wake in Fleet, wait, then place".
+	if body.WakeOnPlace && body.PinAgentID != "" {
+		if err := h.wakeAndWait(body.PinAgentID); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+
 	req := PlacementRequest{
 		Kind:        kind,
 		ProjectPath: projectPath,
@@ -187,6 +215,62 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session":   toSessionView(rec),
 		"placement": placement,
 	})
+}
+
+// wakeAndWait wakes a pinned (possibly sleeping) target via a same-subnet relay
+// and blocks until its agent rejoins the fleet (heartbeat live) or
+// agentWakeRejoinTimeout elapses. A no-op fast path returns immediately when the
+// target is already live, so wake-then-place is free when the box is already up.
+func (h *Hub) wakeAndWait(targetID string) error {
+	if _, live := h.registry.liveAgent(targetID); live {
+		return nil // already up — nothing to wake
+	}
+
+	fleet := h.fleet()
+	var target *Agent
+	for i := range fleet {
+		if fleet[i].ID == targetID {
+			target = &fleet[i]
+			break
+		}
+	}
+	if target == nil {
+		return errors.New("unknown machine: " + targetID)
+	}
+	if len(target.MACs) == 0 {
+		return errors.New("no known MAC for this machine — can't wake it")
+	}
+
+	choice := selectWakeRelay(wakeTargetForAgent(*target), fleet)
+	if choice.RelayID == "" {
+		return errors.New(choice.Reason)
+	}
+
+	reqID := newReqID()
+	env, err := h.roundTrip(choice.RelayID, reqID, proto.TypeWake, proto.WakePayload{ReqID: reqID, MAC: choice.MAC})
+	if err != nil {
+		return fmt.Errorf("wake relay failed: %w", err)
+	}
+	var res proto.WakeResultPayload
+	if err := proto.As(env, &res); err != nil || !res.OK {
+		if res.Error != "" {
+			return errors.New("wake failed: " + res.Error)
+		}
+		return errors.New("wake failed on relay " + choice.RelayID)
+	}
+
+	// Poll for the agent to rejoin. The agent reconnects + heartbeats on boot;
+	// liveAgent gates on a fresh heartbeat within offlineAfter.
+	deadline := time.Now().Add(agentWakeRejoinTimeout)
+	for {
+		if _, live := h.registry.liveAgent(targetID); live {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("woke the machine but its agent didn't rejoin in time")
+		}
+		time.Sleep(agentWakePollInterval)
+	}
 }
 
 // deviceExcludeReason pulls the placement exclusion reason for a pinned device so

@@ -523,6 +523,7 @@ func agentFromRecord(rec AgentRecord) Agent {
 		LoadAvg1:     rec.Metrics.LoadAvg1,
 		CPUCount:     rec.Metrics.CPUCount,
 		MACs:         copyMACs(rec.Metrics.MACs),
+		LANIPs:       copyMACs(rec.Metrics.LANIPs),
 	}
 }
 

@@ -188,14 +188,28 @@ function Dashboard() {
     if (!m.mac || !senderId) return
     setWakingIds((s) => new Set(s).add(m.id))
     flash(`Waking ${m.label} → routing power through the mesh`)
-    void wakeAgent(senderId, m.mac).catch(() => {})
-    const t = setTimeout(() => {
-      wakeTimers.current.delete(t)
+    const clearWaking = () =>
       setWakingIds((s) => {
         const n = new Set(s)
         n.delete(m.id)
         return n
       })
+    // Relay-aware: the hub picks a live agent on the target's subnet to emit the
+    // magic packet. If none can reach it, surface that instead of a silent no-op.
+    void wakeAgent(m.id)
+      .then((res) => {
+        if (!res.ok) {
+          flash(res.error || `Couldn't wake ${m.label}`)
+          clearWaking()
+        }
+      })
+      .catch(() => {
+        flash(`Couldn't reach the mesh to wake ${m.label}`)
+        clearWaking()
+      })
+    const t = setTimeout(() => {
+      wakeTimers.current.delete(t)
+      clearWaking()
     }, 9000)
     wakeTimers.current.add(t)
   }

@@ -455,6 +455,14 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 			}
 			go wake(ctx, p, outbound)
 
+		case proto.TypePowerControl:
+			var p proto.PowerControlPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad power_control: %v", err)
+				continue
+			}
+			go powerControl(ctx, p, outbound)
+
 		default:
 			log.Printf("agent: ignoring unexpected frame %q", env.Type)
 		}

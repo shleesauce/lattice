@@ -35,6 +35,10 @@ type Agent struct {
 	// surfaced so an OFFLINE machine can still be woken (WoL) by a peer on its
 	// LAN. Filled from the most recent heartbeat (live or persisted).
 	MACs []string `json:"macs"`
+	// LANIPs are the agent's last-known private IPv4 CIDRs (e.g. 192.168.1.46/24).
+	// The hub matches a sleeper's last-known subnet against live agents' subnets
+	// to pick a WoL relay on the SAME broadcast domain (v0.1.5 Phase F).
+	LANIPs []string `json:"lanIPs"`
 	// Capabilities is what the agent can run (Phase 3, D19). Drives placement's
 	// hard filter and is shown in the fleet view.
 	Capabilities proto.Capabilities `json:"capabilities"`
@@ -133,13 +137,14 @@ func (a *agentConn) view(window time.Duration, now time.Time) Agent {
 		LoadAvg1:     a.metrics.LoadAvg1,
 		CPUCount:     a.metrics.CPUCount,
 		MACs:         copyMACs(a.metrics.MACs),
+		LANIPs:       copyMACs(a.metrics.LANIPs),
 		Capabilities: a.caps,
 		Local:        a.local,
 	}
 }
 
-// copyMACs returns a non-nil copy so the JSON view always serializes "macs" as
-// [] rather than null.
+// copyMACs returns a non-nil copy so the JSON view always serializes a string
+// slice (macs / lanIPs) as [] rather than null.
 func copyMACs(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)

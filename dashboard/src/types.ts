@@ -228,6 +228,23 @@ export interface SessionWithPlacement {
   placement: PlacementResult
 }
 
+// Rich session telemetry (C, v0.1.5): derived hub-side from the synced transcript
+// (model / context% / $cost the hook stdin can't provide). GET
+// /api/sessions/{id}/telemetry. found=false ⇒ no transcript yet, render nothing.
+export interface SessionTelemetry {
+  sessionId: string
+  found: boolean
+  model?: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreateTokens: number
+  messageCount: number
+  contextPct: number // 0..100
+  costUsd: number
+  lastAt?: string
+}
+
 export interface ReleaseInfo {
   version: string // tag, e.g. "v0.1.5"
   name: string

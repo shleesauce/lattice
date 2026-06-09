@@ -75,6 +75,12 @@ func (h *Hub) routes() http.Handler {
 	// NOT be admin-gated; the nonce alone authorizes the one keystroke it injects.
 	mux.HandleFunc("/api/approvals/", h.handleApproval)
 
+	// Claude Code hook callbacks (C, v0.1.5) — OPEN by design like /api/approvals:
+	// the per-session HookToken in the body is the capability credential. The hook
+	// script runs on the agent box with no admin token, so this must NOT be
+	// admin-gated; the token alone authorizes the precise state edge it reports.
+	mux.HandleFunc("/api/hooks/state", h.handleHookState)
+
 	// Phase 2: first-run setup wizard (unauthenticated; gated 409 once complete).
 	mux.HandleFunc("/api/setup/status", h.handleSetupStatus)
 	mux.HandleFunc("/api/setup/check-root", h.handleSetupCheckRoot)

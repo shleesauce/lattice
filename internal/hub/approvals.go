@@ -155,6 +155,7 @@ func (h *Hub) handleSessionIdle(agentID string, p proto.SessionIdlePayload) {
 func (h *Hub) onSessionExit(agentID, sessionID string) {
 	now := time.Now()
 	h.approvals.dropForSession(sessionID)
+	h.hooks.drop(sessionID) // hook token dies with the session
 	expected := h.approvals.takeExpected(sessionID)
 	rec, ok, err := h.store.GetSession(sessionID)
 	if err != nil || !ok {

@@ -215,6 +215,10 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 	}
 	if kind == proto.SessionClaude {
 		cmd.Env = claudeChildEnv()
+		// C (v0.1.5): inject the per-session hook env so the static --settings hook
+		// script can curl the precise-state callback. Appended AFTER claudeChildEnv so
+		// these win; empty (no-op) when the hub didn't wire hooks (no HubURL/token).
+		cmd.Env = append(cmd.Env, hookEnv(p.HubURL, p.SessionID, p.HookToken)...)
 	}
 
 	cols, rows := normalizeWinsize(p.Cols, p.Rows)
@@ -245,12 +249,17 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 
 	go t.pumpOutput(sess)
 
-	// Fire-and-forget groundwork (v0.1.5): a claude session that goes quiet is
-	// either waiting on a permission prompt or done with its turn — both mean
-	// "needs the operator." Watch its output cadence and report idle/active edges
-	// to the hub, which fans them out to ntfy for opt-in sessions. Terminals and
-	// editors are excluded: a shell sitting at a prompt is the normal resting state.
-	if kind == proto.SessionClaude {
+	// Fire-and-forget (v0.1.5): a claude session that needs the operator (turn done
+	// or blocked on a permission prompt) should ping the phone.
+	//   - When the hub wired Claude Code hooks (HubURL+HookToken present, C), the
+	//     hooks report PRECISE Stop / permission_prompt / SessionEnd edges straight
+	//     to the hub — so we DON'T also run the coarse 45s PTY-quiet watcher; the
+	//     hook signal replaces it (else the two would double-fire).
+	//   - Without hooks (no hub URL configured), fall back to the PTY-quiet idle
+	//     heuristic. Terminals/editors are excluded either way: a shell at a prompt
+	//     is the normal resting state.
+	hooksWired := p.HubURL != "" && p.HookToken != ""
+	if kind == proto.SessionClaude && !hooksWired {
 		go t.watchIdle(sess)
 	}
 
@@ -568,6 +577,16 @@ func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
 	// Fast mode ⇒ claude's low-effort setting (verified flag on claude 2.1.137).
 	if p.FastMode {
 		cArgs = append(cArgs, "--effort", "low")
+	}
+	// C (v0.1.5): wire Lattice-managed CC hooks for precise state, but ONLY when the
+	// hub shipped a callback URL (HubURL) AND we can write the static settings file.
+	// `--settings` loads our hooks for THIS launch only — it never touches the user's
+	// ~/.claude/settings.json. The per-session token/url/id are injected via cmd.Env
+	// in start() (hookEnv), so one static settings file serves every session.
+	if p.HubURL != "" && p.HookToken != "" {
+		if sp := hookSettingsPath(); sp != "" {
+			cArgs = append(cArgs, "--settings", sp)
+		}
 	}
 
 	// Windows: exec claude.exe directly — its PATH is fine and there's no login-shell

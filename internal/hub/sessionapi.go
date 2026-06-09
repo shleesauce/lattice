@@ -79,6 +79,8 @@ func (h *Hub) handleSessions(w http.ResponseWriter, r *http.Request) {
 			h.handleResumeSession(w, r, id)
 		case action == "transcript" && r.Method == http.MethodGet:
 			h.handleTranscript(w, r, id)
+		case action == "telemetry" && r.Method == http.MethodGet:
+			h.handleSessionTelemetry(w, r, id)
 		default:
 			http.NotFound(w, r)
 		}
@@ -264,6 +266,16 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 	}
 	if isResume {
 		create.ResumeID = resumeID
+	}
+	// C (v0.1.5): wire Lattice-managed Claude Code hooks for precise state. Only
+	// when (a) it's a claude session and (b) the hub has a canonical URL the
+	// on-agent hook script can curl back to. Mint a per-session capability token and
+	// ship it + the hub URL so the agent adds `--settings <hooks file>` and injects
+	// them into the claude child env. Without a hub URL the agent skips --settings
+	// and the hub keeps the PTY-quiet idle heuristic.
+	if kind == proto.SessionClaude && h.hooksEnabled() {
+		create.HubURL = h.hubURL
+		create.HookToken = h.mintHookToken(sessionID, now)
 	}
 
 	env, err := h.roundTrip(agentID, reqID, proto.TypeSessionCreate, create)

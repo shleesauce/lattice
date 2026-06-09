@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { XtermSession, type XtermSessionHandle } from './XtermSession'
+import { SessionTelemetryBar } from './SessionTelemetryBar'
 
 interface Props {
   sessionId: string
@@ -22,6 +23,7 @@ export function SessionClaude({ sessionId }: Props) {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <XtermSession ref={xtermRef} sessionId={sessionId} liveLabel="claude" />
+      <SessionTelemetryBar sessionId={sessionId} />
       <button
         type="button"
         onClick={cyclePermissions}

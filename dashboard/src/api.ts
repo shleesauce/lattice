@@ -15,6 +15,7 @@ import type {
   ReleasesResponse,
   RootCheck,
   Session,
+  SessionTelemetry,
   SessionWithPlacement,
   Settings,
   SetupStatus,
@@ -136,6 +137,13 @@ export async function fetchSessions(): Promise<Session[]> {
 // whose transcript hasn't synced from its machine.
 export async function fetchTranscript(id: string): Promise<Transcript> {
   return json<Transcript>(await fetch(`/api/sessions/${encodeURIComponent(id)}/transcript`))
+}
+
+// Fetch a session's rich telemetry (C, v0.1.5): model / context% / $cost derived
+// hub-side from the synced transcript. Returns {found:false} (not an error) for a
+// session with no transcript on disk yet, or a terminal/editor session.
+export async function fetchSessionTelemetry(id: string): Promise<SessionTelemetry> {
+  return json<SessionTelemetry>(await fetch(`/api/sessions/${encodeURIComponent(id)}/telemetry`))
 }
 
 export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {

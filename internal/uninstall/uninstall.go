@@ -44,6 +44,7 @@ type plan struct {
 	uid      int
 	services []service
 	dataDirs []string
+	cliLink  string // ~/.local/bin/lattice symlink the installer drops (unix only)
 }
 
 // planFor computes the removal plan for an OS + home dir. localAppData is only
@@ -59,6 +60,7 @@ func planFor(goos, home, localAppData string, uid int) plan {
 			{kind: "launchd", label: "sh.lattice.agent", file: filepath.Join(la, "sh.lattice.agent.plist")},
 		}
 		p.dataDirs = []string{filepath.Join(home, ".lattice")}
+		p.cliLink = filepath.Join(home, ".local", "bin", "lattice")
 	case "windows":
 		p.services = []service{
 			{kind: "schtask", label: "LatticeHub"},
@@ -75,8 +77,25 @@ func planFor(goos, home, localAppData string, uid int) plan {
 			{kind: "systemd", label: "lattice-agent", file: filepath.Join(ud, "lattice-agent.service")},
 		}
 		p.dataDirs = []string{filepath.Join(home, ".lattice")}
+		p.cliLink = filepath.Join(home, ".local", "bin", "lattice")
 	}
 	return p
+}
+
+// removeCLILink deletes the ~/.local/bin/lattice symlink the installer dropped,
+// but only if it actually points at our binary — never an unrelated same-named
+// file. Best-effort and silent when absent.
+func removeCLILink(link, home string) {
+	if link == "" {
+		return
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		return // not a symlink, or absent
+	}
+	if target == filepath.Join(home, ".lattice", "bin", "lattice") {
+		_ = os.Remove(link)
+	}
 }
 
 // Run is the `lattice uninstall` entry point.
@@ -106,6 +125,9 @@ func Run(ctx context.Context, args []string, version string) error {
 	for _, d := range p.dataDirs {
 		fmt.Printf("  • delete data directory:  %s\n", d)
 	}
+	if p.cliLink != "" {
+		fmt.Printf("  • remove CLI symlink:     %s\n", p.cliLink)
+	}
 	fmt.Println("\nIt will NOT touch your projects, your files, your shell config, Claude/~/.claude,")
 	fmt.Println("or your Tailscale / SSH / Syncthing setup. Removing Lattice leaves the rest as-is.")
 
@@ -130,6 +152,7 @@ func Run(ctx context.Context, args []string, version string) error {
 	for _, d := range p.dataDirs {
 		stopPidfiles(ctx, d)
 	}
+	removeCLILink(p.cliLink, home)
 
 	var failures []string
 	for _, d := range p.dataDirs {

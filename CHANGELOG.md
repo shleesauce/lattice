@@ -4,6 +4,18 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-06-08
+
+A bugfix release — found in first-run testing.
+
+### Fixed
+- **The `lattice` command now works by name.** The installer put the binary at
+  `~/.lattice/bin/lattice` but never on `PATH`, so the documented `lattice uninstall` /
+  `update` / `doctor` returned "command not found". `get.sh` now symlinks `lattice` into
+  `~/.local/bin` (no sudo, no system dirs); `get.ps1` adds the install dir to your user
+  `PATH`. Both uninstallers (and `lattice uninstall`) remove what was added. The web
+  uninstaller still needs no `PATH` at all.
+
 ## [0.1.3] - 2026-06-08
 
 A bugfix release — critical for multi-machine meshes; found in first-run testing.
@@ -154,6 +166,7 @@ The first installable release — built and published by `.github/workflows/rele
   token compare; shared websocket-send and `requireMethod` helpers; one shared agent reconnect
   loop; centralized dashboard hub-error parsing.
 
+[0.1.4]: https://github.com/shleesauce/lattice/releases/tag/v0.1.4
 [0.1.3]: https://github.com/shleesauce/lattice/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shleesauce/lattice/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shleesauce/lattice/releases/tag/v0.1.1

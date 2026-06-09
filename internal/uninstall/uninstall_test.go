@@ -26,6 +26,9 @@ func TestPlanForDarwin(t *testing.T) {
 	if len(p.dataDirs) != 1 || p.dataDirs[0] != "/Users/x/.lattice" {
 		t.Errorf("dataDirs=%v want [/Users/x/.lattice]", p.dataDirs)
 	}
+	if p.cliLink != "/Users/x/.local/bin/lattice" {
+		t.Errorf("cliLink=%q want /Users/x/.local/bin/lattice", p.cliLink)
+	}
 }
 
 func TestPlanForLinux(t *testing.T) {
@@ -55,6 +58,9 @@ func TestPlanForWindows(t *testing.T) {
 		if s.kind != "schtask" || s.file != "" {
 			t.Errorf("%s kind=%s file=%q want schtask/empty-file", s.label, s.kind, s.file)
 		}
+	}
+	if p.cliLink != "" {
+		t.Errorf("windows cliLink=%q want empty (PATH handled by uninstall.ps1)", p.cliLink)
 	}
 	// Windows removes BOTH the profile data dir and the LOCALAPPDATA binary dir.
 	// Build expected paths with filepath.Join so the assertion is separator-

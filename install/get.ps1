@@ -82,6 +82,15 @@ if (-not $moved) {
 }
 Write-Host "lattice: installed binary at $binPath"
 
+# Make `lattice` runnable by name: add the install dir to the USER PATH (no admin).
+# The uninstaller removes it again.
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath -or ($userPath -notlike "*$installDir*")) {
+  $newPath = if ($userPath) { "$userPath;$installDir" } else { $installDir }
+  [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+  Write-Host "lattice: added $installDir to your user PATH (open a NEW terminal for the 'lattice' command)"
+}
+
 # Initialize config + token + free port.
 & $binPath hub init
 

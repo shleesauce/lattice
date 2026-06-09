@@ -43,7 +43,19 @@ Get-Process -Name 'lattice' -ErrorAction SilentlyContinue | ForEach-Object {
   $script:removedAny = $true
 }
 
-foreach ($dir in @((Join-Path $env:LOCALAPPDATA 'Lattice'), (Join-Path $env:USERPROFILE '.lattice'))) {
+# Remove the install dir from the user PATH if the installer added it.
+$installDir = Join-Path $env:LOCALAPPDATA 'Lattice'
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath -and ($userPath -like "*$installDir*")) {
+  Say "removing $installDir from your user PATH"
+  if (-not $DryRun) {
+    $new = (($userPath -split ';') | Where-Object { $_ -and ($_ -ne $installDir) }) -join ';'
+    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+  }
+  $script:removedAny = $true
+}
+
+foreach ($dir in @($installDir, (Join-Path $env:USERPROFILE '.lattice'))) {
   if (Test-Path $dir) {
     Say "removing $dir"
     if (-not $DryRun) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }

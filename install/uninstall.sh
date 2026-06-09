@@ -106,6 +106,16 @@ for pf in "$PREFIX/hub.pid" "$PREFIX/agent.pid"; do
   fi
 done
 
+# Remove the `lattice` CLI symlink the installer dropped in ~/.local/bin — but
+# only if it actually points at our binary, so we never delete an unrelated file
+# of the same name.
+CLI="$HOME/.local/bin/lattice"
+if [ -L "$CLI" ] && [ "$(readlink "$CLI" 2>/dev/null)" = "$PREFIX/bin/lattice" ]; then
+  say "removing CLI symlink $CLI"
+  do_run "rm -f '$CLI'"
+  removed_any=1
+fi
+
 # Remove the entire data directory — the one and only thing we delete.
 if [ -d "$PREFIX" ]; then
   say "removing data directory $PREFIX"

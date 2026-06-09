@@ -166,7 +166,7 @@ Everything Lattice installs lives in **one data directory plus one service file*
 | Binary, config, database, token, logs | `~/.lattice/` | `~/.lattice/` | `%USERPROFILE%\.lattice\` + `%LOCALAPPDATA%\Lattice\` |
 | Persistent service | `~/Library/LaunchAgents/sh.lattice.{hub,agent}.plist` | `~/.config/systemd/user/lattice-{hub,agent}.service` | Scheduled task `LatticeHub` / `LatticeAgent` |
 
-It does **not** edit your shell config or `PATH`, install anything system-wide, require root, or
+It does **not** edit your shell config, install anything system-wide, require root, or
 touch your projects, your files, Claude / `~/.claude`, or your Tailscale / SSH / Syncthing setup —
 Lattice only ever *detects and guides* those, never configures them. Removing Lattice leaves your
 machine exactly as it was before.

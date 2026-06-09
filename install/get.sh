@@ -100,6 +100,12 @@ rm -f "$SUMS"
 trap - EXIT
 echo "lattice: installed binary at $BIN"
 
+# Make `lattice` runnable by name (no sudo, no system dirs): drop a symlink in
+# ~/.local/bin. The uninstaller removes it. The binary at $BIN always works by
+# full path regardless of PATH.
+mkdir -p "$HOME/.local/bin" 2>/dev/null && ln -sf "$BIN" "$HOME/.local/bin/lattice" 2>/dev/null \
+  && echo "lattice: linked 'lattice' command → ~/.local/bin/lattice"
+
 # --- initialize config + token + free port ---
 "$BIN" hub init
 
@@ -273,3 +279,7 @@ HOSTNAME="$(hostname 2>/dev/null || echo localhost)"
 echo ""
 echo "lattice: hub + this machine are up and running."
 echo "lattice: open  http://$HOSTNAME:$PORT/  to finish setup (your machine is already in the fleet)."
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) echo "lattice: manage it anytime with the 'lattice' command (e.g. 'lattice uninstall')." ;;
+  *) echo "lattice: for the 'lattice' command, add ~/.local/bin to your PATH — or use $BIN" ;;
+esac

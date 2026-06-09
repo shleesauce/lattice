@@ -139,7 +139,7 @@ It removes **both** the hub and the agent if a machine ran either, it's safe to 
 
 ## What it actually puts on your machine
 
-Everything lives in **one data folder plus one service entry**, all at the **user level — no admin, no system directories, no `PATH` edits:**
+Everything lives in **one data folder plus one service entry** (plus a `lattice` symlink in `~/.local/bin`, or a user-PATH entry on Windows, so the command works) — all at the **user level — no admin, no system directories:**
 
 | | macOS | Linux | Windows |
 |---|---|---|---|

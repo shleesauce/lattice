@@ -109,6 +109,7 @@ type createSessionBody struct {
 	UserAgentID    string `json:"userAgentId"`
 	PinAgentID     string `json:"pinAgentId"`
 	PermissionMode string `json:"permissionMode"` // claude only; agent validates + defaults
+	NotifyOnIdle   bool   `json:"notifyOnIdle"`   // claude only; ping my phone when it waits or finishes
 }
 
 func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +175,10 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode)
+	// Only a claude session can go idle/finish in a way worth a phone ping; ignore
+	// the flag for terminal/editor so a stray toggle can't arm a never-firing notify.
+	notifyOnIdle := body.NotifyOnIdle && req.Kind == proto.SessionClaude
+	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode, notifyOnIdle)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -203,7 +207,7 @@ func deviceExcludeReason(p PlacementResult, agentID string) string {
 // chosen agent, and flips the row to live on ack. resumeID is non-empty only for
 // a resume onto a (possibly different) agent. The session row id is reused on
 // resume so the logical conversation keeps one identity (D20).
-func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string) (SessionRecord, error) {
+func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string, notifyOnIdle bool) (SessionRecord, error) {
 	now := time.Now()
 	sessionID := resumeID
 	isResume := resumeID != ""
@@ -225,6 +229,7 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		// frozen at creation and resume always returns here (see handleResumeSession).
 		Pinned:       true,
 		Scope:        scope,
+		NotifyOnIdle: notifyOnIdle,
 		CreatedAt:    now,
 		LastActiveAt: now,
 	}
@@ -277,6 +282,9 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 // (claude/PTY) and marks it exited, so an archived / trashed / deleted session
 // stops eating host RAM+CPU. No-op if the agent is offline (nothing is running).
 func (h *Hub) endHostProcess(agentID, sessionID string) {
+	// Mark this as a hub-initiated close so the resulting session_exit doesn't fire
+	// a "finished" phone ping (the operator closed it on purpose).
+	h.approvals.expectExit(sessionID, time.Now())
 	if ac, online := h.registry.getAgent(agentID); online {
 		_ = ac.send(proto.TypeSessionClose, proto.SessionControlPayload{SessionID: sessionID})
 	}
@@ -429,7 +437,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "")
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "", rec.NotifyOnIdle)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return

@@ -153,6 +153,7 @@ export interface Session {
   pinned: boolean
   archived?: boolean
   deletedAt?: string // RFC3339 when trashed; absent/empty otherwise
+  notifyOnIdle?: boolean // claude: ping my phone when it waits/finishes (fire-and-forget)
   createdAt: string // RFC3339
   lastActiveAt: string // RFC3339
 }
@@ -184,6 +185,7 @@ export interface CreateSessionRequest {
   userAgentId?: string
   pinAgentId?: string
   permissionMode?: string
+  notifyOnIdle?: boolean
 }
 
 export interface SessionWithPlacement {

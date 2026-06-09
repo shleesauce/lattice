@@ -137,6 +137,10 @@ type Hub struct {
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
 
+	// approvals holds in-memory phone approve/deny capabilities (fire-and-forget,
+	// v0.1.5): armed when a session goes idle, consumed by the ntfy action link.
+	approvals *approvalStore
+
 	// fleetDirty is set when a heartbeat changed fleet metrics; the coalescing
 	// flushFleetLoop broadcasts at most once per fleetBroadcastInterval when set.
 	fleetMu    sync.Mutex
@@ -211,6 +215,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		setupComplete: !NeedsSetup(cfg),
 		sessions:      newSessionStore(),
 		loginLimiter:  newLoginLimiter(),
+		approvals:     newApprovalStore(),
 	}
 
 	// Secure-by-default: a fully-configured hub (setup done) with NO admin password
@@ -371,6 +376,8 @@ func (h *Hub) reapLoop(ctx context.Context) {
 		} else if c > 0 {
 			log.Printf("reap sweep: pruned %d long-revoked enroll token(s)", c)
 		}
+		// Drop expired fire-and-forget approval nonces + stale expected-exit markers.
+		h.approvals.sweep(time.Now())
 	}
 	reap()
 	ticker := time.NewTicker(reapInterval)

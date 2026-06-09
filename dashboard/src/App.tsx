@@ -136,6 +136,20 @@ function Dashboard() {
     setView('workspace')
   }
 
+  // Deep link from a phone notification: <hub>/?session=<id> jumps straight to that
+  // session in the workspace (the "Open" button on a fire-and-forget ntfy push).
+  // Consume the param once, then strip it so a refresh doesn't re-fire the intent.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const sid = params.get('session')
+    if (!sid) return
+    routeToWorkspace({ kind: 'open-session', sessionId: sid })
+    params.delete('session')
+    const qs = params.toString()
+    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Unified device list → mesh machines, with in-flight wakes shown as "starting".
   const machines = useMemo(() => {
     const base = devicesToMachines(devices, ws.sessions)

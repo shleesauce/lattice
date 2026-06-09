@@ -50,7 +50,11 @@ type SessionRecord struct {
 	Archived bool
 	// DeletedAt is the trash timestamp. Zero ⇒ not trashed. A trashed session is
 	// hidden from the workspace (lives in Trash) and auto-purged after 30 days.
-	DeletedAt    time.Time
+	DeletedAt time.Time
+	// NotifyOnIdle opts this session into fire-and-forget phone notifications:
+	// when it goes quiet (waiting on input) or exits, the hub pushes to ntfy. Set
+	// at creation; preserved across re-adopt/resume (never reset by a reconnect).
+	NotifyOnIdle bool
 	CreatedAt    time.Time
 	LastActiveAt time.Time
 }
@@ -88,6 +92,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 	scope             TEXT DEFAULT 'project',
 	archived          INTEGER DEFAULT 0,
 	deleted_at        TEXT DEFAULT '',
+	notify_on_idle    INTEGER DEFAULT 0,
 	created_at        TEXT,
 	last_active_at    TEXT
 );
@@ -146,6 +151,7 @@ func OpenStore(path string) (*Store, error) {
 		`ALTER TABLE sessions ADD COLUMN scope TEXT DEFAULT 'project'`,
 		`ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN deleted_at TEXT DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN notify_on_idle INTEGER DEFAULT 0`,
 	} {
 		if _, err := db.Exec(mig); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -477,6 +483,19 @@ func (s *Store) ReapCommandHistory(keep int) (int, error) {
 // monotonic insert order) and drops the rest. It deliberately caps by row count
 // rather than age — the same conservative shape as ReapCommandHistory — so a
 // quiet fleet never loses recent history. Returns the count deleted.
+// LogAudit appends one row to audit_log — the lifecycle/approval trail behind
+// fire-and-forget (v0.1.5). detailJSON is an opaque JSON string ("" ⇒ NULL).
+// Best-effort by design: the caller logs the error and continues, since losing an
+// audit row must never break a session lifecycle transition. The reap loop
+// (ReapAuditLog) caps total rows, so this is unbounded-safe.
+func (s *Store) LogAudit(sessionID, agentID, eventType, toolName, detailJSON string, at time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO audit_log (session_id, agent_id, event_type, tool_name, detail_json, at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, sessionID, agentID, eventType, toolName, detailJSON, at.UTC().Format(time.RFC3339))
+	return err
+}
+
 func (s *Store) ReapAuditLog(keep int) (int, error) {
 	res, err := s.db.Exec(`
 		DELETE FROM audit_log
@@ -540,9 +559,16 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 	if !rec.DeletedAt.IsZero() {
 		deletedAt = rec.DeletedAt.UTC().Format(time.RFC3339)
 	}
+	notify := 0
+	if rec.NotifyOnIdle {
+		notify = 1
+	}
+	// notify_on_idle is set on INSERT only — deliberately absent from the conflict
+	// UPDATE so a re-adopt/resume (which rebuilds the record with the flag zeroed)
+	// can't silently turn off an operator's fire-and-forget opt-in.
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			project_path=excluded.project_path,
 			kind=excluded.kind,
@@ -556,7 +582,7 @@ func (s *Store) UpsertSession(rec SessionRecord) error {
 			deleted_at=excluded.deleted_at,
 			last_active_at=excluded.last_active_at
 	`, rec.ID, rec.ProjectPath, rec.Kind, rec.AgentID, rec.ClaudeSessionID,
-		rec.Title, rec.Status, pinned, scope, archived, deletedAt, created, active)
+		rec.Title, rec.Status, pinned, scope, archived, deletedAt, notify, created, active)
 	return err
 }
 
@@ -652,7 +678,7 @@ func (s *Store) SetSessionAgent(id, agentID, claudeSessionID string) error {
 // ListSessions returns every session row, newest activity first.
 func (s *Store) ListSessions() ([]SessionRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at
 		FROM sessions
 		ORDER BY last_active_at DESC
 	`)
@@ -675,7 +701,7 @@ func (s *Store) ListSessions() ([]SessionRecord, error) {
 // GetSession returns one session row by id. ok=false when no row exists.
 func (s *Store) GetSession(id string) (SessionRecord, bool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, created_at, last_active_at
+		SELECT id, project_path, kind, agent_id, claude_session_id, title, status, pinned, scope, archived, deleted_at, notify_on_idle, created_at, last_active_at
 		FROM sessions WHERE id=?
 	`, id)
 	rec, err := scanSession(row)
@@ -770,15 +796,17 @@ func scanSession(r scanRow) (SessionRecord, error) {
 		pinned    int
 		archived  int
 		deletedAt string
+		notify    int
 		createdAt string
 		activeAt  string
 	)
 	if err := r.Scan(&rec.ID, &rec.ProjectPath, &rec.Kind, &rec.AgentID,
-		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &deletedAt, &createdAt, &activeAt); err != nil {
+		&rec.ClaudeSessionID, &rec.Title, &rec.Status, &pinned, &rec.Scope, &archived, &deletedAt, &notify, &createdAt, &activeAt); err != nil {
 		return SessionRecord{}, err
 	}
 	rec.Pinned = pinned != 0
 	rec.Archived = archived != 0
+	rec.NotifyOnIdle = notify != 0
 	if deletedAt != "" {
 		if t, err := time.Parse(time.RFC3339, deletedAt); err == nil {
 			rec.DeletedAt = t

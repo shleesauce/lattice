@@ -12,6 +12,16 @@ All notable changes to Lattice are documented here. The format follows
   the Claude pane has a one-click control to cycle the mode live (sends Shift+Tab to the TUI, so it
   works on a phone where Shift+Tab isn't available). Groundwork for unattended runs: start an agent
   in Bypass/Accept-edits so it doesn't block waiting for approvals.
+- **Fire-and-forget: get pinged on your phone, approve from anywhere.** Flip "Ping my phone" on a
+  Claude session and walk away. The moment that run goes quiet waiting on you — a permission prompt
+  or the end of its turn — or it finishes, Lattice pushes a notification (ntfy) to your phone. The
+  push carries **Approve / Deny** buttons that answer the prompt without opening a laptop, plus
+  **Open** to jump straight into the session. Approve sends Enter; Deny sends Esc. The approve link
+  is a single-use, expiring capability URL — no admin token rides on the notification — and your
+  phone reaches the hub over your existing tailnet. Every idle / active / exit / approval transition
+  is recorded to the `audit_log`. Tune the quiet threshold with `LATTICE_IDLE_SECS` (default 45s);
+  notifications reuse the watchdog's `LATTICE_NTFY_TOPIC` / `LATTICE_NTFY_URL`, and the Approve/Deny
+  buttons require the hub's canonical URL (`hubUrl` in `~/.lattice/config.json`).
 
 ## [0.1.4] - 2026-06-08
 

@@ -80,6 +80,7 @@ const (
 	TypeSessionReplay     MessageType = "session_replay"      // scrollback / event tail on attach
 	TypeSessionExit       MessageType = "session_exit"        // the session process ended
 	TypeSessionListResult MessageType = "session_list_result" // live sessions (also sent post-register)
+	TypeSessionIdle       MessageType = "session_idle"        // a claude session went quiet (Idle=true) / resumed (Idle=false)
 
 	// --- IDE milestone (M2): embedded editor (code-server) over a yamux tunnel ---
 	// An editor session is a code-server process bound to 127.0.0.1 on the agent.
@@ -314,6 +315,17 @@ type SessionControlPayload struct {
 	SessionID string `json:"sessionId"`
 	ExitCode  int    `json:"exitCode,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// SessionIdlePayload reports a claude session crossing the quiet threshold
+// (Idle=true: no PTY output for QuietMs, so claude is waiting on input — a
+// permission gate or just the end of its turn) or resuming output after being
+// idle (Idle=false). The hub uses the true edge to fire the fire-and-forget
+// "needs you" notification for opt-in sessions; both edges feed the audit_log.
+type SessionIdlePayload struct {
+	SessionID string `json:"sessionId"`
+	Idle      bool   `json:"idle"`
+	QuietMs   int64  `json:"quietMs,omitempty"`
 }
 
 // --- Phase 3 payloads: capabilities ---

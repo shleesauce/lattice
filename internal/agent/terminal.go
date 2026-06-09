@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -244,6 +245,15 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 
 	go t.pumpOutput(sess)
 
+	// Fire-and-forget groundwork (v0.1.5): a claude session that goes quiet is
+	// either waiting on a permission prompt or done with its turn — both mean
+	// "needs the operator." Watch its output cadence and report idle/active edges
+	// to the hub, which fans them out to ntfy for opt-in sessions. Terminals and
+	// editors are excluded: a shell sitting at a prompt is the normal resting state.
+	if kind == proto.SessionClaude {
+		go t.watchIdle(sess)
+	}
+
 	if p.SeedInput != "" {
 		go injectSeedWhenReady(sess, p.SeedInput)
 	}
@@ -360,6 +370,69 @@ func injectSeedWhenReady(sess *ptySession, seed string) {
 	if _, err := sess.write([]byte(seed + "\r")); err != nil {
 		log.Printf("agent: seed %s write: %v", sess.id, err)
 	}
+}
+
+// idleThreshold is how long a claude PTY must stay quiet before the agent reports
+// it idle. Override with LATTICE_IDLE_SECS (clamped to a sane floor) — a fleet that
+// runs slow tasks may want a longer fuse to avoid mid-thought pings.
+func idleThreshold() time.Duration {
+	const def = 45 * time.Second
+	v := os.Getenv("LATTICE_IDLE_SECS")
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 5 {
+		return def
+	}
+	return time.Duration(n) * time.Second
+}
+
+// watchIdle reports the quiet→active edges of a claude session to the hub. It
+// edge-triggers: one session_idle{Idle:true} when output has been silent for the
+// threshold, one session_idle{Idle:false} when output resumes — so the hub gets a
+// single "needs you" signal per waiting episode, not a stream. It rides the same
+// lastOutNano the seed-injector watches (stamped on every PTY read in pumpOutput),
+// so it sees activity even with no browser attached — the whole point of fire-and-
+// forget. The loop exits when the session leaves the registry (process ended).
+func (t *terminals) watchIdle(sess *ptySession) {
+	const poll = 3 * time.Second
+	threshold := idleThreshold()
+	notified := false
+	for {
+		time.Sleep(poll)
+		if _, ok := t.get(sess.id); !ok {
+			return // session ended (the wait goroutine removed it)
+		}
+		last := sess.lastOutNano.Load()
+		if last == 0 {
+			continue // no output yet — still booting, not "idle"
+		}
+		quiet := time.Since(time.Unix(0, last))
+		switch {
+		case quiet >= threshold && !notified:
+			t.sendIdle(sess.id, true, quiet.Milliseconds())
+			notified = true
+		case quiet < threshold && notified:
+			t.sendIdle(sess.id, false, 0)
+			notified = false
+		}
+	}
+}
+
+// sendIdle emits a session_idle frame to the hub via the shared sink (the live
+// agent→hub link). Dropped silently when no link is up; the next poll re-evaluates.
+func (t *terminals) sendIdle(sessionID string, idle bool, quietMs int64) {
+	frame, err := proto.Encode(proto.TypeSessionIdle, proto.SessionIdlePayload{
+		SessionID: sessionID,
+		Idle:      idle,
+		QuietMs:   quietMs,
+	})
+	if err != nil {
+		log.Printf("agent: encode session_idle: %v", err)
+		return
+	}
+	t.sink.send(frame)
 }
 
 // resize resizes a live PTY's window.

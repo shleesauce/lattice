@@ -292,6 +292,13 @@ func (h *Hub) readLoop(ac *agentConn) {
 				}
 			}
 
+		case proto.TypeSessionIdle:
+			var p proto.SessionIdlePayload
+			if err := proto.As(env, &p); err != nil {
+				continue
+			}
+			h.handleSessionIdle(ac.id, p)
+
 		case proto.TypeSessionExit:
 			var p proto.SessionControlPayload
 			if err := proto.As(env, &p); err != nil {
@@ -300,6 +307,10 @@ func (h *Hub) readLoop(ac *agentConn) {
 			if err := h.store.UpdateSessionStatus(p.SessionID, proto.SessionExited, time.Now()); err != nil {
 				log.Printf("agent %s: session exit persist failed: %v", ac.id, err)
 			}
+			// Fire-and-forget (v0.1.5): audit the exit and, for an opted-in run that
+			// died on its own, push a "finished" ping. Must run BEFORE the row could
+			// be reaped — GetSession still sees the NotifyOnIdle flag here.
+			h.onSessionExit(ac.id, p.SessionID)
 			if t, ok := h.registry.getTerminal(p.SessionID); ok {
 				_ = t.send(map[string]any{"type": "exit"})
 				t.close()

@@ -103,6 +103,7 @@ function ProjectSessionDialog({
   const [kind, setKind] = useState<SessionKind>('claude')
   const [title, setTitle] = useState('')
   const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [pinAgentId, setPinAgentId] = useState<string>('')
   const [preview, setPreview] = useState<PlacementResult | null>(null)
   const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -179,6 +180,7 @@ function ProjectSessionDialog({
         title: title.trim() || undefined,
         pinAgentId: pinAgentId || undefined,
         permissionMode: kind === 'claude' ? permissionMode : undefined,
+        notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
     } catch (e) {
@@ -231,6 +233,7 @@ function ProjectSessionDialog({
                   <span className="hint">how much Claude asks before acting</span>
                 </label>
                 <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+                <NotifyToggle value={notifyOnIdle} onChange={setNotifyOnIdle} />
               </>
             )}
 
@@ -401,6 +404,7 @@ function DeviceSessionDialog({
   const [kind, setKind] = useState<SessionKind>(claudeReady ? 'claude' : 'terminal')
   const [title, setTitle] = useState('')
   const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -417,6 +421,7 @@ function DeviceSessionDialog({
         pinAgentId: agent.id,
         title: title.trim() || undefined,
         permissionMode: kind === 'claude' ? permissionMode : undefined,
+        notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
     } catch (e) {
@@ -465,6 +470,7 @@ function DeviceSessionDialog({
               <span className="hint">how much Claude asks before acting</span>
             </label>
             <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+            <NotifyToggle value={notifyOnIdle} onChange={setNotifyOnIdle} />
           </>
         )}
 
@@ -783,6 +789,69 @@ function PermissionModeSelect({ value, onChange }: { value: string; onChange: (v
         </button>
       ))}
     </div>
+  )
+}
+
+// Fire-and-forget opt-in: when armed, the hub pings your phone (ntfy) the moment
+// this Claude run goes quiet waiting on you, or finishes — and the push carries
+// Approve / Deny buttons so you can answer a prompt without opening the laptop.
+function NotifyToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      className="notify-toggle"
+      style={{
+        marginTop: 10,
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 11,
+        padding: '11px 14px',
+        borderRadius: 13,
+        cursor: 'pointer',
+        textAlign: 'left',
+        border: `1px solid ${value ? 'var(--border-alive)' : 'var(--border)'}`,
+        background: value ? 'color-mix(in oklch, var(--teal) 8%, var(--void))' : 'transparent',
+        boxShadow: value ? 'var(--glow-alive)' : 'none',
+        transition: 'background .15s, border-color .15s',
+      }}
+    >
+      <Icon name="smartphone" size={15} color={value ? 'var(--teal)' : 'var(--fg-3)'} />
+      <span style={{ flex: 1 }}>
+        <span style={{ display: 'block', fontSize: 13, color: 'var(--fg-1)', fontWeight: 500 }}>Ping my phone</span>
+        <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 1 }}>
+          notify + approve from anywhere when it waits or finishes
+        </span>
+      </span>
+      <span
+        aria-hidden
+        style={{
+          flexShrink: 0,
+          width: 34,
+          height: 20,
+          borderRadius: 999,
+          background: value ? 'var(--teal)' : 'color-mix(in oklch, var(--fg-3) 30%, transparent)',
+          position: 'relative',
+          transition: 'background .15s',
+        }}
+      >
+        <span
+          style={{
+            position: 'absolute',
+            top: 2,
+            left: value ? 16 : 2,
+            width: 16,
+            height: 16,
+            borderRadius: '50%',
+            background: 'var(--void)',
+            transition: 'left .15s',
+          }}
+        />
+      </span>
+    </button>
   )
 }
 

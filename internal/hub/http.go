@@ -66,6 +66,12 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/placement", h.requireAuth(h.handlePlacement))
 	mux.HandleFunc("/api/settings", h.requireAuth(h.handleSettings))
 
+	// Fire-and-forget approve/deny (v0.1.5) — OPEN by design: the unguessable
+	// single-use nonce in the path is a capability credential (see handleApproval).
+	// The phone tapping the ntfy action button carries no admin token, so this must
+	// NOT be admin-gated; the nonce alone authorizes the one keystroke it injects.
+	mux.HandleFunc("/api/approvals/", h.handleApproval)
+
 	// Phase 2: first-run setup wizard (unauthenticated; gated 409 once complete).
 	mux.HandleFunc("/api/setup/status", h.handleSetupStatus)
 	mux.HandleFunc("/api/setup/check-root", h.handleSetupCheckRoot)

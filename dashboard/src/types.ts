@@ -229,6 +229,30 @@ export interface SessionWithPlacement {
   placement: PlacementResult
 }
 
+// Workflow templates (E, v0.1.5): a pasted GitHub issue/PR URL spins up a scoped,
+// pre-briefed Claude session in a dedicated worktree, auto-placed.
+export interface CreateWorkflowRequest {
+  url: string
+  projectPath: string
+  userAgentId?: string
+  pinAgentId?: string
+  permissionMode?: string
+  model?: string
+  notifyOnIdle?: boolean
+}
+
+export interface WorkflowInfo {
+  kind: 'implement_issue' | 'review_pr'
+  url: string
+  worktree: string
+}
+
+export interface WorkflowResult {
+  session: Session
+  placement: PlacementResult
+  workflow: WorkflowInfo
+}
+
 // Rich session telemetry (C, v0.1.5): derived hub-side from the synced transcript
 // (model / context% / $cost the hook stdin can't provide). GET
 // /api/sessions/{id}/telemetry. found=false ⇒ no transcript yet, render nothing.

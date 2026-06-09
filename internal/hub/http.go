@@ -63,6 +63,11 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/projects", h.requireAuth(h.handleProjects))
 	mux.HandleFunc("/api/sessions", h.requireAuth(h.handleSessions))
 	mux.HandleFunc("/api/sessions/", h.requireAuth(h.handleSessions))
+
+	// Workflow templates (E, v0.1.5): paste a GitHub issue/PR URL → a pre-briefed
+	// Claude session in a dedicated worktree, auto-placed. Admin-gated like the rest
+	// of the workspace API (it creates a session).
+	mux.HandleFunc("/api/workflows", h.requireAuth(h.handleWorkflows))
 	mux.HandleFunc("/api/placement", h.requireAuth(h.handlePlacement))
 	mux.HandleFunc("/api/settings", h.requireAuth(h.handleSettings))
 	// Release notes + update check (v0.1.5): recent GitHub releases with the running

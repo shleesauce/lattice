@@ -7,6 +7,8 @@ import type {
   CreateProjectRequest,
   CreateProjectResult,
   CreateSessionRequest,
+  CreateWorkflowRequest,
+  WorkflowResult,
   FileListResult,
   Health,
   PlacementRequest,
@@ -144,6 +146,17 @@ export async function fetchTranscript(id: string): Promise<Transcript> {
 // session with no transcript on disk yet, or a terminal/editor session.
 export async function fetchSessionTelemetry(id: string): Promise<SessionTelemetry> {
   return json<SessionTelemetry>(await fetch(`/api/sessions/${encodeURIComponent(id)}/telemetry`))
+}
+
+// Start a workflow session (E, v0.1.5): a GitHub issue/PR URL → a scoped, pre-briefed
+// Claude session in a dedicated worktree, auto-placed.
+export async function createWorkflow(req: CreateWorkflowRequest): Promise<WorkflowResult> {
+  const res = await fetch('/api/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<WorkflowResult>(res)
 }
 
 export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {

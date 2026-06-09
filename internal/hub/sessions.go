@@ -63,6 +63,7 @@ type sessionView struct {
 	DeletedAt       string `json:"deletedAt,omitempty"`
 	NotifyOnIdle    bool   `json:"notifyOnIdle,omitempty"`
 	Model           string `json:"model,omitempty"`
+	PRURL           string `json:"prUrl,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	LastActiveAt    string `json:"lastActiveAt"`
 }
@@ -83,6 +84,7 @@ func toSessionView(r SessionRecord) sessionView {
 		DeletedAt:       deletedAtStr(r.DeletedAt),
 		NotifyOnIdle:    r.NotifyOnIdle,
 		Model:           r.Model,
+		PRURL:           r.PRURL,
 		CreatedAt:       r.CreatedAt.UTC().Format(time.RFC3339),
 		LastActiveAt:    r.LastActiveAt.UTC().Format(time.RFC3339),
 	}

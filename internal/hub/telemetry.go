@@ -46,6 +46,7 @@ type telemetryView struct {
 	ContextPct   float64 `json:"contextPct"`       // 0..100, current context footprint
 	CostUSD      float64 `json:"costUsd"`          // informational estimate
 	LastAt       string  `json:"lastAt,omitempty"` // RFC3339 of the last turn
+	PRURL        string  `json:"prUrl,omitempty"`  // detected PR for this session (D)
 }
 
 // handleSessionTelemetry answers GET /api/sessions/{id}/telemetry. Network-gated
@@ -62,7 +63,7 @@ func (h *Hub) handleSessionTelemetry(w http.ResponseWriter, r *http.Request, id 
 		http.NotFound(w, r)
 		return
 	}
-	resp := telemetryView{SessionID: id}
+	resp := telemetryView{SessionID: id, PRURL: rec.PRURL}
 	if proto.SessionKind(rec.Kind) != proto.SessionClaude {
 		writeJSON(w, http.StatusOK, resp)
 		return

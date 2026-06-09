@@ -143,6 +143,10 @@ func (h *Hub) handleSessionIdle(agentID string, p proto.SessionIdlePayload) {
 		h.approvals.dropForSession(p.SessionID) // output resumed — stale approval
 		return
 	}
+	// D: the idle edge is the fallback (no-hooks) analogue of the Stop hook — claude
+	// just went quiet, so it may have printed a PR URL. Detect off the transcript.
+	go h.detectPRForSession(p.SessionID, now)
+
 	rec, ok, err := h.store.GetSession(p.SessionID)
 	if err != nil || !ok || !rec.NotifyOnIdle {
 		return

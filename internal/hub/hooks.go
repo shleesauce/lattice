@@ -166,6 +166,10 @@ func (h *Hub) onHookStop(sessionID string, now time.Time) {
 	if rec.NotifyOnIdle {
 		h.notifyWaiting(rec, rec.AgentID, now)
 	}
+	// D: a finished turn is exactly when claude has just printed a PR URL (e.g. after
+	// `gh pr create`). Enrich off the same transcript pipeline — own goroutine so it
+	// never delays the hook.
+	go h.detectPRForSession(sessionID, now)
 }
 
 // onHookAwaiting records an awaiting-permission edge and pings the phone (with the

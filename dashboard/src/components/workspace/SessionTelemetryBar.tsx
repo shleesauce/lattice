@@ -14,7 +14,8 @@ export function SessionTelemetryBar({ sessionId }: { sessionId: string }) {
     let cancelled = false
     const load = () => {
       fetchSessionTelemetry(sessionId)
-        .then((t) => !cancelled && setTel(t.found ? t : null))
+        // Keep the bar when there's telemetry OR a detected PR to surface.
+        .then((t) => !cancelled && setTel(t.found || t.prUrl ? t : null))
         .catch(() => {})
     }
     load()
@@ -25,23 +26,41 @@ export function SessionTelemetryBar({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId])
 
-  if (!tel || !tel.found) return null
+  if (!tel || (!tel.found && !tel.prUrl)) return null
 
   const ctx = Math.round(tel.contextPct)
   const cost = tel.costUsd >= 0.01 ? `$${tel.costUsd.toFixed(2)}` : '<$0.01'
   const tokens = formatTokens(tel.inputTokens + tel.outputTokens)
 
   return (
-    <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900/90 px-2.5 py-1 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-      {tel.model && <span className="text-zinc-200">{modelLabel(tel.model)}</span>}
-      <span className="text-zinc-600">·</span>
-      <span title="context window used">
-        ctx <span className={ctx >= 80 ? 'text-amber-400' : 'text-zinc-300'}>{ctx}%</span>
-      </span>
-      <span className="text-zinc-600">·</span>
-      <span title="tokens this conversation">{tokens} tok</span>
-      <span className="text-zinc-600">·</span>
-      <span title="estimated cost (informational — Lattice runs on the Max subscription)">{cost}</span>
+    <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900/90 px-2.5 py-1 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+      {tel.found && (
+        <>
+          {tel.model && <span className="text-zinc-200">{modelLabel(tel.model)}</span>}
+          <span className="text-zinc-600">·</span>
+          <span title="context window used">
+            ctx <span className={ctx >= 80 ? 'text-amber-400' : 'text-zinc-300'}>{ctx}%</span>
+          </span>
+          <span className="text-zinc-600">·</span>
+          <span title="tokens this conversation">{tokens} tok</span>
+          <span className="text-zinc-600">·</span>
+          <span title="estimated cost (informational — Lattice runs on the Max subscription)">{cost}</span>
+        </>
+      )}
+      {tel.prUrl && (
+        <>
+          {tel.found && <span className="text-zinc-600">·</span>}
+          <a
+            href={tel.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={tel.prUrl}
+            className="text-teal-400 hover:text-teal-300"
+          >
+            PR ↗
+          </a>
+        </>
+      )}
     </div>
   )
 }

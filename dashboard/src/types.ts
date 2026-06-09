@@ -187,6 +187,7 @@ export interface Session {
   deletedAt?: string // RFC3339 when trashed; absent/empty otherwise
   notifyOnIdle?: boolean // claude: ping my phone when it waits/finishes (fire-and-forget)
   model?: string // claude: full model id this session launched with (e.g. claude-opus-4-8[1m])
+  prUrl?: string // claude: detected GitHub PR URL for this session (D)
   createdAt: string // RFC3339
   lastActiveAt: string // RFC3339
 }
@@ -243,6 +244,7 @@ export interface SessionTelemetry {
   contextPct: number // 0..100
   costUsd: number
   lastAt?: string
+  prUrl?: string // detected GitHub PR for this session (D)
 }
 
 export interface ReleaseInfo {

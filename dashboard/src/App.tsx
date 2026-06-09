@@ -23,6 +23,7 @@ import { WorkflowDialog } from './components/workspace/WorkflowDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ManageMesh } from './components/ManageMesh'
+import { UpdateBanner } from './components/UpdateBanner'
 import { Icon } from './lattice/Icon'
 import { Dot } from './lattice/primitives'
 import logoMark from './design/logo-mark.svg'
@@ -249,6 +250,8 @@ function Dashboard() {
           <span className="conn-banner-sub">showing last-known state</span>
         </div>
       )}
+
+      <UpdateBanner currentVersion={health?.version} />
 
       <main className="flex min-h-0 flex-1 flex-col">
         {view === 'fleet' ? (

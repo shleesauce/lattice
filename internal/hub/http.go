@@ -73,6 +73,9 @@ func (h *Hub) routes() http.Handler {
 	// Release notes + update check (v0.1.5): recent GitHub releases with the running
 	// build flagged. Admin-gated like the rest of the workspace API.
 	mux.HandleFunc("/api/releases", h.requireAuth(h.handleReleases))
+	// One-click fleet auto-update (v0.1.5 / H): hub self-updates then cascades every
+	// agent in lockstep. Admin-gated — it swaps binaries fleet-wide.
+	mux.HandleFunc("/api/update", h.requireAuth(h.handleUpdate))
 
 	// Fire-and-forget approve/deny (v0.1.5) — OPEN by design: the unguessable
 	// single-use nonce in the path is a capability credential (see handleApproval).

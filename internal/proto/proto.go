@@ -89,6 +89,14 @@ const (
 	TypeSessionListResult MessageType = "session_list_result" // live sessions (also sent post-register)
 	TypeSessionIdle       MessageType = "session_idle"        // a claude session went quiet (Idle=true) / resumed (Idle=false)
 
+	// --- v0.1.5 (H): one-click fleet auto-update (request/response by ReqID) ---
+	// The hub self-updates first, then cascades this to every online agent IN
+	// LOCKSTEP so the whole fleet lands on ONE build and the wire contract can't
+	// skew mid-flight (D34). Hub → Agent:
+	TypeUpdate MessageType = "update" // pull+verify+swap the release binary, then restart this agent's service
+	// Agent → Hub
+	TypeUpdateResult MessageType = "update_result"
+
 	// --- IDE milestone (M2): embedded editor (code-server) over a yamux tunnel ---
 	// An editor session is a code-server process bound to 127.0.0.1 on the agent.
 	// Its HTTP/WS traffic never crosses the wire directly: the hub reverse-proxies
@@ -240,6 +248,31 @@ type PowerControlResultPayload struct {
 	Action string `json:"action"`
 	OK     bool   `json:"ok"`
 	Error  string `json:"error,omitempty"`
+}
+
+// --- v0.1.5 (H) payloads: one-click fleet auto-update ---
+
+// UpdatePayload asks an agent to pull+verify+swap the release binary and restart
+// its own service. Base is the hub's RESOLVED download base, threaded down so
+// every agent fetches the identical build the hub just installed (lockstep, D34) —
+// not whatever each agent's own $LATTICE_DOWNLOAD_BASE might resolve to. Version
+// is the target version string (e.g. "v0.1.5"), informational for logging/result.
+type UpdatePayload struct {
+	ReqID   string `json:"reqId"`
+	Base    string `json:"base,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+// UpdateResultPayload answers an update. OK=true means the binary was verified
+// and swapped on this agent; Restarted is the service label the agent kicked (or
+// "" if it couldn't find one — the new binary still applies on the next start).
+// A non-empty Error means the fail-closed verify or swap aborted and the agent is
+// STILL on its old binary (so the hub can surface a partial-fleet result).
+type UpdateResultPayload struct {
+	ReqID     string `json:"reqId"`
+	OK        bool   `json:"ok"`
+	Restarted string `json:"restarted,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // --- Phase 3 payloads: long-lived sessions ---

@@ -638,6 +638,15 @@ func (s *Store) SetSessionArchived(id string, archived bool, at time.Time) error
 	return err
 }
 
+// SetSessionTitle renames a session (I — session naming, v0.1.5). Used by the
+// manual rename (PATCH /api/sessions/{id} {title}) and by the auto-namer. Touch
+// last_active_at so the rename also nudges the row to the top of the recent list.
+func (s *Store) SetSessionTitle(id, title string, at time.Time) error {
+	_, err := s.db.Exec(`UPDATE sessions SET title=?, last_active_at=? WHERE id=?`,
+		title, at.UTC().Format(time.RFC3339), id)
+	return err
+}
+
 // DeleteSessionRow permanently removes a session (and its audit rows) from the
 // store. The caller is responsible for ending the live process first.
 func (s *Store) DeleteSessionRow(id string) error {

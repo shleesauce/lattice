@@ -27,6 +27,11 @@ All notable changes to Lattice are documented here. The format follows
   honest "up to date / vX available" line. Release notes now come straight from `CHANGELOG.md`: the
   release pipeline publishes each version's changelog section as the GitHub Release body, so the repo
   and the in-app panel always say the same thing. Groundwork for one-click updates.
+- **Name your sessions.** Right-click (or double-click) a session in the sidebar to rename it inline —
+  the name sticks. Fresh Claude sessions also name themselves: Lattice derives a short 3–5 word title
+  from your first message (the way Claude Code titles a session), so the sidebar reads like a task list
+  instead of a wall of "claude". Auto-naming is a free local heuristic — never an extra model call —
+  and a name you set by hand always wins and is never overwritten.
 
 ## [0.1.4] - 2026-06-08
 

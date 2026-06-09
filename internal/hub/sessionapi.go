@@ -358,12 +358,14 @@ func (h *Hub) handleEmptyTrash(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "purged": n})
 }
 
-// handleUpdateSession patches mutable session fields: {archived} hides/restores
-// from the active tree, {deleted} trashes/restores from Trash.
+// handleUpdateSession patches mutable session fields: {title} renames the session
+// (I — session naming, v0.1.5), {archived} hides/restores from the active tree,
+// {deleted} trashes/restores from Trash.
 func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Archived *bool `json:"archived"`
-		Deleted  *bool `json:"deleted"`
+		Title    *string `json:"title"`
+		Archived *bool   `json:"archived"`
+		Deleted  *bool   `json:"deleted"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
@@ -377,6 +379,20 @@ func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id str
 	if !ok {
 		http.NotFound(w, r)
 		return
+	}
+	if body.Title != nil {
+		// A manual rename is sticky and ALWAYS wins over the auto-namer (which only
+		// fills a still-blank title). Clip to a sane length; an empty/blanked title
+		// is allowed (clears back to the kind-derived fallback the UI shows).
+		title := clampTitle(*body.Title)
+		if err := h.store.SetSessionTitle(id, title, time.Now()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		// Mark the session user-named so the auto-namer never clobbers it, even if
+		// the row is later re-derived/empty (e.g. blanked on purpose).
+		h.markTitleLocked(id)
+		rec.Title = title
 	}
 	if body.Archived != nil {
 		// Archiving hides AND frees the machine: end the live process so a stale

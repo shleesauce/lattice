@@ -207,6 +207,18 @@ export async function emptyTrash(): Promise<number> {
 }
 
 // Archive (hide, keep) or restore a session via PATCH. The row survives.
+// Rename a session (I — session naming, v0.1.5). A manual rename is sticky and
+// always wins over the auto-namer. An empty string clears back to the kind-derived
+// fallback the sidebar shows.
+export async function renameSession(id: string, title: string): Promise<Session> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  return json<Session>(res)
+}
+
 export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
     method: 'PATCH',

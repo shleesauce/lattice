@@ -5,6 +5,7 @@ import {
   createSession,
   deleteSessionForever,
   emptyTrash,
+  renameSession,
   resumeSession,
   setSessionArchived,
   setSessionDeleted,
@@ -253,6 +254,22 @@ export function Workspace({ agents, ws, intent, onIntentConsumed, onNotify }: Pr
   // session. Lifecycle changes go through archive / trash / delete below.
   const onCloseSession = useCallback((id: string) => closeTab(id), [closeTab])
 
+  // Rename a session (I — session naming, v0.1.5). Optimistic: update the row in
+  // place immediately, then reconcile with the server's canonical view. A manual
+  // rename is sticky on the hub (the auto-namer never overwrites it).
+  const onRenameSession = useCallback(
+    async (id: string, title: string) => {
+      try {
+        const updated = await renameSession(id, title.trim())
+        ws.upsertSession(updated)
+      } catch (e) {
+        notify(`Couldn't rename the session — ${parseHubError(e, 'try again')}`, 'error')
+        void ws.refreshSessions()
+      }
+    },
+    [ws, notify],
+  )
+
   // Archive (hide, keep) or unarchive a session. Archiving drops its open tab.
   const onArchiveSession = useCallback(
     async (id: string, archived: boolean) => {
@@ -460,6 +477,7 @@ export function Workspace({ agents, ws, intent, onIntentConsumed, onNotify }: Pr
           onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
           onBeginNewProject={() => setWizardOpen(true)}
           onOpenDeviceEditor={onOpenDeviceEditor}
+          onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onTrashSession={onTrashSession}
           onRestoreTrash={onRestoreTrash}
@@ -501,6 +519,7 @@ export function Workspace({ agents, ws, intent, onIntentConsumed, onNotify }: Pr
               void onOpenDeviceEditor(a)
               setMobileNavOpen(false)
             }}
+            onRenameSession={onRenameSession}
             onArchiveSession={onArchiveSession}
             onTrashSession={onTrashSession}
             onRestoreTrash={onRestoreTrash}

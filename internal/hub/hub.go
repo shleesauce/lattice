@@ -149,6 +149,12 @@ type Hub struct {
 	// releases memoizes the GitHub release list (release-notes panel + update check).
 	releases *releaseCache
 
+	// autoNamer derives a short title from a fresh session's first user message
+	// (I — session naming, v0.1.5). Tracks which sessions are user-named (a manual
+	// rename always wins) and which are already being titled (de-dupe concurrent
+	// idle edges). FREE heuristic — never an LLM call (D35 billing).
+	autoNamer *autoNamer
+
 	// fleetDirty is set when a heartbeat changed fleet metrics; the coalescing
 	// flushFleetLoop broadcasts at most once per fleetBroadcastInterval when set.
 	fleetMu    sync.Mutex
@@ -226,6 +232,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		approvals:     newApprovalStore(),
 		hooks:         newHookStore(),
 		releases:      newReleaseCache(),
+		autoNamer:     newAutoNamer(),
 	}
 
 	// Secure-by-default: a fully-configured hub (setup done) with NO admin password

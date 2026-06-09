@@ -53,6 +53,7 @@ interface Props {
   onNewDeviceSession: (agent: Agent) => void
   onBeginNewProject: () => void
   onOpenDeviceEditor: (agent: Agent) => void
+  onRenameSession: (id: string, title: string) => void
   onArchiveSession: (id: string, archived: boolean) => void
   onTrashSession: (id: string) => void
   onRestoreTrash: (id: string) => void
@@ -111,6 +112,7 @@ export function Sidebar({
   onNewDeviceSession,
   onBeginNewProject,
   onOpenDeviceEditor,
+  onRenameSession,
   onArchiveSession,
   onTrashSession,
   onRestoreTrash,
@@ -202,6 +204,7 @@ export function Sidebar({
           onNewDeviceSession={onNewDeviceSession}
           onBeginNewProject={onBeginNewProject}
           onOpenDeviceEditor={onOpenDeviceEditor}
+          onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onTrashSession={onTrashSession}
         />
@@ -297,6 +300,7 @@ function ActiveTree({
   onNewDeviceSession,
   onBeginNewProject,
   onOpenDeviceEditor,
+  onRenameSession,
   onArchiveSession,
   onTrashSession,
 }: {
@@ -314,6 +318,7 @@ function ActiveTree({
   onNewDeviceSession: (agent: Agent) => void
   onBeginNewProject: () => void
   onOpenDeviceEditor: (agent: Agent) => void
+  onRenameSession: (id: string, title: string) => void
   onArchiveSession: (id: string, archived: boolean) => void
   onTrashSession: (id: string) => void
 }) {
@@ -478,6 +483,7 @@ function ActiveTree({
           projects={projects}
           activeSessionId={activeSessionId}
           onSelectSession={onSelectSession}
+          onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onTrashSession={onTrashSession}
         />
@@ -540,6 +546,7 @@ function ActiveTree({
                     session={s}
                     active={s.id === activeSessionId}
                     onSelect={() => onSelectSession(s.id)}
+                    onRename={(title) => onRenameSession(s.id, title)}
                     onArchive={() => onArchiveSession(s.id, true)}
                     onTrash={() => onTrashSession(s.id)}
                   />
@@ -696,6 +703,7 @@ function GroupedSessions({
   projects,
   activeSessionId,
   onSelectSession,
+  onRenameSession,
   onArchiveSession,
   onTrashSession,
 }: {
@@ -703,6 +711,7 @@ function GroupedSessions({
   projects: Project[]
   activeSessionId: string | null
   onSelectSession: (id: string) => void
+  onRenameSession: (id: string, title: string) => void
   onArchiveSession: (id: string, archived: boolean) => void
   onTrashSession: (id: string) => void
 }) {
@@ -723,25 +732,17 @@ function GroupedSessions({
             <span style={{ marginLeft: 'auto', color: 'var(--fg-3)' }}>{ss.length}</span>
           </div>
           {ss.map((s) => (
-            <div
+            <SessionRow
               key={s.id}
-              className={`srow${s.id === activeSessionId ? ' on' : ''}`}
-              style={{ paddingLeft: 16 }}
-              onClick={() => onSelectSession(s.id)}
-            >
-              <span className={sessionDotClass(s.status)} />
-              <KindGlyph kind={s.kind} />
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
-                <span className="nm" style={{ flex: 'none' }}>{s.title || s.kind}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {s.scope === 'device' ? 'device' : projName(s.projectPath)}
-                </span>
-              </div>
-              <span className="srow-actions">
-                <ActBtn title="Archive session" onClick={() => onArchiveSession(s.id, true)}><ArchiveIcon /></ActBtn>
-                <ActBtn title="Delete (move to Trash)" danger onClick={() => onTrashSession(s.id)}><TrashIcon /></ActBtn>
-              </span>
-            </div>
+              session={s}
+              active={s.id === activeSessionId}
+              indent={16}
+              subtitle={s.scope === 'device' ? 'device' : projName(s.projectPath)}
+              onSelect={() => onSelectSession(s.id)}
+              onRename={(title) => onRenameSession(s.id, title)}
+              onArchive={() => onArchiveSession(s.id, true)}
+              onTrash={() => onTrashSession(s.id)}
+            />
           ))}
         </div>
       ))}
@@ -761,25 +762,187 @@ function ProjectSessionRow({
   session,
   active,
   onSelect,
+  onRename,
   onArchive,
   onTrash,
 }: {
   session: Session
   active: boolean
   onSelect: () => void
+  onRename: (title: string) => void
   onArchive: () => void
   onTrash: () => void
 }) {
   return (
-    <div className={`srow${active ? ' on' : ''}`} onClick={onSelect} style={{ paddingLeft: 18 }}>
+    <SessionRow
+      session={session}
+      active={active}
+      indent={18}
+      onSelect={onSelect}
+      onRename={onRename}
+      onArchive={onArchive}
+      onTrash={onTrash}
+    />
+  )
+}
+
+// SessionRow is the active-tree session row with: click-to-open, right-click (or
+// the rename action button) → inline rename, and the archive/trash quick actions.
+// Rename is the I (session naming, v0.1.5) entry point — the field seeds with the
+// current title, commits on Enter/blur, cancels on Esc, and an empty value clears
+// back to the kind-derived fallback (the hub re-derives a name on the next idle).
+function SessionRow({
+  session,
+  active,
+  indent,
+  subtitle,
+  onSelect,
+  onRename,
+  onArchive,
+  onTrash,
+}: {
+  session: Session
+  active: boolean
+  indent: number
+  subtitle?: string
+  onSelect: () => void
+  onRename: (title: string) => void
+  onArchive: () => void
+  onTrash: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [draft, setDraft] = useState('')
+
+  const beginRename = () => {
+    setDraft(session.title || '')
+    setEditing(true)
+    setMenu(null)
+  }
+  const commit = () => {
+    setEditing(false)
+    const next = draft.trim()
+    if (next !== (session.title || '')) onRename(next)
+  }
+
+  if (editing) {
+    return (
+      <div className="srow" style={{ paddingLeft: indent }}>
+        <span className={sessionDotClass(session.status)} />
+        <KindGlyph kind={session.kind} />
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') setEditing(false)
+          }}
+          onBlur={commit}
+          placeholder="session name…"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: 'var(--void)',
+            border: '1px solid var(--teal)',
+            borderRadius: 6,
+            padding: '2px 6px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: 'var(--fg-1)',
+            outline: 'none',
+          }}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={`srow${active ? ' on' : ''}`}
+      style={{ paddingLeft: indent }}
+      onClick={onSelect}
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        beginRename()
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        setMenu({ x: e.clientX, y: e.clientY })
+      }}
+    >
       <span className={sessionDotClass(session.status)} />
       <KindGlyph kind={session.kind} />
-      <span className="nm">{session.title || session.kind}</span>
+      {subtitle ? (
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+          <span className="nm" style={{ flex: 'none' }}>{session.title || session.kind}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {subtitle}
+          </span>
+        </div>
+      ) : (
+        <span className="nm">{session.title || session.kind}</span>
+      )}
       <span className="srow-actions">
+        <ActBtn title="Rename session" onClick={beginRename}><RenameIcon /></ActBtn>
         <ActBtn title="Archive session" onClick={onArchive}><ArchiveIcon /></ActBtn>
         <ActBtn title="Delete (move to Trash)" danger onClick={onTrash}><TrashIcon /></ActBtn>
       </span>
+      {menu && (
+        <SessionContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onRename={beginRename}
+          onArchive={() => {
+            setMenu(null)
+            onArchive()
+          }}
+          onTrash={() => {
+            setMenu(null)
+            onTrash()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+// SessionContextMenu is the right-click menu for a session row: Rename / Archive /
+// Delete. Fixed-positioned at the cursor; a full-screen backdrop closes it.
+function SessionContextMenu({
+  x,
+  y,
+  onClose,
+  onRename,
+  onArchive,
+  onTrash,
+}: {
+  x: number
+  y: number
+  onClose: () => void
+  onRename: () => void
+  onArchive: () => void
+  onTrash: () => void
+}) {
+  useEscape(onClose)
+  return (
+    <>
+      <div className="prj-menu-backdrop" onClick={(e) => { e.stopPropagation(); onClose() }} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
+      <div
+        className="prj-menu"
+        role="menu"
+        style={{ position: 'fixed', left: x, top: y, minWidth: 150 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button type="button" className="ctx-item" onClick={onRename}>Rename…</button>
+        <button type="button" className="ctx-item" onClick={onArchive}>Archive</button>
+        <button type="button" className="ctx-item danger" onClick={onTrash}>Delete</button>
+      </div>
+    </>
   )
 }
 
@@ -863,6 +1026,15 @@ function RestoreIcon() {
     <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M3 7v6h6" />
       <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
+    </svg>
+  )
+}
+
+function RenameIcon() {
+  return (
+    <svg viewBox="0 0 24 24" style={{ width: 13, height: 13 }} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
     </svg>
   )
 }

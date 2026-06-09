@@ -19,7 +19,7 @@ func testHub(t *testing.T) *Hub {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return &Hub{store: store, registry: NewRegistry(), approvals: newApprovalStore()}
+	return &Hub{store: store, registry: NewRegistry(), approvals: newApprovalStore(), autoNamer: newAutoNamer()}
 }
 
 func TestHandleApprovalInvalidNonce(t *testing.T) {

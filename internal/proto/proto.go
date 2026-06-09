@@ -55,6 +55,13 @@ const (
 	// Agent → Hub
 	TypeWakeResult MessageType = "wake_result"
 
+	// --- v0.1.5 (Phase F): power control — sleep/shutdown a machine via its own
+	// agent so the fleet can run a true unattended loop (wake → work → sleep).
+	// Hub → Agent
+	TypePowerControl MessageType = "power_control"
+	// Agent → Hub
+	TypePowerControlResult MessageType = "power_control_result"
+
 	// --- Session transcript (F16): read a session's saved Claude transcript ---
 	// Transcripts are deliberately NOT Syncthing-synced (~/.claude/.stignore
 	// "**/*.jsonl" — huge, machine-local, race-prone) AND claude sessions never run
@@ -205,6 +212,34 @@ type WakeResultPayload struct {
 	ReqID string `json:"reqId"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+// --- v0.1.5 (Phase F) payloads: power control ---
+
+// PowerAction is what a PowerControlPayload asks the agent to do to its own host.
+type PowerAction string
+
+const (
+	PowerSleep    PowerAction = "sleep"    // suspend to RAM (wakeable via WoL after)
+	PowerShutdown PowerAction = "shutdown" // full power off
+)
+
+// PowerControlPayload asks an agent to sleep or shut down its OWN machine. There
+// is no "wake" action here — waking a sleeping box is WoL (TypeWake from a LAN
+// peer), since a slept agent isn't connected to receive a frame.
+type PowerControlPayload struct {
+	ReqID  string      `json:"reqId"`
+	Action PowerAction `json:"action"`
+}
+
+// PowerControlResultPayload answers a power_control. OK=true means the command was
+// accepted/issued (the agent may go offline immediately after, so this is the last
+// frame it sends).
+type PowerControlResultPayload struct {
+	ReqID  string `json:"reqId"`
+	Action string `json:"action"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
 }
 
 // --- Phase 3 payloads: long-lived sessions ---
@@ -416,6 +451,15 @@ type HeartbeatPayload struct {
 	// the last-known set so an OFFLINE machine can still be woken (WoL) by a
 	// peer on its LAN — no manual MAC entry, which keeps Wake turnkey.
 	MACs []string `json:"macs,omitempty"`
+	// LANIPs are the agent's private-range IPv4 addresses in CIDR form
+	// (e.g. "192.168.1.46/24"), one per up, non-loopback interface. The hub uses
+	// these to RELAY a WoL magic packet: a sleeping box's last-known subnet is
+	// matched against the subnets of LIVE agents, so the packet is broadcast from
+	// a peer that actually shares the target's broadcast domain — and "no relay
+	// reachable on that subnet" is surfaced instead of a packet that silently
+	// goes nowhere. Persisted with the rest of the metrics blob so an OFFLINE
+	// machine's last-known subnet is still known. (v0.1.5 Phase F.)
+	LANIPs []string `json:"lanIPs,omitempty"`
 	// Phase 3 (additive): refresh capabilities without a reconnect so placement
 	// always scores fresh can-run state (D19).
 	Capabilities Capabilities `json:"capabilities,omitempty"`

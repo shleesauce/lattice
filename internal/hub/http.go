@@ -182,6 +182,10 @@ func (h *Hub) handleAgentSub(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			h.handleWake(w, r, id)
 		}
+	case "power":
+		if requireMethod(w, r, http.MethodPost) {
+			h.handlePower(w, r, id)
+		}
 	case "rename":
 		if requireMethod(w, r, http.MethodPost) {
 			h.handleAgentRename(w, r, id)

@@ -124,35 +124,123 @@ func (h *Hub) handleDownload(w http.ResponseWriter, r *http.Request, agentID str
 // handleWake answers POST /api/agents/{senderId}/wake with body {"mac":"..."}.
 // The sender is an online agent on the target's LAN that broadcasts the WoL
 // magic packet.
+//
+// Body forms (both accepted, back-compat):
+//
+//	{"mac":"aa:bb:.."}         — explicit MAC, {senderId} is the relay (legacy).
+//	{}  (and {senderId}==target) — RELAY-AWARE: treat {senderId} as the TARGET
+//	    machine to wake, let the hub pick a live relay on the target's subnet and
+//	    use the target's last-known MAC. Surfaces "no relay reachable on that
+//	    subnet" instead of failing silently.
 func (h *Hub) handleWake(w http.ResponseWriter, r *http.Request, senderID string) {
 	var body struct {
 		MAC string `json:"mac"`
+	}
+	// An empty body is valid (relay-aware form); decode best-effort.
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+
+	// Relay-aware form: no explicit MAC ⇒ {senderId} is the TARGET. The hub
+	// resolves the relay + MAC from the target's last-known LAN/MACs.
+	if strings.TrimSpace(body.MAC) == "" {
+		h.wakeTarget(w, senderID)
+		return
+	}
+
+	// Legacy form: explicit MAC, {senderId} is the relay.
+	h.relayWake(w, senderID, body.MAC, false, "")
+}
+
+// wakeTarget resolves a relay on the target's subnet and emits the magic packet.
+// targetID is the OFFLINE machine to wake.
+func (h *Hub) wakeTarget(w http.ResponseWriter, targetID string) {
+	fleet := h.fleet()
+	var target *Agent
+	for i := range fleet {
+		if fleet[i].ID == targetID {
+			target = &fleet[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "unknown machine"})
+		return
+	}
+	if len(target.MACs) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "no known MAC for this machine — can't wake it"})
+		return
+	}
+
+	choice := selectWakeRelay(wakeTargetForAgent(*target), fleet)
+	if choice.RelayID == "" {
+		log.Printf("wake: target=%s no relay (%s) tried=%v", targetID, choice.Reason, choice.Tried)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok": false, "error": choice.Reason, "relay": "", "onSubnet": false,
+		})
+		return
+	}
+	h.relayWake(w, choice.RelayID, choice.MAC, choice.OnSubnet, choice.Subnet)
+}
+
+// relayWake sends the magic packet for mac via the given relay agent and writes
+// the JSON result (echoing which relay/subnet was used so the UI can show it).
+func (h *Hub) relayWake(w http.ResponseWriter, relayID, mac string, onSubnet bool, subnet string) {
+	reqID := newReqID()
+	env, err := h.roundTrip(relayID, reqID, proto.TypeWake, proto.WakePayload{
+		ReqID: reqID, MAC: mac,
+	})
+	if err != nil {
+		writeJSON(w, statusForRoundTrip(err), map[string]any{"ok": false, "error": err.Error(), "relay": relayID})
+		return
+	}
+
+	var res proto.WakeResultPayload
+	if err := proto.As(env, &res); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "bad agent response", "relay": relayID})
+		return
+	}
+	log.Printf("wake: relay=%s mac=%s onSubnet=%v subnet=%s ok=%v err=%q", relayID, mac, onSubnet, subnet, res.OK, res.Error)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": res.OK, "error": res.Error, "relay": relayID, "onSubnet": onSubnet, "subnet": subnet,
+	})
+}
+
+// handlePower answers POST /api/agents/{id}/power with body
+// {"action":"sleep"|"shutdown"}, asking the target agent to suspend or power off
+// its OWN machine — the close of the unattended loop (wake → work → sleep). The
+// agent acks before it goes offline, so a successful sleep returns ok=true and
+// then the agent drops from the fleet.
+func (h *Hub) handlePower(w http.ResponseWriter, r *http.Request, agentID string) {
+	var body struct {
+		Action string `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid json body"})
 		return
 	}
-	if strings.TrimSpace(body.MAC) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "mac is required"})
+	action := proto.PowerAction(strings.TrimSpace(body.Action))
+	if action != proto.PowerSleep && action != proto.PowerShutdown {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "action must be sleep or shutdown"})
 		return
 	}
 
 	reqID := newReqID()
-	env, err := h.roundTrip(senderID, reqID, proto.TypeWake, proto.WakePayload{
-		ReqID: reqID, MAC: body.MAC,
+	env, err := h.roundTrip(agentID, reqID, proto.TypePowerControl, proto.PowerControlPayload{
+		ReqID: reqID, Action: action,
 	})
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 
-	var res proto.WakeResultPayload
+	var res proto.PowerControlResultPayload
 	if err := proto.As(env, &res); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "bad agent response"})
 		return
 	}
-	log.Printf("wake: sender=%s mac=%s ok=%v err=%q", senderID, body.MAC, res.OK, res.Error)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": res.OK, "error": res.Error})
+	log.Printf("power: agent=%s action=%s ok=%v err=%q", agentID, action, res.OK, res.Error)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": res.OK, "error": res.Error, "action": res.Action})
 }
 
 // statusForRoundTrip maps a round-trip error to an HTTP status.

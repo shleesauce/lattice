@@ -98,6 +98,7 @@ type Device struct {
 	CPUCount     int                 `json:"cpuCount,omitempty"`
 	LastSeen     string              `json:"lastSeen,omitempty"`
 	MACs         []string            `json:"macs,omitempty"`
+	LANIPs       []string            `json:"lanIPs,omitempty"`
 	Capabilities *proto.Capabilities `json:"capabilities,omitempty"`
 
 	// Reachability extras.
@@ -309,6 +310,7 @@ func foldGroup(g []fragment) Device {
 		d.CPUCount = best.CPUCount
 		d.LastSeen = best.LastSeen
 		d.MACs = best.MACs
+		d.LANIPs = best.LANIPs
 		caps := best.Capabilities
 		d.Capabilities = &caps
 	}

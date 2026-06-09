@@ -79,13 +79,31 @@ export function downloadUrl(agentId: string, path: string): string {
   return `/api/agents/${encodeURIComponent(agentId)}/download?${qs}`
 }
 
-export async function wakeAgent(senderId: string, mac: string): Promise<WakeResult> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(senderId)}/wake`, {
+// wakeAgent wakes a sleeping machine. Relay-aware: the hub picks a LIVE agent on
+// the target's own subnet to emit the magic packet (so the broadcast actually
+// reaches it) and surfaces "no relay reachable on that subnet" instead of failing
+// silently. targetId is the OFFLINE machine to wake; the hub resolves its MAC and
+// the relay from last-known state, so the browser sends an empty body.
+export async function wakeAgent(targetId: string): Promise<WakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(targetId)}/wake`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mac }),
+    body: '{}',
   })
   // Wake always returns a typed {ok,error} body, even on 4xx/5xx.
+  const data = (await res.json().catch(() => ({}))) as WakeResult
+  if (typeof data.ok !== 'boolean') throw new Error(`${res.status} ${res.statusText}`)
+  return data
+}
+
+// powerAgent sleeps or shuts down a machine via its own agent — the close of the
+// unattended loop (wake → work → sleep).
+export async function powerAgent(agentId: string, action: 'sleep' | 'shutdown'): Promise<WakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/power`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
   const data = (await res.json().catch(() => ({}))) as WakeResult
   if (typeof data.ok !== 'boolean') throw new Error(`${res.status} ${res.statusText}`)
   return data

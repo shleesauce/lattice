@@ -32,6 +32,19 @@ All notable changes to Lattice are documented here. The format follows
   from your first message (the way Claude Code titles a session), so the sidebar reads like a task list
   instead of a wall of "claude". Auto-naming is a free local heuristic — never an extra model call —
   and a name you set by hand always wins and is never overwritten.
+- **Smarter Wake-on-LAN: the wake routes through a machine that can actually reach the sleeper.**
+  Waking a sleeping machine now picks a *live* machine on the **same LAN/subnet** as the target to
+  send the magic packet — a broadcast from a machine on a different network would never arrive, so
+  this is the difference between "it wakes" and a silent no-op. If no awake machine shares the
+  sleeper's network, Lattice says so ("no relay reachable on that subnet") instead of pretending it
+  worked. Agents report their private LAN addresses so the hub can match subnets; the target's MAC is
+  remembered, so you just click Wake — no addresses to enter.
+- **Wake-then-place in one step.** Starting a session on a sleeping (but otherwise eligible) machine
+  now wakes it, waits for it to rejoin the fleet, and then starts the session — one action instead of
+  "wake it in Fleet, wait, then come back and place."
+- **Sleep or shut down a machine from Lattice.** Each agent can suspend or power off its own machine
+  on request, closing the unattended loop: wake a box, run work on it, put it back to sleep — all
+  without touching it.
 
 ## [0.1.4] - 2026-06-08
 

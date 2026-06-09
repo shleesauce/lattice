@@ -231,6 +231,13 @@ func (h *Hub) readLoop(ac *agentConn) {
 			}
 			h.registry.resolvePending(res.ReqID, env)
 
+		case proto.TypePowerControlResult:
+			var res proto.PowerControlResultPayload
+			if err := proto.As(env, &res); err != nil {
+				continue
+			}
+			h.registry.resolvePending(res.ReqID, env)
+
 		case proto.TypeTranscriptResult:
 			var res proto.TranscriptResultPayload
 			if err := proto.As(env, &res); err != nil {

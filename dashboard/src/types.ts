@@ -42,6 +42,7 @@ export interface Agent {
   loadAvg1: number
   cpuCount: number
   macs?: string[]
+  lanIPs?: string[]
   capabilities?: Capabilities
 }
 
@@ -88,6 +89,7 @@ export interface Device {
   cpuCount?: number
   lastSeen?: string
   macs?: string[]
+  lanIPs?: string[]
   capabilities?: Capabilities
   tailscaleIP?: string
   sshAlias?: string
@@ -115,6 +117,10 @@ export interface FileListResult {
 export interface WakeResult {
   ok: boolean
   error?: string
+  relay?: string // agent id the hub routed the magic packet through
+  subnet?: string // the matched subnet (when routed on-subnet)
+  onSubnet?: boolean // true when the relay shares the target's broadcast domain
+  action?: string // power: the action that was issued (sleep | shutdown)
 }
 
 export interface Health {

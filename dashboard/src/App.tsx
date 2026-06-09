@@ -19,6 +19,7 @@ const Workspace = lazy(() =>
   import('./components/workspace/Workspace').then((m) => ({ default: m.Workspace })),
 )
 import { NewSessionDialog, type NewSessionTarget } from './components/workspace/NewSessionDialog'
+import { WorkflowDialog } from './components/workspace/WorkflowDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ManageMesh } from './components/ManageMesh'
@@ -83,6 +84,7 @@ function Dashboard() {
   const [selectedId, setSelectedId] = usePersisted<string | null>('lattice.fleet.selected', null)
   const [wakingIds, setWakingIds] = useState<Set<string>>(new Set())
   const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
+  const [workflowOpen, setWorkflowOpen] = useState(false)
   const [toast, setToast] = useState<{ text: string; kind: 'info' | 'error' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -288,6 +290,10 @@ function Dashboard() {
           setView('workspace')
           setNewTarget({ kind: 'project', project: null })
         }}
+        onNewWorkflow={() => {
+          setView('workspace')
+          setWorkflowOpen(true)
+        }}
         onNewProject={() => routeToWorkspace({ kind: 'new-project' })}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -323,6 +329,21 @@ function Dashboard() {
             void ws.refreshSessions()
             setView('workspace')
             flash(`Started ${res.session.title || res.session.kind}`)
+          }}
+        />
+      )}
+
+      {workflowOpen && (
+        <WorkflowDialog
+          projects={ws.projects}
+          projectsState={ws.projectsState}
+          onClose={() => setWorkflowOpen(false)}
+          onCreated={(res) => {
+            setWorkflowOpen(false)
+            ws.upsertSession(res.session)
+            void ws.refreshSessions()
+            setView('workspace')
+            flash(`Started ${res.session.title || 'workflow'}`)
           }}
         />
       )}

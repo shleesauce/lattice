@@ -141,6 +141,11 @@ type Hub struct {
 	// v0.1.5): armed when a session goes idle, consumed by the ntfy action link.
 	approvals *approvalStore
 
+	// hooks maps a live claude session to its per-session Claude Code hook token
+	// (C, v0.1.5): the credential the ungated /api/hooks/state endpoint validates so
+	// CC hooks can report precise turn-done / awaiting-approval / end edges.
+	hooks *hookStore
+
 	// releases memoizes the GitHub release list (release-notes panel + update check).
 	releases *releaseCache
 
@@ -219,6 +224,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		sessions:      newSessionStore(),
 		loginLimiter:  newLoginLimiter(),
 		approvals:     newApprovalStore(),
+		hooks:         newHookStore(),
 		releases:      newReleaseCache(),
 	}
 
@@ -382,6 +388,8 @@ func (h *Hub) reapLoop(ctx context.Context) {
 		}
 		// Drop expired fire-and-forget approval nonces + stale expected-exit markers.
 		h.approvals.sweep(time.Now())
+		// Drop hook tokens for sessions that never sent a clean SessionEnd.
+		h.hooks.sweep(time.Now())
 	}
 	reap()
 	ticker := time.NewTicker(reapInterval)

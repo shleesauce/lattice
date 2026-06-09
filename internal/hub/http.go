@@ -63,6 +63,11 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/projects", h.requireAuth(h.handleProjects))
 	mux.HandleFunc("/api/sessions", h.requireAuth(h.handleSessions))
 	mux.HandleFunc("/api/sessions/", h.requireAuth(h.handleSessions))
+
+	// Workflow templates (E, v0.1.5): paste a GitHub issue/PR URL → a pre-briefed
+	// Claude session in a dedicated worktree, auto-placed. Admin-gated like the rest
+	// of the workspace API (it creates a session).
+	mux.HandleFunc("/api/workflows", h.requireAuth(h.handleWorkflows))
 	mux.HandleFunc("/api/placement", h.requireAuth(h.handlePlacement))
 	mux.HandleFunc("/api/settings", h.requireAuth(h.handleSettings))
 	// Release notes + update check (v0.1.5): recent GitHub releases with the running
@@ -74,6 +79,12 @@ func (h *Hub) routes() http.Handler {
 	// The phone tapping the ntfy action button carries no admin token, so this must
 	// NOT be admin-gated; the nonce alone authorizes the one keystroke it injects.
 	mux.HandleFunc("/api/approvals/", h.handleApproval)
+
+	// Claude Code hook callbacks (C, v0.1.5) — OPEN by design like /api/approvals:
+	// the per-session HookToken in the body is the capability credential. The hook
+	// script runs on the agent box with no admin token, so this must NOT be
+	// admin-gated; the token alone authorizes the precise state edge it reports.
+	mux.HandleFunc("/api/hooks/state", h.handleHookState)
 
 	// Phase 2: first-run setup wizard (unauthenticated; gated 409 once complete).
 	mux.HandleFunc("/api/setup/status", h.handleSetupStatus)

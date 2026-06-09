@@ -7,6 +7,8 @@ import type {
   CreateProjectRequest,
   CreateProjectResult,
   CreateSessionRequest,
+  CreateWorkflowRequest,
+  WorkflowResult,
   FileListResult,
   Health,
   PlacementRequest,
@@ -15,6 +17,7 @@ import type {
   ReleasesResponse,
   RootCheck,
   Session,
+  SessionTelemetry,
   SessionWithPlacement,
   Settings,
   SetupStatus,
@@ -138,6 +141,24 @@ export async function fetchTranscript(id: string): Promise<Transcript> {
   return json<Transcript>(await fetch(`/api/sessions/${encodeURIComponent(id)}/transcript`))
 }
 
+// Fetch a session's rich telemetry (C, v0.1.5): model / context% / $cost derived
+// hub-side from the synced transcript. Returns {found:false} (not an error) for a
+// session with no transcript on disk yet, or a terminal/editor session.
+export async function fetchSessionTelemetry(id: string): Promise<SessionTelemetry> {
+  return json<SessionTelemetry>(await fetch(`/api/sessions/${encodeURIComponent(id)}/telemetry`))
+}
+
+// Start a workflow session (E, v0.1.5): a GitHub issue/PR URL → a scoped, pre-briefed
+// Claude session in a dedicated worktree, auto-placed.
+export async function createWorkflow(req: CreateWorkflowRequest): Promise<WorkflowResult> {
+  const res = await fetch('/api/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<WorkflowResult>(res)
+}
+
 export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {
   // Device sessions carry no project path — the agent resolves its home dir.
   // Strip an empty/undefined projectPath so the hub treats it as device-local.
@@ -149,6 +170,8 @@ export async function createSession(req: CreateSessionRequest): Promise<SessionW
   if (req.pinAgentId) body.pinAgentId = req.pinAgentId
   if (req.permissionMode) body.permissionMode = req.permissionMode
   if (req.notifyOnIdle) body.notifyOnIdle = req.notifyOnIdle
+  if (req.model) body.model = req.model
+  if (req.fastMode) body.fastMode = req.fastMode
   const res = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

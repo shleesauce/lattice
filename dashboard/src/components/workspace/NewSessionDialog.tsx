@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createSession, fetchSettings, previewPlacement } from '../../api'
-import { canHostClaude, type Agent, type PlacementCandidate, type PlacementResult, type Project, type SessionKind, type SessionWithPlacement } from '../../types'
+import { canHostClaude, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, type Agent, type PlacementCandidate, type PlacementResult, type Project, type SessionKind, type SessionWithPlacement } from '../../types'
 import type { LoadState } from '../../useWorkspace'
 import { parseHubError } from '../../lib/hubError'
 import { Modal } from '../Modal'
@@ -103,6 +103,8 @@ function ProjectSessionDialog({
   const [kind, setKind] = useState<SessionKind>('claude')
   const [title, setTitle] = useState('')
   const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [model, setModel] = useState(DEFAULT_CLAUDE_MODEL)
+  const [fastMode, setFastMode] = useState(false)
   const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [pinAgentId, setPinAgentId] = useState<string>('')
   const [preview, setPreview] = useState<PlacementResult | null>(null)
@@ -180,6 +182,8 @@ function ProjectSessionDialog({
         title: title.trim() || undefined,
         pinAgentId: pinAgentId || undefined,
         permissionMode: kind === 'claude' ? permissionMode : undefined,
+        model: kind === 'claude' ? model : undefined,
+        fastMode: kind === 'claude' ? fastMode : undefined,
         notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
@@ -228,6 +232,11 @@ function ProjectSessionDialog({
 
             {kind === 'claude' && (
               <>
+                <label className="flabel">
+                  Model
+                  <span className="hint">which Claude model this session runs</span>
+                </label>
+                <ModelSelect value={model} onChange={setModel} fastMode={fastMode} onFastMode={setFastMode} />
                 <label className="flabel">
                   Permissions
                   <span className="hint">how much Claude asks before acting</span>
@@ -404,6 +413,8 @@ function DeviceSessionDialog({
   const [kind, setKind] = useState<SessionKind>(claudeReady ? 'claude' : 'terminal')
   const [title, setTitle] = useState('')
   const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [model, setModel] = useState(DEFAULT_CLAUDE_MODEL)
+  const [fastMode, setFastMode] = useState(false)
   const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -421,6 +432,8 @@ function DeviceSessionDialog({
         pinAgentId: agent.id,
         title: title.trim() || undefined,
         permissionMode: kind === 'claude' ? permissionMode : undefined,
+        model: kind === 'claude' ? model : undefined,
+        fastMode: kind === 'claude' ? fastMode : undefined,
         notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
@@ -465,6 +478,11 @@ function DeviceSessionDialog({
 
         {kind === 'claude' && (
           <>
+            <label className="flabel">
+              Model
+              <span className="hint">which Claude model this session runs</span>
+            </label>
+            <ModelSelect value={model} onChange={setModel} fastMode={fastMode} onFastMode={setFastMode} />
             <label className="flabel">
               Permissions
               <span className="hint">how much Claude asks before acting</span>
@@ -774,6 +792,94 @@ const PERMISSION_MODES: { value: string; label: string }[] = [
   { value: 'plan', label: 'Plan mode' },
   { value: 'default', label: 'Ask permissions' },
 ]
+
+// Claude model picker: a dropdown over the catalog (default pre-selected) plus a
+// "fast mode" toggle that maps to claude's low-effort setting at launch. Threaded
+// through SessionCreatePayload → claudeCommand `--model <id>` / `--effort low`.
+function ModelSelect({
+  value,
+  onChange,
+  fastMode,
+  onFastMode,
+}: {
+  value: string
+  onChange: (v: string) => void
+  fastMode: boolean
+  onFastMode: (v: boolean) => void
+}) {
+  return (
+    <>
+      <select
+        className="field mono"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ cursor: 'pointer' }}
+      >
+        {CLAUDE_MODELS.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+            {m.legacy ? ' · Legacy' : ''}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={fastMode}
+        onClick={() => onFastMode(!fastMode)}
+        className="notify-toggle"
+        style={{
+          marginTop: 10,
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 11,
+          padding: '11px 14px',
+          borderRadius: 13,
+          cursor: 'pointer',
+          textAlign: 'left',
+          border: `1px solid ${fastMode ? 'var(--border-alive)' : 'var(--border)'}`,
+          background: fastMode ? 'color-mix(in oklch, var(--teal) 8%, var(--void))' : 'transparent',
+          boxShadow: fastMode ? 'var(--glow-alive)' : 'none',
+          transition: 'background .15s, border-color .15s',
+        }}
+      >
+        <Icon name="zap" size={15} color={fastMode ? 'var(--teal)' : 'var(--fg-3)'} />
+        <span style={{ flex: 1 }}>
+          <span style={{ display: 'block', fontSize: 13, color: 'var(--fg-1)', fontWeight: 500 }}>Fast mode</span>
+          <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 1 }}>
+            lower effort, snappier replies
+          </span>
+        </span>
+        <span
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            width: 34,
+            height: 20,
+            borderRadius: 999,
+            background: fastMode ? 'var(--teal)' : 'color-mix(in oklch, var(--fg-3) 30%, transparent)',
+            position: 'relative',
+            transition: 'background .15s',
+          }}
+        >
+          <span
+            style={{
+              position: 'absolute',
+              top: 2,
+              left: fastMode ? 16 : 2,
+              width: 16,
+              height: 16,
+              borderRadius: '50%',
+              background: 'var(--void)',
+              transition: 'left .15s',
+            }}
+          />
+        </span>
+      </button>
+    </>
+  )
+}
 
 function PermissionModeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (

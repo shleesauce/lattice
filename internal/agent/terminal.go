@@ -215,6 +215,10 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 	}
 	if kind == proto.SessionClaude {
 		cmd.Env = claudeChildEnv()
+		// C (v0.1.5): inject the per-session hook env so the static --settings hook
+		// script can curl the precise-state callback. Appended AFTER claudeChildEnv so
+		// these win; empty (no-op) when the hub didn't wire hooks (no HubURL/token).
+		cmd.Env = append(cmd.Env, hookEnv(p.HubURL, p.SessionID, p.HookToken)...)
 	}
 
 	cols, rows := normalizeWinsize(p.Cols, p.Rows)
@@ -245,12 +249,17 @@ func (t *terminals) start(parent context.Context, p proto.SessionCreatePayload) 
 
 	go t.pumpOutput(sess)
 
-	// Fire-and-forget groundwork (v0.1.5): a claude session that goes quiet is
-	// either waiting on a permission prompt or done with its turn — both mean
-	// "needs the operator." Watch its output cadence and report idle/active edges
-	// to the hub, which fans them out to ntfy for opt-in sessions. Terminals and
-	// editors are excluded: a shell sitting at a prompt is the normal resting state.
-	if kind == proto.SessionClaude {
+	// Fire-and-forget (v0.1.5): a claude session that needs the operator (turn done
+	// or blocked on a permission prompt) should ping the phone.
+	//   - When the hub wired Claude Code hooks (HubURL+HookToken present, C), the
+	//     hooks report PRECISE Stop / permission_prompt / SessionEnd edges straight
+	//     to the hub — so we DON'T also run the coarse 45s PTY-quiet watcher; the
+	//     hook signal replaces it (else the two would double-fire).
+	//   - Without hooks (no hub URL configured), fall back to the PTY-quiet idle
+	//     heuristic. Terminals/editors are excluded either way: a shell at a prompt
+	//     is the normal resting state.
+	hooksWired := p.HubURL != "" && p.HookToken != ""
+	if kind == proto.SessionClaude && !hooksWired {
 		go t.watchIdle(sess)
 	}
 
@@ -502,6 +511,37 @@ func permissionMode(m string) string {
 	return "bypassPermissions"
 }
 
+// claudeModels is the allow-list of --model values Lattice will pass through. An
+// operator-chosen model must be on this list or it's dropped (claudeModel returns
+// ""), so a bad/spoofed value can never reach the launch — claude then falls back
+// to its own configured default. The 1M-context variants use the `[1m]` suffix
+// form (verified accepted by `claude --model … --help` on claude 2.1.137); the
+// `[1m]` is a literal part of the model string, NOT a placement filter. Legacy ids
+// are kept so a resumed conversation pinned to an older model still relaunches.
+var claudeModels = map[string]bool{
+	"claude-fable-5":      true,
+	"claude-fable-5[1m]":  true,
+	"claude-opus-4-8":     true,
+	"claude-opus-4-8[1m]": true, // Lattice default (Opus 4.8, 1M context)
+	"claude-sonnet-4-6":   true,
+	"claude-haiku-4-5":    true,
+	"claude-opus-4-7":     true,
+	"claude-opus-4-7[1m]": true,
+	"claude-opus-4-6":     true,
+}
+
+// claudeModel validates an operator-chosen model id against the allow-list. An
+// empty or unrecognised value returns "" — the caller then omits --model entirely,
+// leaving claude on its own configured default rather than launching with a bogus
+// model string.
+func claudeModel(m string) string {
+	m = strings.TrimSpace(m)
+	if claudeModels[m] {
+		return m
+	}
+	return ""
+}
+
 // claudeCommand builds the argv for an INTERACTIVE claude launched in this PTY.
 // The hub assigns --session-id so the Lattice sessionId IS the claude session id;
 // --resume reattaches a prior conversation from the Syncthing-synced transcript
@@ -527,6 +567,26 @@ func claudeCommand(p proto.SessionCreatePayload) (name string, args []string) {
 		cArgs = []string{"--resume", p.ResumeID, "--permission-mode", mode}
 	} else {
 		cArgs = []string{"--session-id", p.SessionID, "--permission-mode", mode}
+	}
+	// Operator-chosen model (validated against the allow-list). Empty ⇒ omit
+	// --model so claude keeps its own default; a recognised id (incl. the `[1m]`
+	// 1M-context form) is passed through verbatim.
+	if model := claudeModel(p.Model); model != "" {
+		cArgs = append(cArgs, "--model", model)
+	}
+	// Fast mode ⇒ claude's low-effort setting (verified flag on claude 2.1.137).
+	if p.FastMode {
+		cArgs = append(cArgs, "--effort", "low")
+	}
+	// C (v0.1.5): wire Lattice-managed CC hooks for precise state, but ONLY when the
+	// hub shipped a callback URL (HubURL) AND we can write the static settings file.
+	// `--settings` loads our hooks for THIS launch only — it never touches the user's
+	// ~/.claude/settings.json. The per-session token/url/id are injected via cmd.Env
+	// in start() (hookEnv), so one static settings file serves every session.
+	if p.HubURL != "" && p.HookToken != "" {
+		if sp := hookSettingsPath(); sp != "" {
+			cArgs = append(cArgs, "--settings", sp)
+		}
 	}
 
 	// Windows: exec claude.exe directly — its PATH is fine and there's no login-shell

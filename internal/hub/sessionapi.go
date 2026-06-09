@@ -79,6 +79,8 @@ func (h *Hub) handleSessions(w http.ResponseWriter, r *http.Request) {
 			h.handleResumeSession(w, r, id)
 		case action == "transcript" && r.Method == http.MethodGet:
 			h.handleTranscript(w, r, id)
+		case action == "telemetry" && r.Method == http.MethodGet:
+			h.handleSessionTelemetry(w, r, id)
 		default:
 			http.NotFound(w, r)
 		}
@@ -110,6 +112,8 @@ type createSessionBody struct {
 	PinAgentID     string `json:"pinAgentId"`
 	PermissionMode string `json:"permissionMode"` // claude only; agent validates + defaults
 	NotifyOnIdle   bool   `json:"notifyOnIdle"`   // claude only; ping my phone when it waits or finishes
+	Model          string `json:"model"`          // claude only; full model id (agent validates against allow-list)
+	FastMode       bool   `json:"fastMode"`       // claude only; low-effort "fast" launch (--effort low)
 }
 
 func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +182,15 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Only a claude session can go idle/finish in a way worth a phone ping; ignore
 	// the flag for terminal/editor so a stray toggle can't arm a never-firing notify.
 	notifyOnIdle := body.NotifyOnIdle && req.Kind == proto.SessionClaude
-	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode, notifyOnIdle)
+	// Model + fast mode only apply to a claude session; ignore stray values on
+	// terminal/editor so a leftover toggle can't alter their launch.
+	model := ""
+	fastMode := false
+	if req.Kind == proto.SessionClaude {
+		model = strings.TrimSpace(body.Model)
+		fastMode = body.FastMode
+	}
+	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode, notifyOnIdle, model, fastMode)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -207,7 +219,7 @@ func deviceExcludeReason(p PlacementResult, agentID string) string {
 // chosen agent, and flips the row to live on ack. resumeID is non-empty only for
 // a resume onto a (possibly different) agent. The session row id is reused on
 // resume so the logical conversation keeps one identity (D20).
-func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string, notifyOnIdle bool) (SessionRecord, error) {
+func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string, notifyOnIdle bool, model string, fastMode bool) (SessionRecord, error) {
 	now := time.Now()
 	sessionID := resumeID
 	isResume := resumeID != ""
@@ -230,6 +242,7 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		Pinned:       true,
 		Scope:        scope,
 		NotifyOnIdle: notifyOnIdle,
+		Model:        model,
 		CreatedAt:    now,
 		LastActiveAt: now,
 	}
@@ -248,9 +261,21 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		Cwd:            projectPath,
 		SeedInput:      seedInput,
 		PermissionMode: permissionMode,
+		Model:          model,
+		FastMode:       fastMode,
 	}
 	if isResume {
 		create.ResumeID = resumeID
+	}
+	// C (v0.1.5): wire Lattice-managed Claude Code hooks for precise state. Only
+	// when (a) it's a claude session and (b) the hub has a canonical URL the
+	// on-agent hook script can curl back to. Mint a per-session capability token and
+	// ship it + the hub URL so the agent adds `--settings <hooks file>` and injects
+	// them into the claude child env. Without a hub URL the agent skips --settings
+	// and the hub keeps the PTY-quiet idle heuristic.
+	if kind == proto.SessionClaude && h.hooksEnabled() {
+		create.HubURL = h.hubURL
+		create.HookToken = h.mintHookToken(sessionID, now)
 	}
 
 	env, err := h.roundTrip(agentID, reqID, proto.TypeSessionCreate, create)
@@ -437,7 +462,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "", rec.NotifyOnIdle)
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "", rec.NotifyOnIdle, rec.Model, false)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return

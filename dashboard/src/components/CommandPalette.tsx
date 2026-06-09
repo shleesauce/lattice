@@ -35,6 +35,7 @@ interface Props {
   onOpenSession: (id: string) => void
   onOpenProject: (path: string) => void
   onNewSession: () => void
+  onNewWorkflow: () => void
   onNewProject: () => void
   onOpenSettings: () => void
 }
@@ -82,6 +83,7 @@ export function CommandPalette({
   onOpenSession,
   onOpenProject,
   onNewSession,
+  onNewWorkflow,
   onNewProject,
   onOpenSettings,
 }: Props) {
@@ -169,11 +171,12 @@ export function CommandPalette({
 
     // ── Actions ──
     out.push({ id: 'act-new-session', group: 'Actions', label: 'New session…', hint: 'pick any project & place it', icon: 'sparkles', terms: 'new session start claude terminal editor project pick run', run: run(onNewSession) })
+    out.push({ id: 'act-new-workflow', group: 'Actions', label: 'Implement issue / Review PR…', hint: 'paste a GitHub issue or PR URL', icon: 'git-branch', terms: 'workflow implement issue review pr github url worktree template', run: run(onNewWorkflow) })
     out.push({ id: 'act-new-project', group: 'Actions', label: 'Begin a new project…', hint: 'scaffold & register', icon: 'plus', terms: 'begin new project create scaffold onboard wizard', run: run(onNewProject) })
     out.push({ id: 'act-settings', group: 'Actions', label: 'Open Settings', hint: 'primary machine, about', icon: 'settings', terms: 'settings preferences primary machine about config', run: run(onOpenSettings) })
 
     return out
-  }, [view, machines, projects, sessions, canWake, onClose, onGoFleet, onGoWorkspace, onFocusMachine, onWakeMachine, onOpenSession, onOpenProject, onNewSession, onNewProject, onOpenSettings])
+  }, [view, machines, projects, sessions, canWake, onClose, onGoFleet, onGoWorkspace, onFocusMachine, onWakeMachine, onOpenSession, onOpenProject, onNewSession, onNewWorkflow, onNewProject, onOpenSettings])
 
   // Filter: every whitespace-separated token must appear (AND substring match).
   // With a query, rank by relevance (best match first); empty query keeps the

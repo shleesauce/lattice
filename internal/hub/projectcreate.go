@@ -382,7 +382,7 @@ func (h *Hub) launchOnboardingSession(projDir string, s projectSpec) (*sessionVi
 	// SEEDED into it (passed in the create payload). The agent types it in once the
 	// TUI has settled — a readiness check, not a blind delay — so the brief isn't
 	// dropped on a slow/cold/remote box.
-	rec, err := h.createOnAgent(proto.SessionClaude, "project", projDir, s.official, agentID, "", onboardingSeedPrompt, "", false)
+	rec, err := h.createOnAgent(proto.SessionClaude, "project", projDir, s.official, agentID, "", onboardingSeedPrompt, "", false, "", false)
 	if err != nil {
 		warnings = append(warnings, "project created; Claude session launch failed: "+err.Error())
 		return nil, warnings

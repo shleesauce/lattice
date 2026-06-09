@@ -258,6 +258,26 @@ type SessionCreatePayload struct {
 	// acceptEdits, plan, auto, bypassPermissions, dontAsk). Empty/invalid ⇒
 	// bypassPermissions (the Lattice default — sessions are often unattended).
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// Model is the claude --model for this session — a full model id (e.g.
+	// claude-opus-4-8, or the 1M-context form claude-opus-4-8[1m]). Empty ⇒ the
+	// agent passes no --model, leaving claude on its own configured default. The
+	// agent validates against an allow-list so a bad value can't reach the launch.
+	// Persisted on the session row so --resume relaunches with the same model (D20).
+	Model string `json:"model,omitempty"`
+	// FastMode requests claude's low-effort ("fast") setting — mapped to
+	// `--effort low` at launch. Empty/false ⇒ no --effort flag (claude's default).
+	// A launch-time preference like PermissionMode: not persisted, not carried on
+	// resume.
+	FastMode bool `json:"fastMode,omitempty"`
+	// HubURL + HookToken wire Lattice-managed Claude Code hooks (C) back to the hub.
+	// The agent adds `--settings <static lattice hooks file>` and injects these into
+	// the claude child env (cmd.Env): the hook scripts curl-POST {sessionId, event,
+	// token} to <HubURL>/api/hooks/state for precise turn-done / awaiting-approval /
+	// session-end state. HookToken is a per-session capability (the credential the
+	// ungated hooks endpoint validates). Empty HubURL ⇒ the agent skips --settings
+	// and the hub falls back to the PTY-quiet idle heuristic.
+	HubURL    string `json:"hubUrl,omitempty"`
+	HookToken string `json:"hookToken,omitempty"`
 	// SeedInput, if set, is typed into the session ONCE the interactive TUI has
 	// settled (claude: the onboarding brief). The agent waits for output to go quiet
 	// before injecting, so the keystrokes aren't dropped during boot/first render.

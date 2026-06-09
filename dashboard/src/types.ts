@@ -136,6 +136,38 @@ export interface Project {
 }
 
 export type SessionKind = 'terminal' | 'claude' | 'editor'
+
+// Claude models offered in the New Session dialog. `id` is the exact string passed
+// to `claude --model` (the agent re-validates it against an allow-list). The 1M
+// variants use the literal `[1m]` suffix form (verified on claude 2.1.137). Order
+// here is the order shown in the picker; DEFAULT_CLAUDE_MODEL is pre-selected.
+export interface ClaudeModelOption {
+  id: string
+  label: string
+  legacy?: boolean
+}
+
+export const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-8[1m]'
+
+export const CLAUDE_MODELS: ClaudeModelOption[] = [
+  { id: 'claude-fable-5', label: 'Fable 5' },
+  { id: 'claude-fable-5[1m]', label: 'Fable 5 (1M)' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M)' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', legacy: true },
+  { id: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M)', legacy: true },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', legacy: true },
+]
+
+// modelLabel maps a full model id back to its friendly label for session cards;
+// falls back to the raw id (or a short form) when unknown.
+export function modelLabel(id?: string): string {
+  if (!id) return ''
+  const m = CLAUDE_MODELS.find((x) => x.id === id)
+  return m ? m.label : id
+}
 export type SessionStatus = 'starting' | 'live' | 'detached' | 'orphaned' | 'exited'
 export type SessionScope = 'project' | 'device'
 
@@ -154,6 +186,8 @@ export interface Session {
   archived?: boolean
   deletedAt?: string // RFC3339 when trashed; absent/empty otherwise
   notifyOnIdle?: boolean // claude: ping my phone when it waits/finishes (fire-and-forget)
+  model?: string // claude: full model id this session launched with (e.g. claude-opus-4-8[1m])
+  prUrl?: string // claude: detected GitHub PR URL for this session (D)
   createdAt: string // RFC3339
   lastActiveAt: string // RFC3339
 }
@@ -186,11 +220,55 @@ export interface CreateSessionRequest {
   pinAgentId?: string
   permissionMode?: string
   notifyOnIdle?: boolean
+  model?: string // claude: full model id; omitted ⇒ claude's own default
+  fastMode?: boolean // claude: low-effort "fast" launch (--effort low)
 }
 
 export interface SessionWithPlacement {
   session: Session
   placement: PlacementResult
+}
+
+// Workflow templates (E, v0.1.5): a pasted GitHub issue/PR URL spins up a scoped,
+// pre-briefed Claude session in a dedicated worktree, auto-placed.
+export interface CreateWorkflowRequest {
+  url: string
+  projectPath: string
+  userAgentId?: string
+  pinAgentId?: string
+  permissionMode?: string
+  model?: string
+  notifyOnIdle?: boolean
+}
+
+export interface WorkflowInfo {
+  kind: 'implement_issue' | 'review_pr'
+  url: string
+  worktree: string
+}
+
+export interface WorkflowResult {
+  session: Session
+  placement: PlacementResult
+  workflow: WorkflowInfo
+}
+
+// Rich session telemetry (C, v0.1.5): derived hub-side from the synced transcript
+// (model / context% / $cost the hook stdin can't provide). GET
+// /api/sessions/{id}/telemetry. found=false ⇒ no transcript yet, render nothing.
+export interface SessionTelemetry {
+  sessionId: string
+  found: boolean
+  model?: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreateTokens: number
+  messageCount: number
+  contextPct: number // 0..100
+  costUsd: number
+  lastAt?: string
+  prUrl?: string // detected GitHub PR for this session (D)
 }
 
 export interface ReleaseInfo {

@@ -70,6 +70,11 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .prj-menu-reset:hover:not(:disabled) { background: var(--raised-2); color: var(--fg-1); }
 .prj-menu-reset:disabled { opacity: .4; cursor: default; }
 
+/* Session right-click context menu items (I — session naming). */
+.ctx-item { text-align: left; padding: 7px 10px; border-radius: 9px; font-size: 12px; font-weight: 500; color: var(--fg-2); background: none; border: none; transition: all var(--dur) var(--ease); cursor: pointer; }
+.ctx-item:hover { background: var(--raised-2); color: var(--fg-1); }
+.ctx-item.danger:hover { color: var(--st-danger); }
+
 /* collapsed workspace rail — keep open sessions reachable at 48px */
 .rail-mini { width: 48px; align-items: center; padding-top: 12px; gap: 4px; }
 .rail-mini-btn { padding: 6px; border-radius: 8px; color: var(--fg-3); display: flex; align-items: center; justify-content: center; transition: all var(--dur) var(--ease); }

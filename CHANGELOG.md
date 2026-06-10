@@ -4,7 +4,7 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.5] - 2026-06-08
+## [0.1.5] - 2026-06-09
 
 ### Added
 - **Choose Claude's permission mode per session.** The New Session dialog has a permission-mode
@@ -12,6 +12,22 @@ All notable changes to Lattice are documented here. The format follows
   the Claude pane has a one-click control to cycle the mode live (sends Shift+Tab to the TUI, so it
   works on a phone where Shift+Tab isn't available). Groundwork for unattended runs: start an agent
   in Bypass/Accept-edits so it doesn't block waiting for approvals.
+- **Pick Claude's model when you start a session.** The New Session dialog now has a model dropdown —
+  Opus 4.8 (1M context) by default, plus Fable 5, Sonnet 4.6, Haiku 4.5 and the legacy Opus builds —
+  with a fast-mode toggle. Before this, every session inherited Claude's stale config default.
+- **Richer, accurate session cards.** Claude sessions now show precise live state — working, waiting
+  on you (a permission prompt), or done — plus the model, context used, and running cost. It's driven
+  by Claude Code's own lifecycle hooks (wired per-session, never touching your `~/.claude` settings)
+  instead of guessing from terminal quiet, so "waiting on you" actually means waiting on you. When a
+  session opens a pull request, the PR link shows up on its card and pings your phone once.
+- **One-click updates — stop SSH-ing in to upgrade.** The header now shows the version you're running.
+  When a newer Lattice is published on GitHub, that badge turns into an "Update available" alert with
+  an **Update now** button: it updates the hub and then every online agent in lockstep — each binary
+  checksum-verified before it's swapped — then reconnects you to the new build. No terminal, no
+  per-machine commands.
+- **Workflow templates: Implement an issue / Review a PR.** Paste a GitHub issue or pull-request URL
+  and Lattice spins up a dedicated worktree session, pre-briefed for the task, placed on the best
+  available machine.
 - **Fire-and-forget: get pinged on your phone, approve from anywhere.** Flip "Ping my phone" on a
   Claude session and walk away. The moment that run goes quiet waiting on you — a permission prompt
   or the end of its turn — or it finishes, Lattice pushes a notification (ntfy) to your phone. The

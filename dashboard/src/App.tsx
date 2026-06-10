@@ -7,7 +7,7 @@ import { useDevices } from './useDevices'
 import { useWorkspace } from './useWorkspace'
 import { usePersisted } from './usePersisted'
 import { getAuthStatus, getSetupStatus, wakeAgent } from './api'
-import type { AuthStatus, SetupStatus } from './types'
+import type { AuthStatus, ReleasesResponse, SetupStatus } from './types'
 import { FirstRunWizard } from './components/FirstRunWizard'
 import { Login } from './components/Login'
 import { devicesToMachines, isWoven, type Machine } from './lattice/adapt'
@@ -23,7 +23,8 @@ import { WorkflowDialog } from './components/workspace/WorkflowDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ManageMesh } from './components/ManageMesh'
-import { UpdateBanner } from './components/UpdateBanner'
+import { UpdateAlertBanner, VersionBadge } from './components/UpdateAlert'
+import { useReleases } from './useReleases'
 import { Icon } from './lattice/Icon'
 import { Dot } from './lattice/primitives'
 import logoMark from './design/logo-mark.svg'
@@ -80,6 +81,9 @@ function Dashboard() {
   const { agents, health, conn } = useFleet()
   const { devices, refetch: refetchDevices } = useDevices()
   const ws = useWorkspace()
+  // One shared release poll drives both the header version badge and the
+  // under-header "update available" banner.
+  const releases = useReleases()
   // Persisted across refresh so the app reopens where you left it.
   const [view, setView] = usePersisted<View>('lattice.view', 'fleet')
   const [selectedId, setSelectedId] = usePersisted<string | null>('lattice.fleet.selected', null)
@@ -237,6 +241,7 @@ function Dashboard() {
         onView={setView}
         conn={conn}
         version={health?.version}
+        releases={releases}
         alive={liveSessions}
         woven={wovenCount}
         onSearch={() => setPaletteOpen(true)}
@@ -251,7 +256,7 @@ function Dashboard() {
         </div>
       )}
 
-      <UpdateBanner currentVersion={health?.version} />
+      <UpdateAlertBanner version={health?.version} releases={releases} />
 
       <main className="flex min-h-0 flex-1 flex-col">
         {view === 'fleet' ? (
@@ -392,6 +397,7 @@ function TopBar({
   onView,
   conn,
   version,
+  releases,
   alive,
   woven,
   onSearch,
@@ -401,6 +407,7 @@ function TopBar({
   onView: (v: View) => void
   conn: ConnState
   version?: string
+  releases: ReleasesResponse | null
   alive: number
   woven: number
   onSearch: () => void
@@ -450,10 +457,12 @@ function TopBar({
         <span className="mono" style={{ fontSize: 11, color: 'var(--fg-3)' }}>⌘K</span>
       </button>
 
-      <div className="tb-stat" title={`${c.text}${version ? ` · lattice ${version}` : ' · version unknown'}`}>
+      <div className="tb-stat" title={c.text}>
         <span className={`dot ${c.cls}`} />
         <span style={{ fontSize: 11 }}>{c.text}</span>
       </div>
+
+      <VersionBadge version={version} releases={releases} />
 
       <button type="button" className="iconbtn" title="settings" onClick={onSettings}>
         <Icon name="settings" size={17} />

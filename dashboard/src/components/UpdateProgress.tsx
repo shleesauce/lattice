@@ -1,85 +1,18 @@
-/* One-click fleet auto-update (v0.1.5 / H). A slim banner appears when the hub
-   reports a newer release (/api/releases → updateAvailable). The button opens a
-   progress modal that POSTs /api/update — the hub self-updates, cascades every
-   agent in LOCKSTEP, then restarts; the dashboard polls /api/health until the new
-   build answers and reloads onto it. "What's new" surfaces the Phase-G release
-   notes inline so the operator sees the changelog before committing. */
+/* One-click fleet auto-update — the progress modal (v0.1.5 / H). POSTs /api/update:
+   the hub self-updates, cascades every agent in LOCKSTEP, then restarts; the
+   dashboard polls /api/health until the new build answers and reloads onto it.
+   This is the canonical update FLOW — UpdateAlert (header chip + banner) opens it;
+   do NOT reimplement the update logic elsewhere. */
 import { useEffect, useRef, useState } from 'react'
-import { fetchHealth, fetchReleases, startUpdate } from '../api'
-import type { ReleasesResponse, UpdateResult } from '../types'
+import { fetchHealth, startUpdate } from '../api'
+import type { UpdateResult } from '../types'
 import { Modal } from './Modal'
-import { ReleaseNotes } from './ReleaseNotes'
 import { Icon } from '../lattice/Icon'
 import { Dot } from '../lattice/primitives'
 
-// Poll /api/releases periodically so the banner appears without a reload once a
-// release lands. The hub caches GitHub for 30min, so a light client poll is free.
-const RELEASE_POLL_MS = 5 * 60 * 1000
-
-export function UpdateBanner({ currentVersion }: { currentVersion?: string }) {
-  const [releases, setReleases] = useState<ReleasesResponse | null>(null)
-  const [open, setOpen] = useState(false)
-  const [showNotes, setShowNotes] = useState(false)
-  const [dismissed, setDismissed] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = () =>
-      fetchReleases()
-        .then((r) => !cancelled && setReleases(r))
-        .catch(() => {})
-    void load()
-    const t = setInterval(load, RELEASE_POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(t)
-    }
-  }, [])
-
-  if (!releases?.updateAvailable) return null
-  // Let the operator dismiss a given version's banner for this session.
-  if (dismissed === releases.latest) return null
-
-  return (
-    <>
-      <div className="upd-banner">
-        <Icon name="sparkles" size={14} color="var(--teal)" />
-        <span className="upd-banner-text">
-          Lattice <strong>{releases.latest}</strong> is available
-          {currentVersion ? ` — you're on ${currentVersion}` : ''}
-        </span>
-        <button type="button" className="upd-link" onClick={() => setShowNotes(true)}>
-          what's new
-        </button>
-        <button type="button" className="upd-btn" onClick={() => setOpen(true)}>
-          <Icon name="zap" size={13} />
-          Update fleet
-        </button>
-        <button
-          type="button"
-          className="upd-x"
-          onClick={() => setDismissed(releases.latest)}
-          aria-label="Dismiss"
-        >
-          <Icon name="x" size={13} />
-        </button>
-      </div>
-
-      {showNotes && <ReleaseNotes onClose={() => setShowNotes(false)} />}
-      {open && (
-        <UpdateProgress
-          target={releases.latest}
-          current={currentVersion}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  )
-}
-
 type Phase = 'confirm' | 'running' | 'agents' | 'reconnecting' | 'error'
 
-function UpdateProgress({
+export function UpdateProgress({
   target,
   current,
   onClose,

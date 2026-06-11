@@ -9,6 +9,7 @@ import { usePersisted } from './usePersisted'
 import { getAuthStatus, getSetupStatus, wakeAgent } from './api'
 import type { AuthStatus, ReleasesResponse, SetupStatus } from './types'
 import { FirstRunWizard } from './components/FirstRunWizard'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Login } from './components/Login'
 import { devicesToMachines, isWoven, type Machine } from './lattice/adapt'
 import { Fleet } from './lattice/Fleet'
@@ -280,13 +281,15 @@ function Dashboard() {
           />
         ) : (
           <Suspense fallback={<WorkspaceLoading />}>
-            <Workspace
-              agents={agents}
-              ws={ws}
-              intent={wsIntent}
-              onIntentConsumed={() => setWsIntent(null)}
-              onNotify={flash}
-            />
+            <ErrorBoundary scope="The workspace">
+              <Workspace
+                agents={agents}
+                ws={ws}
+                intent={wsIntent}
+                onIntentConsumed={() => setWsIntent(null)}
+                onNotify={flash}
+              />
+            </ErrorBoundary>
           </Suspense>
         )}
       </main>

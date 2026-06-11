@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -263,11 +264,14 @@ func Run(ctx context.Context, args []string, version string) error {
 	// slow-header (Slowloris) without touching established connections.
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 15 * time.Second}
 
-	go h.sweepLoop(ctx)
-	go h.trashSweepLoop(ctx)
-	go h.reapLoop(ctx)
-	go h.flushFleetLoop(ctx)
-	go h.sessionCleanupLoop(ctx)
+	// Supervised: a panic in any of these long-lived loops is recovered + the loop
+	// restarted, instead of crashing the whole controller (which would drop every
+	// agent + tunnel at once and trigger a fleet-wide reconnect wave). See D-resilience.
+	h.superviseLoop(ctx, "sweepLoop", func() { h.sweepLoop(ctx) })
+	h.superviseLoop(ctx, "trashSweepLoop", func() { h.trashSweepLoop(ctx) })
+	h.superviseLoop(ctx, "reapLoop", func() { h.reapLoop(ctx) })
+	h.superviseLoop(ctx, "flushFleetLoop", func() { h.flushFleetLoop(ctx) })
+	h.superviseLoop(ctx, "sessionCleanupLoop", func() { h.sessionCleanupLoop(ctx) })
 
 	log.Printf("lattice hub %s starting", version)
 	log.Printf("  mesh:   %s   (config: %s)", cfg.MeshName, configSource())
@@ -300,6 +304,47 @@ func Run(ctx context.Context, args []string, version string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// superviseLoop runs a long-lived hub loop, recovering and RESTARTING it on panic
+// rather than letting one panic crash the whole controller (which would drop every
+// agent + tunnel at once and trigger a fleet-wide reconnect wave). fn must return
+// only when ctx is cancelled; a panic is logged with a stack and the loop restarts
+// after a 1s backoff so a hot panic can't spin. (v0.2.0 resilience.)
+func (h *Hub) superviseLoop(ctx context.Context, name string, fn func()) {
+	go func() {
+		for ctx.Err() == nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("hub: PANIC in %s (restarting): %v\n%s", name, r, debug.Stack())
+					}
+				}()
+				fn()
+			}()
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+}
+
+// goSafe runs a one-shot detached goroutine, recovering any panic so a bug in a
+// background task (transcript-derived PR detection / auto-naming, an ntfy push)
+// can't crash the whole hub. Use for fire-and-forget work spawned off a handler.
+func goSafe(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("hub: PANIC in %s: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
 }
 
 // isPubliclyBound reports whether addr listens on anything other than loopback.

@@ -145,12 +145,12 @@ func (h *Hub) handleSessionIdle(agentID string, p proto.SessionIdlePayload) {
 	}
 	// D: the idle edge is the fallback (no-hooks) analogue of the Stop hook — claude
 	// just went quiet, so it may have printed a PR URL. Detect off the transcript.
-	go h.detectPRForSession(p.SessionID, now)
+	goSafe("detectPR:"+p.SessionID, func() { h.detectPRForSession(p.SessionID, now) })
 	// Session naming (I, v0.1.5): the first quiet edge means the model has answered
 	// the first user message, so the first turn is now on disk — derive a title for
 	// a still-untitled session. Independent of NotifyOnIdle (every fresh claude
 	// session gets named) and run off the read loop (it round-trips to the agent).
-	go h.maybeAutoName(agentID, p.SessionID)
+	goSafe("autoName:"+p.SessionID, func() { h.maybeAutoName(agentID, p.SessionID) })
 
 	rec, ok, err := h.store.GetSession(p.SessionID)
 	if err != nil || !ok || !rec.NotifyOnIdle {

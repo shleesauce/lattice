@@ -8,7 +8,11 @@
 #
 # The download base is overridable for local testing:
 #   LATTICE_DOWNLOAD_BASE=http://localhost:8000 curl -fsSL .../get.sh | sh
-set -euo pipefail
+#
+# POSIX sh only: `set -o pipefail` is a bashism that ABORTS under a real /bin/sh
+# (dash on Debian/Ubuntu, BusyBox on Alpine) — which is exactly the Linux install
+# target — so the advertised `curl … | sh` one-liner died on this line. Use `set -eu`.
+set -eu
 
 BASE="${LATTICE_DOWNLOAD_BASE:-https://github.com/shleesauce/lattice/releases/latest/download}"
 

@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 import './index.css'
 // Lattice design system — "Cool Fabric, Warm Life". colors_and_type.css defines
 // EVERY token (--base/--raised/--green/--border/glows) + loads the local webfonts;
@@ -13,6 +14,8 @@ import './design/app.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )

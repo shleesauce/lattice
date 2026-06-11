@@ -1,7 +1,11 @@
 # Lattice — Roadmap
 
 Build order is chosen so each phase produces something **testable in a browser** and usable
-on a real fleet. Phases 1–4 are shipped; the IDE milestone (M2) is the current direction.
+on a real fleet. **Phases 1–4 and the M3 "distributable" milestone are shipped — Lattice is
+publicly released (v0.1.0 → v0.1.9) as an installable, auth-gated, self-updating self-hosted
+product.** The active milestone is **v0.2.0** (a deliberate multi-session pass: the IDE M2-P2
+mesh editor, agentID/storm hardening, an audit-driven quality pass — see `docs/V0.2.0-MILESTONE.md`).
+The IDE milestone (M2) is the headline feature direction within it.
 
 ---
 
@@ -34,6 +38,14 @@ Self-hosted distribution: the hub serves the binaries + rendered installers + `/
 installers register a persistent OS service (launchd / systemd / Windows Scheduled Task); a
 dashboard "Add machine" onboarding flow with per-machine revocable tokens. Public release
 channels (GitHub Releases; Homebrew / winget later) build on this.
+
+### M3 — Distributable product (shipped, v0.1.0 → v0.1.9)
+Cold-install a hub (`curl … | sh`), first-run wizard, single admin password + Tailscale boundary,
+Manage-Mesh area with revocable per-machine tokens, SHA256-verified self-update, and a **one-click
+fleet update cascade** (production-proven: ack-before-restart, Windows self-exit, tri-state outcomes).
+Plus the v0.1.x feature drops: per-session permission mode + model picker, fire-and-forget phone
+notify/approve, Claude Code hook-driven session state, workflow templates, framework (Vite/Next)
+dev-server preview, and a fully-offline dashboard (no third-party requests).
 
 ---
 

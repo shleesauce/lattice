@@ -137,13 +137,15 @@ func (h *Hub) handleEnrollTokenItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// randomEnrollToken returns a 16-hex-char per-machine enrollment token (8 random
-// bytes / 64 bits). It FAILS LOUDLY if crypto/rand is unavailable rather than
-// emitting a predictable time-seeded token: a per-machine token is a credential, so
-// a guessable one is exactly the failure to avoid, and rand.Read never fails on
-// supported platforms. The caller surfaces the error as a 500 instead of minting.
+// randomEnrollToken returns a 32-hex-char per-machine enrollment token (16 random
+// bytes / 128 bits, matching the master token's strength). It FAILS LOUDLY if
+// crypto/rand is unavailable rather than emitting a predictable time-seeded token: a
+// per-machine token is a long-lived credential, so a guessable one is exactly the
+// failure to avoid, and rand.Read never fails on supported platforms. The caller
+// surfaces the error as a 500 instead of minting. (Widened from 64→128 bits in
+// v0.2.0; existing shorter tokens stay valid — this only affects newly-minted ones.)
 func randomEnrollToken() (string, error) {
-	b := make([]byte, 8)
+	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("hub: generate enroll token: %w", err)
 	}

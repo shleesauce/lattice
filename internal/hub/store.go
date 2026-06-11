@@ -509,11 +509,14 @@ func (s *Store) LogAudit(sessionID, agentID, eventType, toolName, detailJSON str
 }
 
 func (s *Store) ReapAuditLog(keep int) (int, error) {
+	// Keep the newest `keep` rows. OFFSET ? lands on the (keep+1)-th newest id;
+	// delete everything at or below it — a single index range scan on the PK, vs the
+	// old `id NOT IN (SELECT …)` anti-join that scanned the whole table every 2 min
+	// on the single write conn. If there are ≤ keep rows the subquery is NULL →
+	// `id <= NULL` deletes nothing.
 	res, err := s.db.Exec(`
 		DELETE FROM audit_log
-		WHERE id NOT IN (
-			SELECT id FROM audit_log ORDER BY id DESC LIMIT ?
-		)
+		WHERE id <= (SELECT id FROM audit_log ORDER BY id DESC LIMIT 1 OFFSET ?)
 	`, keep)
 	if err != nil {
 		return 0, err

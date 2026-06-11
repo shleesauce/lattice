@@ -265,49 +265,76 @@ func replace(tmp, target string) error {
 	return nil
 }
 
-// restartService probes for an installed Lattice service (hub or agent) and
-// best-effort restarts it. Returns the service label restarted, or "" if none
-// was found. Failures are logged, not fatal.
-func restartService() string {
+// ServiceLabel returns the installed Lattice service label (hub or agent) WITHOUT
+// restarting it, or "" if none is installed. The agent uses this to report its
+// update outcome to the hub BEFORE it actually restarts: separating detect from
+// restart lets the agent ack first, so the result frame reliably reaches the hub
+// before the service teardown (kickstart -k / restart / schtasks) kills the
+// connection and the hub's round-trip times out (the v0.1.5 cascade race).
+func ServiceLabel() string { return detectService() }
+
+// RestartByLabel restarts a specific, already-detected service label (from
+// ServiceLabel). A "" label is a no-op. Best-effort: errors are returned, not
+// fatal — a swapped binary still applies on the service's next start.
+func RestartByLabel(label string) error { return restartByLabel(label) }
+
+// detectService probes for an installed Lattice service (hub or agent) and returns
+// its label WITHOUT side effects, or "" if none is installed.
+func detectService() string {
 	switch runtime.GOOS {
 	case "darwin":
 		uid := os.Getuid()
 		for _, label := range []string{"sh.lattice.hub", "sh.lattice.agent"} {
-			gui := fmt.Sprintf("gui/%d/%s", uid, label)
-			if run("launchctl", "print", gui) != nil {
-				continue // not installed
+			if run("launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, label)) == nil {
+				return label
 			}
-			if err := run("launchctl", "kickstart", "-k", gui); err != nil {
-				fmt.Fprintf(os.Stderr, "lattice: warning: restart %s failed: %v\n", label, err)
-				continue
-			}
-			return label
 		}
 	case "linux":
 		for _, unit := range []string{"lattice-hub", "lattice-agent"} {
-			if run("systemctl", "--user", "status", unit) != nil {
-				continue // not installed
+			if run("systemctl", "--user", "status", unit) == nil {
+				return unit
 			}
-			if err := run("systemctl", "--user", "restart", unit); err != nil {
-				fmt.Fprintf(os.Stderr, "lattice: warning: restart %s failed: %v\n", unit, err)
-				continue
-			}
-			return unit
 		}
 	case "windows":
 		for _, task := range []string{"LatticeHub", "LatticeAgent"} {
-			if run("schtasks", "/Query", "/TN", task) != nil {
-				continue // not installed
+			if run("schtasks", "/Query", "/TN", task) == nil {
+				return task
 			}
-			_ = run("schtasks", "/End", "/TN", task)
-			if err := run("schtasks", "/Run", "/TN", task); err != nil {
-				fmt.Fprintf(os.Stderr, "lattice: warning: restart %s failed: %v\n", task, err)
-				continue
-			}
-			return task
 		}
 	}
 	return ""
+}
+
+// restartByLabel restarts the given service label for the current OS. "" is a no-op.
+func restartByLabel(label string) error {
+	if label == "" {
+		return nil
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return run("launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), label))
+	case "linux":
+		return run("systemctl", "--user", "restart", label)
+	case "windows":
+		_ = run("schtasks", "/End", "/TN", label)
+		return run("schtasks", "/Run", "/TN", label)
+	}
+	return nil
+}
+
+// restartService detects the installed Lattice service and best-effort restarts it.
+// Returns the label restarted, or "" if none was found / the restart failed.
+// Failures are logged, not fatal.
+func restartService() string {
+	label := detectService()
+	if label == "" {
+		return ""
+	}
+	if err := restartByLabel(label); err != nil {
+		fmt.Fprintf(os.Stderr, "lattice: warning: restart %s failed: %v\n", label, err)
+		return ""
+	}
+	return label
 }
 
 // restartHint returns the exact restart command for the user's OS.

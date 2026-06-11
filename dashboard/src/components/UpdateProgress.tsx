@@ -109,15 +109,26 @@ export function UpdateProgress({
           <Step active={false} done label={`Hub updated → ${result?.to ?? target}`} />
           <div className="upd-agents">
             {result?.agents?.length ? (
-              result.agents.map((a) => (
-                <div key={a.agentId} className="upd-agent">
-                  <Dot status={a.ok ? 'live' : 'danger'} />
-                  <span className="upd-agent-name">{a.name || a.agentId}</span>
-                  <span className="upd-agent-state">
-                    {a.ok ? `updated${a.restarted ? ` · ${a.restarted}` : ''}` : a.error || 'failed'}
-                  </span>
-                </div>
-              ))
+              result.agents.map((a) => {
+                // Tri-state: a timeout / drop is 'pending' (amber), NOT a red failure —
+                // the binary still applies on the agent's next start. Fall back to the
+                // legacy ok flag for a hub that predates the status field.
+                const status = a.status ?? (a.ok ? 'updated' : 'failed')
+                const dot = status === 'updated' ? 'live' : status === 'pending' ? 'starting' : 'danger'
+                const label =
+                  status === 'updated'
+                    ? `updated${a.restarted ? ` · ${a.restarted}` : ''}`
+                    : status === 'pending'
+                      ? a.detail || 'applies on restart'
+                      : a.error || a.detail || 'failed'
+                return (
+                  <div key={a.agentId} className="upd-agent">
+                    <Dot status={dot} />
+                    <span className="upd-agent-name">{a.name || a.agentId}</span>
+                    <span className="upd-agent-state">{label}</span>
+                  </div>
+                )
+              })
             ) : (
               <p className="upd-sub">no online agents to update</p>
             )}

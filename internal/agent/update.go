@@ -9,12 +9,22 @@ import (
 	"github.com/shleesauce/lattice/internal/update"
 )
 
+// restartGrace is how long the agent waits after acking the hub before it actually
+// restarts its service. The ack must be on the wire AND processed by the hub before
+// the restart (kickstart -k / systemctl restart / schtasks) tears this process down
+// — otherwise the hub's lockstep round-trip times out even on a perfect update (the
+// v0.1.5 cascade race). Mirrors the hub's own 750ms pre-restart delay in handleUpdate.
+const restartGrace = 750 * time.Millisecond
+
 // handleUpdate pulls+verifies+swaps the release binary on this agent, reports the
-// outcome back to the hub, then restarts the agent's own service so the new build
-// takes over. The result frame is sent BEFORE the restart kicks: the restart
-// (launchctl kickstart / systemctl restart / schtasks) tears down this process,
-// so a result sent after it would never make it onto the wire and the hub's
-// lockstep round-trip would time out even on a perfectly successful update.
+// outcome back to the hub, THEN — only after the ack has had time to land — restarts
+// the agent's own service so the new build takes over.
+//
+// Ordering matters: update.ServiceLabel() only DETECTS the service (no restart), so
+// we can put the label in the result frame and ack the hub FIRST; the real restart
+// (update.RestartByLabel) happens after restartGrace. Doing it the other way (restart
+// then ack, as v0.1.5 did) let the restart kill the process before the frame flushed,
+// so the hub saw a timeout on a successful update.
 //
 // Verification is FAIL CLOSED inside update.Apply (never Insecure here): a bad or
 // unreachable SHA256SUMS aborts with the agent STILL on its old binary, and we
@@ -30,19 +40,25 @@ func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []
 		return
 	}
 
+	// Detect (don't restart) the service so we can name it in the ack.
+	label := update.ServiceLabel()
 	result.OK = true
-	result.Restarted = update.Restart()
-	log.Printf("agent: update applied (%s); restarting service %q", p.Version, result.Restarted)
+	result.Restarted = label
 
-	// Tell the hub we're good BEFORE the restart yanks the process. Give the
-	// writer goroutine a beat to flush the frame onto the socket; the restart
-	// follows immediately after.
+	// Ack the hub BEFORE restarting, then give the frame time to flush + be
+	// processed before the restart yanks the process out from under the socket.
 	sendFrame(ctx, outbound, proto.TypeUpdateResult, result)
-	time.Sleep(250 * time.Millisecond)
 
-	// If no service was found to restart, the swapped binary still applies the
-	// next time the agent starts — nothing more to do here.
-	if result.Restarted == "" {
-		log.Printf("agent: no installed Lattice service to restart; new binary applies on next start")
+	if label == "" {
+		// No service to restart — the swapped binary applies on next start.
+		log.Printf("agent: update applied (%s); no installed Lattice service to restart; new binary applies on next start", p.Version)
+		return
+	}
+
+	log.Printf("agent: update applied (%s); restarting service %q after ack", p.Version, label)
+	time.Sleep(restartGrace)
+	if err := update.RestartByLabel(label); err != nil {
+		// Restart failed, but the binary is already swapped — it applies on next start.
+		log.Printf("agent: restart of %q failed: %v; new binary applies on next start", label, err)
 	}
 }

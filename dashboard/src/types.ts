@@ -299,8 +299,12 @@ export interface ReleasesResponse {
 export interface AgentUpdateOutcome {
   agentId: string
   name: string
+  // 'updated' = new binary live; 'pending' = no ack yet / dropped mid-cascade, applies
+  // on restart (non-fatal); 'failed' = agent reported an error, still on old binary.
+  status?: 'updated' | 'pending' | 'failed'
   ok: boolean
   restarted?: string
+  detail?: string
   error?: string
 }
 

@@ -116,6 +116,13 @@ func (h *Hub) handleHookState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Per-IP throttle (ungated endpoint). The co-located agent posts from loopback on
+	// every turn, so exempt loopback; a remote flood is still capped. Return 200 (not
+	// 429) so a throttled hook never looks like a failure that could wedge claude.
+	if !requestIsLoopback(r) && !h.capLimiter.allow(clientIP(r)) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	var body hookStateBody
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		// Don't 4xx loudly — a malformed hook must not look like a failure to claude.

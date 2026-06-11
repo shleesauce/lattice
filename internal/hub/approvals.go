@@ -243,6 +243,12 @@ func (h *Hub) handleApproval(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Per-IP throttle (ungated capability endpoint). Legit taps arrive via the ntfy
+	// server at a trickle; a flood (someone spraying the nonce space) is capped.
+	if !requestIsLoopback(r) && !h.capLimiter.allow(clientIP(r)) {
+		approvalPage(w, http.StatusTooManyRequests, "Too many requests — try again in a moment.")
+		return
+	}
 	nonce := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/approvals/"), "/")
 	if nonce == "" {
 		approvalPage(w, http.StatusBadRequest, "Invalid approval link.")

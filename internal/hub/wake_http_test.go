@@ -78,7 +78,7 @@ func TestWakeNoLiveRelay(t *testing.T) {
 func TestPowerBadAction(t *testing.T) {
 	h := testHub(t)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/agents/studio/power", strings.NewReader(`{"action":"explode"}`))
+	req := privileged(httptest.NewRequest(http.MethodPost, "/api/agents/studio/power", strings.NewReader(`{"action":"explode"}`)))
 	h.handlePower(rec, req, "studio")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400", rec.Code)

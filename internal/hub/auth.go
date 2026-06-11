@@ -125,6 +125,7 @@ func (h *Hub) sessionCleanupLoop(ctx context.Context) {
 		case <-ticker.C:
 			h.sessions.cleanup()
 			h.loginLimiter.sweep()
+			h.capLimiter.sweep()
 		}
 	}
 }
@@ -208,6 +209,46 @@ func (h *Hub) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requirePrivileged enforces a credential for an RCE-class action (remote command
+// exec, fleet-wide auto-update, machine power-off) EVEN on a passwordless hub, and
+// reports whether the request may proceed.
+//
+// The hole it closes: requireAuth is a pass-through when no admin password is set
+// (the legacy "open on a trusted network" mode), so on a passwordless hub anyone who
+// can reach the port could POST /api/agents/{id}/exec and run arbitrary commands on
+// every fleet machine — open, unauthenticated, fleet-wide RCE over the tailnet.
+// These specific actions are too dangerous to ride the auth-off pass-through, so we
+// fail closed: when auth is OFF we still demand the master token as a Bearer
+// credential (the operator holds it — it's the same secret agents enroll with — but
+// an arbitrary tailnet peer does not). When auth is ON, requireAuth already gated the
+// route, so this is a no-op pass. The trade (mirroring requireAuthOrToken): a
+// passwordless browser dashboard can no longer fire these without the token; the
+// operator should set a password (cookie auth) or present the token. On failure it
+// writes a 401 and returns false so the handler can `if !h.requirePrivileged(...) { return }`.
+func (h *Hub) requirePrivileged(w http.ResponseWriter, r *http.Request) bool {
+	if h.authEnabled() {
+		// requireAuth already verified the session/Bearer for this route.
+		return true
+	}
+	if h.bearerIsMasterToken(r) {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "this action requires the hub token"})
+	return false
+}
+
+// requestIsLoopback reports whether r originates from the loopback interface (the
+// operator is on the hub box itself). Used to let the first-run setup wizard run
+// unauthenticated from localhost while still blocking a remote tailnet peer from
+// claiming admin before a password exists. RemoteAddr is the real peer (the hub is
+// reached directly over the tailnet, no trusted proxy), so this can't be spoofed by
+// a client header.
+func requestIsLoopback(r *http.Request) bool {
+	ip := net.ParseIP(clientIP(r))
+	return ip != nil && ip.IsLoopback()
+}
+
 // requireAuthOrToken gates a credential-bearing endpoint (e.g. handleEnroll, which
 // hands out the master token). When admin auth is ENABLED it behaves exactly like
 // requireAuth (session cookie OR master-token Bearer). When admin auth is DISABLED
@@ -230,6 +271,75 @@ func (h *Hub) requireAuthOrToken(next http.HandlerFunc) http.HandlerFunc {
 		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	}
+}
+
+// capLimitMax / capLimitWindow bound the ungated capability endpoints
+// (/api/hooks/state, /api/approvals/{nonce}) per client IP. Generous on purpose:
+// hooks fire on every claude turn, so a heavy multi-session box must never trip it,
+// while a flood from one IP is still capped. 300/min ≈ 5/s sustained per IP.
+const capLimitMax = 300
+const capLimitWindow = 1 * time.Minute
+
+// rateLimiter is a generic per-IP fixed-window request limiter: at most max
+// requests per window per IP. Unlike loginLimiter (which counts only failures), this
+// counts every call — used to throttle the ungated capability endpoints. Safe for
+// concurrent use.
+type rateLimiter struct {
+	mu     sync.Mutex
+	max    int
+	window time.Duration
+	hits   map[string][]time.Time
+}
+
+func newRateLimiter(max int, window time.Duration) *rateLimiter {
+	return &rateLimiter{max: max, window: window, hits: make(map[string][]time.Time)}
+}
+
+// allow records a request from ip and reports whether it is within the limit. It
+// prunes the IP's window in place as it goes, so a quiet IP's bucket is dropped. A
+// nil limiter allows everything (so a Hub built without one in a test never blocks).
+func (l *rateLimiter) allow(ip string) bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-l.window)
+	kept := l.hits[ip][:0]
+	for _, t := range l.hits[ip] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= l.max {
+		l.hits[ip] = kept // over the cap: keep the window, reject
+		return false
+	}
+	l.hits[ip] = append(kept, time.Now())
+	return true
+}
+
+// sweep drops per-IP buckets with no request inside the trailing window, bounding
+// the map by distinct recent IPs (mirrors loginLimiter.sweep).
+func (l *rateLimiter) sweep() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-l.window)
+	for ip, times := range l.hits {
+		live := false
+		for _, t := range times {
+			if t.After(cutoff) {
+				live = true
+				break
+			}
+		}
+		if !live {
+			delete(l.hits, ip)
+		}
 	}
 }
 

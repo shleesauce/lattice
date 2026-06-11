@@ -317,6 +317,11 @@ export interface UpdateResult {
   from: string
   to: string
   agents: AgentUpdateOutcome[]
+  // restartRequired is true when the hub swapped its binary but runs under a service
+  // Lattice doesn't manage (pm2, a bare process), so it can't self-restart — it's
+  // still on the OLD code until the operator restarts it manually with restartHint.
+  restartRequired?: boolean
+  restartHint?: string
 }
 
 export interface PlacementRequest {
@@ -389,6 +394,9 @@ export interface SetupStatus {
   projectsRoot?: string
   hostname?: string
   suggestedRoot?: string
+  // tokenRequired: this (remote) browser must supply the hub token to finish setup.
+  // False for a loopback connection (operator on the hub box). See setupAllowed.
+  tokenRequired?: boolean
 }
 
 // Live validation of the projects-root path (POST /api/setup/check-root).

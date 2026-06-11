@@ -148,6 +148,13 @@ type Hub struct {
 	sessions     *sessionStore
 	loginLimiter *loginLimiter
 
+	// capLimiter throttles the two UNGATED capability endpoints (/api/hooks/state,
+	// /api/approvals/{nonce}) per client IP. Their nonces/tokens are unguessable
+	// (144-bit), so this is DoS/abuse protection, not brute-force defense; the cap is
+	// generous enough that a busy multi-session agent's hooks never trip it. Loopback
+	// (the co-located agent) is exempt at the call site.
+	capLimiter *rateLimiter
+
 	// approvals holds in-memory phone approve/deny capabilities (fire-and-forget,
 	// v0.1.5): armed when a session goes idle, consumed by the ntfy action link.
 	approvals *approvalStore
@@ -249,6 +256,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		setupComplete: !NeedsSetup(cfg),
 		sessions:      newSessionStore(),
 		loginLimiter:  newLoginLimiter(),
+		capLimiter:    newRateLimiter(capLimitMax, capLimitWindow),
 		approvals:     newApprovalStore(),
 		hooks:         newHookStore(),
 		releases:      newReleaseCache(),

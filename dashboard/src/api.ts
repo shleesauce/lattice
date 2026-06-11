@@ -364,10 +364,15 @@ export async function checkSetupRoot(path: string): Promise<RootCheck> {
 // body — json() throws it as `${status}: ${body}` so the wizard can parse and show it.
 export async function submitSetup(
   body: SetupSubmit,
+  token?: string,
 ): Promise<{ ok: boolean; meshName: string; projectsRoot: string }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Remote browsers must authorize setup with the hub token (loopback is exempt
+  // server-side). Sent as Bearer so the existing master-token check accepts it.
+  if (token) headers.Authorization = `Bearer ${token.trim()}`
   const res = await fetch('/api/setup', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   })
   return json<{ ok: boolean; meshName: string; projectsRoot: string }>(res)

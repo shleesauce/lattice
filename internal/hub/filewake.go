@@ -219,6 +219,11 @@ func (h *Hub) relayWake(w http.ResponseWriter, relayID, mac string, onSubnet boo
 // agent acks before it goes offline, so a successful sleep returns ok=true and
 // then the agent drops from the fleet.
 func (h *Hub) handlePower(w http.ResponseWriter, r *http.Request, agentID string) {
+	// Privileged: powering a machine off/asleep is destructive — fail closed even
+	// on a passwordless hub (see requirePrivileged).
+	if !h.requirePrivileged(w, r) {
+		return
+	}
 	var body struct {
 		Action string `json:"action"`
 	}

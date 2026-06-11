@@ -81,7 +81,27 @@ func (h *Hub) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		"projectsRoot":  h.ProjectsRoot(),
 		"hostname":      hostname,
 		"suggestedRoot": defaultProjectsRoot(),
+		// tokenRequired tells the wizard whether finishing setup needs the hub token.
+		// A loopback caller (operator on the hub box) may finish without it; a remote
+		// tailnet browser must paste the token printed by the installer (see
+		// setupAllowed). Computed per-request from THIS connection's origin.
+		"tokenRequired": !requestIsLoopback(r),
 	})
+}
+
+// setupAllowed reports whether r may finish the first-run setup wizard. Before an
+// admin password exists, the hub is reachable by every tailnet peer with no
+// credential, so an open POST /api/setup is an unauthenticated takeover window: the
+// first peer to find the box could claim admin and lock out the real operator. We
+// require either:
+//   - a loopback connection (the operator is on the hub box itself), or
+//   - the on-disk master token as a Bearer credential (printed by the installer; the
+//     operator pastes it into the wizard).
+//
+// check-root stays open (it only validates a path), so the wizard's live feedback
+// works for everyone; only the actual admin-creating POST is gated.
+func (h *Hub) setupAllowed(r *http.Request) bool {
+	return requestIsLoopback(r) || h.bearerIsMasterToken(r)
 }
 
 // handleSetupCheckRoot answers POST /api/setup/check-root (unauthenticated): it
@@ -147,6 +167,13 @@ func (h *Hub) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.needsSetup() {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "hub already configured"})
+		return
+	}
+	// Block the unauthenticated-takeover window: a remote peer must present the hub
+	// token; only a loopback operator may finish setup credential-free (see setupAllowed).
+	if !h.setupAllowed(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "setup requires the hub token (or a connection from the hub machine)"})
 		return
 	}
 	var body struct {

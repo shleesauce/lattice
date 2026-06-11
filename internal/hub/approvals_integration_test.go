@@ -19,7 +19,19 @@ func testHub(t *testing.T) *Hub {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return &Hub{store: store, registry: NewRegistry(), approvals: newApprovalStore(), autoNamer: newAutoNamer()}
+	return &Hub{store: store, registry: NewRegistry(), approvals: newApprovalStore(), autoNamer: newAutoNamer(), token: testMasterToken}
+}
+
+// testMasterToken is the master/enroll token testHub is built with, so tests can
+// authenticate the RCE-class endpoints (exec/update/power) that fail closed even on
+// a passwordless hub (requirePrivileged).
+const testMasterToken = "test-master-token"
+
+// privileged returns r with the master-token Bearer header set, clearing the
+// requirePrivileged gate for a passwordless test hub.
+func privileged(r *http.Request) *http.Request {
+	r.Header.Set("Authorization", "Bearer "+testMasterToken)
+	return r
 }
 
 func TestHandleApprovalInvalidNonce(t *testing.T) {

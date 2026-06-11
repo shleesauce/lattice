@@ -670,12 +670,29 @@ func (s *Store) SetSessionTitle(id, title string, at time.Time) error {
 }
 
 // DeleteSessionRow permanently removes a session (and its audit rows) from the
-// store. The caller is responsible for ending the live process first.
+// store. The caller is responsible for ending the live process first. The two
+// deletes run in one transaction so a crash between them can't leave orphaned
+// audit_log rows pointing at a session that no longer exists.
 func (s *Store) DeleteSessionRow(id string) error {
-	if _, err := s.db.Exec(`DELETE FROM audit_log WHERE session_id=?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+	if err := deleteSessionTx(tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deleteSessionTx removes a session row and its audit rows using the given tx. All
+// statements MUST go through tx (not s.db): the store runs a single-connection pool
+// (SetMaxOpenConns(1)), so an s.db call while a tx holds the conn would deadlock.
+func deleteSessionTx(tx *sql.Tx, id string) error {
+	if _, err := tx.Exec(`DELETE FROM audit_log WHERE session_id=?`, id); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`DELETE FROM sessions WHERE id=?`, id)
 	return err
 }
 
@@ -705,9 +722,19 @@ func (s *Store) PurgeDeletedBefore(cutoff time.Time) (int, error) {
 }
 
 // purgeDeleted runs the given id-selecting query and hard-deletes each match
-// (session row + audit rows). Shared by PurgeAllDeleted / PurgeDeletedBefore.
+// (session row + audit rows) in ONE transaction. Shared by PurgeAllDeleted /
+// PurgeDeletedBefore. Atomic: either every matched session (and its audit rows) is
+// gone or none is, so a crash mid-purge can't leave a half-deleted session. The
+// select and every delete go through the same tx — required under the single-conn
+// pool, where touching s.db while the tx holds the conn would deadlock.
 func (s *Store) purgeDeleted(query string, args ...any) (int, error) {
-	rows, err := s.db.Query(query, args...)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -721,10 +748,16 @@ func (s *Store) purgeDeleted(query string, args ...any) (int, error) {
 		ids = append(ids, id)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
 	for _, id := range ids {
-		if err := s.DeleteSessionRow(id); err != nil {
+		if err := deleteSessionTx(tx, id); err != nil {
 			return 0, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return len(ids), nil
 }
@@ -795,7 +828,17 @@ func (s *Store) MarkAgentSessionsOrphaned(agentID string) error {
 // reaper measures its grace from the real last activity (a long-dead session gets
 // archived promptly, not after a fresh grace window). Returns the count reaped.
 func (s *Store) MarkAgentSessionsExitedExcept(agentID string, keep map[string]bool) (int, error) {
-	rows, err := s.db.Query(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	// The scan and the updates share one tx so the reap is atomic and consistent:
+	// the set of rows marked exited is exactly what the select saw, with no window
+	// where a concurrent writer could interleave (and, under the single-conn pool,
+	// no deadlock from touching s.db while the tx holds the connection).
+	rows, err := tx.Query(`
 		SELECT id FROM sessions
 		WHERE agent_id=? AND archived=0 AND deleted_at='' AND status IN (?, ?, ?)
 	`, agentID, proto.SessionLive, proto.SessionDetached, proto.SessionOrphaned)
@@ -818,9 +861,12 @@ func (s *Store) MarkAgentSessionsExitedExcept(agentID string, keep map[string]bo
 		return 0, err
 	}
 	for _, id := range dead {
-		if _, err := s.db.Exec(`UPDATE sessions SET status=? WHERE id=?`, proto.SessionExited, id); err != nil {
+		if _, err := tx.Exec(`UPDATE sessions SET status=? WHERE id=?`, proto.SessionExited, id); err != nil {
 			return 0, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return len(dead), nil
 }

@@ -272,6 +272,10 @@ func (h *Hub) handleAgentRemove(w http.ResponseWriter, r *http.Request, agentID 
 }
 
 func (h *Hub) handleExec(w http.ResponseWriter, r *http.Request, agentID string) {
+	// RCE-class: fail closed even on a passwordless hub (see requirePrivileged).
+	if !h.requirePrivileged(w, r) {
+		return
+	}
 	var body struct {
 		Command string `json:"command"`
 	}

@@ -16,6 +16,20 @@ import (
 // it answers, so this is far longer than the 10s file/wake pendingTimeout.
 const updateAgentTimeout = 90 * time.Second
 
+// updateFleetBudget caps the TOTAL wall-clock the cascade may spend across all
+// agents. The cascade runs sequentially while holding the single-flight lock, so
+// without a ceiling a handful of wedged agents (each costing up to updateAgentTimeout)
+// could pin the lock for many minutes and serialize the whole fleet behind them.
+// Once the budget is spent, every remaining agent is marked pending (its binary
+// still applies on next start) instead of being attempted. Sized for a healthy
+// fleet (agents ack in seconds) with generous slack for a couple of slow boxes.
+const updateFleetBudget = 6 * time.Minute
+
+// minAgentUpdateSlice is the smallest per-agent timeout worth attempting. If less
+// than this remains in the fleet budget, we stop rather than dispatch an update we'd
+// almost certainly have to abort mid-download.
+const minAgentUpdateSlice = 10 * time.Second
+
 // Per-agent update status. "pending" is the key v0.1.6 addition: a timeout or an
 // agent that dropped mid-cascade is NOT a failure — the fleet is intact and the
 // swapped binary still applies, so it must not show up as a red "failed".
@@ -95,6 +109,13 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RCE-class: a fleet update swaps every machine's binary. Fail closed even on a
+	// passwordless hub (see requirePrivileged) — this must never ride the auth-off
+	// pass-through.
+	if !h.requirePrivileged(w, r) {
+		return
+	}
+
 	// Single-flight: reject an overlapping cascade (impatient double-click, two
 	// tabs) so agents can't be double-restarted mid-update (v0.1.8). Released when
 	// this handler returns — the cascade round-trips run synchronously below, before
@@ -138,24 +159,42 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// agent pulls the exact build the hub just installed.
 	agents := h.updateAgents(base, target)
 
+	// Detect whether an installed hub service will actually re-exec the new binary.
+	// When the hub runs under a recognized service (launchd/systemd/schtask) we can
+	// self-restart; when it runs under something we DON'T manage (pm2, a bare
+	// foreground process, a container entrypoint) the binary is swapped on disk but
+	// the process keeps running the OLD code until someone restarts it. Surfacing
+	// restartRequired stops the dashboard from showing a green "done" while the hub
+	// is silently still on the previous build. Detect now (before the response) so
+	// the answer is honest; the actual restart happens after the flush below.
+	hubLabel := update.ServiceLabel()
+	restartRequired := hubLabel == ""
+
 	// 3) Respond with the summary, then restart the hub AFTER the response flushes.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"updating": true,
-		"from":     h.version,
-		"to":       target,
-		"agents":   agents,
+		"ok":              true,
+		"updating":        true,
+		"from":            h.version,
+		"to":              target,
+		"agents":          agents,
+		"restartRequired": restartRequired,
+		"restartHint":     update.RestartHint(),
 	})
+
+	if restartRequired {
+		log.Printf("update: hub binary swapped to %s but no managed service to self-restart — STILL RUNNING OLD CODE until a manual restart (%s)", target, update.RestartHint())
+		return
+	}
 
 	go func() {
 		// Let the HTTP response (and the dashboard's progress render) reach the
 		// browser before the restart yanks the listener out from under it.
 		time.Sleep(750 * time.Millisecond)
-		if label := update.Restart(); label != "" {
-			log.Printf("update: hub restarting via %s to apply %s", label, target)
-		} else {
-			log.Printf("update: no installed hub service to restart; new binary (%s) applies on next start", target)
+		if err := update.RestartByLabel(hubLabel); err != nil {
+			log.Printf("update: hub restart via %s failed: %v (new binary %s applies on next start)", hubLabel, err, target)
+			return
 		}
+		log.Printf("update: hub restarting via %s to apply %s", hubLabel, target)
 	}()
 }
 
@@ -169,8 +208,25 @@ func (h *Hub) updateAgents(base, target string) []agentUpdateOutcome {
 	online := h.registry.snapshot(offlineAfter)
 	out := make([]agentUpdateOutcome, 0, len(online))
 
+	// Total wall-clock ceiling for the whole cascade (see updateFleetBudget). Once
+	// it's spent, the rest of the fleet is marked pending rather than attempted, so
+	// a few wedged agents can't hold the single-flight lock indefinitely.
+	deadline := time.Now().Add(updateFleetBudget)
+
 	for _, a := range online {
 		if !a.Online {
+			continue
+		}
+		// Budget exhausted: don't even attempt the remaining agents (their binary
+		// still applies on next start — same non-fatal semantics as a timeout).
+		if remaining := time.Until(deadline); remaining < minAgentUpdateSlice {
+			oc := agentUpdateOutcome{
+				AgentID: a.ID, Name: a.Name,
+				Status: updateStatusPending,
+				Detail: "fleet update time budget exceeded — applies on next start",
+			}
+			log.Printf("update: agent %s skipped; fleet update budget exhausted", a.ID)
+			out = append(out, oc)
 			continue
 		}
 		// An agent can drop between the snapshot and its turn (a laptop sleeps mid-
@@ -187,8 +243,13 @@ func (h *Hub) updateAgents(base, target string) []agentUpdateOutcome {
 			continue
 		}
 
+		// Per-agent timeout, clamped so no single agent can overrun the fleet budget.
+		perAgent := updateAgentTimeout
+		if remaining := time.Until(deadline); remaining < perAgent {
+			perAgent = remaining
+		}
 		reqID := newReqID()
-		env, err := h.roundTripT(a.ID, reqID, updateAgentTimeout, proto.TypeUpdate, proto.UpdatePayload{
+		env, err := h.roundTripT(a.ID, reqID, perAgent, proto.TypeUpdate, proto.UpdatePayload{
 			ReqID: reqID, Base: base, Version: target,
 		})
 		oc := classifyAgentUpdate(a.ID, a.Name, env, err)

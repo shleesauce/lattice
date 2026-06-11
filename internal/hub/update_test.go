@@ -71,7 +71,7 @@ func TestHandleUpdateNoUpdateAvailable(t *testing.T) {
 	primeReleases(h, "v1.0.0") // same version → nothing to do
 
 	rec := httptest.NewRecorder()
-	h.handleUpdate(rec, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	h.handleUpdate(rec, privileged(httptest.NewRequest(http.MethodPost, "/api/update", nil)))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("same-version update: status=%d want 409", rec.Code)
 	}
@@ -92,7 +92,7 @@ func TestHandleUpdateRejectsOverlappingCascade(t *testing.T) {
 	h.updating.Store(true) // simulate a cascade already in flight
 
 	rec := httptest.NewRecorder()
-	h.handleUpdate(rec, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	h.handleUpdate(rec, privileged(httptest.NewRequest(http.MethodPost, "/api/update", nil)))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("overlapping update: status=%d want 409", rec.Code)
 	}
@@ -112,7 +112,7 @@ func TestHandleUpdateRefusesDowngrade(t *testing.T) {
 	primeReleases(h, "v1.5.0")
 
 	rec := httptest.NewRecorder()
-	h.handleUpdate(rec, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	h.handleUpdate(rec, privileged(httptest.NewRequest(http.MethodPost, "/api/update", nil)))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("downgrade attempt: status=%d want 409", rec.Code)
 	}

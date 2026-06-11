@@ -10,7 +10,7 @@ import { Modal } from './Modal'
 import { Icon } from '../lattice/Icon'
 import { Dot } from '../lattice/primitives'
 
-type Phase = 'confirm' | 'running' | 'agents' | 'reconnecting' | 'error'
+type Phase = 'confirm' | 'running' | 'agents' | 'reconnecting' | 'manual' | 'error'
 
 export function UpdateProgress({
   target,
@@ -33,6 +33,14 @@ export function UpdateProgress({
     startUpdate()
       .then((res) => {
         setResult(res)
+        // restartRequired: the hub swapped its binary but can't self-restart (pm2 /
+        // bare process), so it's STILL on the old code. Polling for the new build
+        // would never converge and the safety-valve reload would land us back on the
+        // old page — so stop here and tell the operator to restart it by hand.
+        if (res.restartRequired) {
+          setPhase('manual')
+          return
+        }
         setPhase('agents')
         // The hub is restarting in the background; wait for the new build to
         // answer /api/health, then reload onto it. Stamp the version we expect so
@@ -104,9 +112,9 @@ export function UpdateProgress({
         </div>
       )}
 
-      {(phase === 'agents' || phase === 'reconnecting') && (
+      {(phase === 'agents' || phase === 'reconnecting' || phase === 'manual') && (
         <div className="upd-body">
-          <Step active={false} done label={`Hub updated → ${result?.to ?? target}`} />
+          <Step active={false} done label={`Hub binary updated → ${result?.to ?? target}`} />
           <div className="upd-agents">
             {result?.agents?.length ? (
               result.agents.map((a) => {
@@ -138,6 +146,29 @@ export function UpdateProgress({
               <Icon name="refresh-cw" size={13} style={{ animation: 'spin 1s linear infinite' }} />
               hub restarting — reconnecting to {result?.to ?? target}…
             </p>
+          )}
+          {phase === 'manual' && (
+            <>
+              <p
+                className="upd-msg"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--amber)', fontWeight: 600, marginTop: 10 }}
+              >
+                <Icon name="wifi-off" size={14} color="var(--amber)" />
+                Hub restart required — it&apos;s still running the old build.
+              </p>
+              <p className="upd-sub">
+                This hub runs under a manager Lattice can&apos;t restart for you. The new binary is
+                in place; restart the hub to finish:
+              </p>
+              {result?.restartHint && (
+                <pre className="upd-hint">{result.restartHint}</pre>
+              )}
+              <div className="upd-actions">
+                <button type="button" className="btn btn-ghost" onClick={onClose}>
+                  Close
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}

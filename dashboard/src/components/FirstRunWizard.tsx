@@ -24,6 +24,11 @@ export function FirstRunWizard({ status, onDone }: Props) {
   const [confirm, setConfirm] = useState('')
   const [showPassword, setShowPassword] = useState(false)
 
+  // When the hub is reached from a remote machine (not loopback), finishing setup
+  // requires the hub token the installer printed — pasted here, sent as Bearer.
+  const tokenRequired = !!status.tokenRequired
+  const [token, setToken] = useState('')
+
   const [meshName, setMeshName] = useState(status.meshName || 'lattice')
 
   const [root, setRoot] = useState(status.suggestedRoot || status.projectsRoot || '')
@@ -43,7 +48,8 @@ export function FirstRunWizard({ status, onDone }: Props) {
     if (confirm && password !== confirm) return 'passwords do not match'
     return null
   }, [password, confirm])
-  const passwordValid = password.length >= 8 && password === confirm
+  const passwordValid =
+    password.length >= 8 && password === confirm && (!tokenRequired || token.trim().length > 0)
 
   const meshValid = meshName.trim().length > 0 && meshName.trim().length <= 40
 
@@ -106,11 +112,14 @@ export function FirstRunWizard({ status, onDone }: Props) {
     setSubmitting(true)
     setError(null)
     try {
-      await submitSetup({
-        adminPassword: password,
-        meshName: meshName.trim(),
-        projectsRoot: root.trim(),
-      })
+      await submitSetup(
+        {
+          adminPassword: password,
+          meshName: meshName.trim(),
+          projectsRoot: root.trim(),
+        },
+        tokenRequired ? token : undefined,
+      )
       onDone()
     } catch (e) {
       setError(parseHubError(e, 'setup failed'))
@@ -148,6 +157,9 @@ export function FirstRunWizard({ status, onDone }: Props) {
               show={showPassword}
               setShow={setShowPassword}
               error={passwordError}
+              tokenRequired={tokenRequired}
+              token={token}
+              setToken={setToken}
             />
           ) : step === 'mesh' ? (
             <MeshStep meshName={meshName} setMeshName={setMeshName} hostname={status.hostname} />
@@ -211,6 +223,9 @@ function AdminStep({
   show,
   setShow,
   error,
+  tokenRequired,
+  token,
+  setToken,
 }: {
   password: string
   setPassword: (v: string) => void
@@ -219,6 +234,9 @@ function AdminStep({
   show: boolean
   setShow: (v: boolean) => void
   error: string | null
+  tokenRequired: boolean
+  token: string
+  setToken: (v: string) => void
 }) {
   return (
     <div className="space-y-4">
@@ -233,6 +251,16 @@ function AdminStep({
         <PasswordInput value={confirm} onChange={setConfirm} placeholder="re-enter password" show={show} setShow={setShow} invalid={!!error && password.length >= 8} />
         {error && <p className="mt-1.5 font-mono text-[10px] text-red-400">{error}</p>}
       </Field>
+      {tokenRequired && (
+        <Field label="hub token">
+          <TextInput value={token} onChange={setToken} placeholder="paste the token the installer printed" />
+          <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-zinc-500">
+            You&apos;re setting up over the network, so this confirms you&apos;re the owner. Find it in the
+            installer output, or run <span className="text-zinc-300">cat ~/.lattice/.lattice-token</span> on the hub
+            machine.
+          </p>
+        </Field>
+      )}
       <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] leading-relaxed text-zinc-400">
         <span className="text-zinc-300">Note:</span> this password protects the dashboard and API. Auth activates as
         soon as it&apos;s set — leave it blank only on a trusted private network.

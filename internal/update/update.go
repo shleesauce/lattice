@@ -14,7 +14,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +49,21 @@ type Options struct {
 func Apply(ctx context.Context, opts Options) (string, error) {
 	resolvedBase := strings.TrimRight(resolveBase(opts.Base), "/")
 	asset := assetName()
+
+	// HTTPS-pin the download channel. The asset AND its SHA256SUMS are fetched from
+	// the same base, so a plain-http base means an in-transit attacker could serve a
+	// tampered binary together with a matching checksum and verification proves
+	// nothing ("checksum-from-same-origin"). HTTPS authenticates the origin and
+	// prevents the swap. The GitHub default base is https; this only bites a
+	// misconfigured/downgraded base. Exempt loopback (a same-box file server has no
+	// in-transit surface) and the explicit --insecure path (the operator already
+	// opted out of verification). LATTICE_DOWNLOAD_INSECURE=1 allows a plain-http
+	// base for local mock-cascade testing over the tailnet.
+	if !opts.Insecure {
+		if err := requireSecureBase(resolvedBase); err != nil {
+			return resolvedBase, err
+		}
+	}
 
 	target, err := targetPath()
 	if err != nil {
@@ -152,6 +169,35 @@ func Run(ctx context.Context, args []string, version string) error {
 	fmt.Println("lattice: restart the service to apply the update:")
 	fmt.Printf("  %s\n", restartHint())
 	return nil
+}
+
+// requireSecureBase rejects a non-https download base unless it is loopback or the
+// operator explicitly opted out via LATTICE_DOWNLOAD_INSECURE=1. See Apply for why.
+func requireSecureBase(base string) error {
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid download base %q: %w", base, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	if os.Getenv("LATTICE_DOWNLOAD_INSECURE") == "1" {
+		fmt.Fprintf(os.Stderr, "lattice: warning: using INSECURE plain-http download base %q (LATTICE_DOWNLOAD_INSECURE=1)\n", base)
+		return nil
+	}
+	return fmt.Errorf("refusing insecure download base %q: must be https (set LATTICE_DOWNLOAD_INSECURE=1 to allow plain http for local testing)", base)
+}
+
+// isLoopbackHost reports whether host is the loopback interface by name or IP.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func resolveBase(flagBase string) string {
@@ -277,6 +323,12 @@ func ServiceLabel() string { return detectService() }
 // ServiceLabel). A "" label is a no-op. Best-effort: errors are returned, not
 // fatal — a swapped binary still applies on the service's next start.
 func RestartByLabel(label string) error { return restartByLabel(label) }
+
+// RestartHint returns the exact manual restart command for this OS's hub service.
+// Exposed so the hub's update handler can tell the operator how to finish an update
+// when it runs under a service Lattice doesn't manage (pm2, a bare process) and
+// therefore can't self-restart.
+func RestartHint() string { return restartHint() }
 
 // detectService probes for an installed Lattice service (hub or agent) and returns
 // its label WITHOUT side effects, or "" if none is installed.

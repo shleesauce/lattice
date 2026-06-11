@@ -12,7 +12,7 @@
    Both share App's single useReleases() poll (passed in) and both open the EXISTING
    <UpdateProgress> modal — the real update logic is never reimplemented here. */
 import { useState } from 'react'
-import type { ReleasesResponse } from '../types'
+import type { ReleasesState } from '../useReleases'
 import { ReleaseNotes } from './ReleaseNotes'
 import { UpdateProgress } from './UpdateProgress'
 import { Icon } from '../lattice/Icon'
@@ -24,12 +24,15 @@ export function VersionBadge({
   releases,
 }: {
   version?: string
-  releases: ReleasesResponse | null
+  releases: ReleasesState
 }) {
   const [showNotes, setShowNotes] = useState(false)
   const [showUpdate, setShowUpdate] = useState(false)
-  const updateAvailable = !!releases?.updateAvailable
-  const latest = releases?.latest
+  const updateAvailable = !!releases.data?.updateAvailable
+  const latest = releases.data?.latest
+  // The last release check failed. We can't claim "up to date" — flag it so the
+  // muted chip's tooltip says so instead of silently implying current.
+  const checkFailed = releases.error && !updateAvailable
 
   if (updateAvailable && latest) {
     return (
@@ -65,9 +68,10 @@ export function VersionBadge({
         type="button"
         className="ver-badge muted"
         onClick={() => setShowNotes(true)}
-        title={`Lattice ${version} — what's new`}
+        title={checkFailed ? `Lattice ${version} — couldn't check for updates` : `Lattice ${version} — what's new`}
       >
         {version}
+        {checkFailed && <span className="ver-badge-dot" aria-hidden="true" title="couldn't check for updates" />}
       </button>
       {showNotes && <ReleaseNotes onClose={() => setShowNotes(false)} />}
     </>
@@ -81,17 +85,17 @@ export function UpdateAlertBanner({
   releases,
 }: {
   version?: string
-  releases: ReleasesResponse | null
+  releases: ReleasesState
 }) {
   const [showNotes, setShowNotes] = useState(false)
   const [showUpdate, setShowUpdate] = useState(false)
   const [dismissed, setDismissed] = useState<string | null>(null)
 
-  if (!releases?.updateAvailable) return null
-  const latest = releases.latest
+  if (!releases.data?.updateAvailable) return null
+  const latest = releases.data.latest
   // Let the operator dismiss a given version's banner for this session.
   if (dismissed === latest) return null
-  const running = releases.current || version
+  const running = releases.data.current || version
 
   return (
     <>

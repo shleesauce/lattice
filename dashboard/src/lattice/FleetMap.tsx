@@ -91,11 +91,20 @@ export function FleetMap({
     S.edges = edges
   }, [])
 
+  // One-shot static redraw, callable from outside the mount-once effect (used by
+  // reduced-motion mode and on selection change when the loop isn't running).
+  // Assigned by the main effect once the canvas + draw closure exist.
+  const renderStaticRef = useRef<() => void>(() => {})
+
   useEffect(() => {
     const cvs = canvasRef.current!
     const wrap = wrapRef.current!
     const ctx = cvs.getContext('2d')!
     let raf = 0
+    // The continuous loop and the static frame share one body — the loop passes
+    // the live clock, the static frame pins a fixed `t` so nothing pulses/travels.
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const STATIC_T = 0
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const w = wrap.clientWidth
@@ -133,7 +142,7 @@ export function FleetMap({
                 ? GREEN
                 : IDLE
 
-    const draw = (t: number) => {
+    const paint = (t: number) => {
       const S = stateRef.current
       const { w, h } = S
       ctx.clearRect(0, 0, w, h)
@@ -297,13 +306,44 @@ export function FleetMap({
           n.y + 40,
         )
       })
-
-      raf = requestAnimationFrame(draw)
     }
-    raf = requestAnimationFrame(draw)
+
+    // Self-scheduling loop: paint the live clock, then queue the next frame.
+    const loop = (t: number) => {
+      paint(t)
+      raf = requestAnimationFrame(loop)
+    }
+    // One still frame at a fixed clock — no breathing, no travelling pulse.
+    const renderStatic = () => paint(STATIC_T)
+    renderStaticRef.current = renderStatic
+
+    // The motion controller: run the rAF loop only when motion is allowed AND
+    // the tab is visible; otherwise hold a single static frame. Cancel before
+    // any (re)start so a mode flip can never double-schedule the loop.
+    const stop = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = 0
+    }
+    const sync = () => {
+      stop()
+      if (reduceMotion.matches || document.hidden) {
+        renderStatic()
+      } else {
+        raf = requestAnimationFrame(loop)
+      }
+    }
+    sync()
+
+    const onVisibility = () => sync()
+    document.addEventListener('visibilitychange', onVisibility)
+    reduceMotion.addEventListener('change', sync)
+
     return () => {
-      cancelAnimationFrame(raf)
+      stop()
       ro.disconnect()
+      document.removeEventListener('visibilitychange', onVisibility)
+      reduceMotion.removeEventListener('change', sync)
+      renderStaticRef.current = () => {}
     }
     // Mount ONCE: the draw loop reads fleetRef/selRef live, so it never needs to
     // tear down on data updates. Re-laying-out on every poll (below) would
@@ -311,11 +351,20 @@ export function FleetMap({
   }, [layout])
 
   // Re-derive node/edge positions when the fleet changes, reusing the existing
-  // canvas size — no teardown, no blank frame.
+  // canvas size — no teardown, no blank frame. In reduced-motion / tab-hidden
+  // mode the loop isn't running, so push a fresh static frame too.
   useEffect(() => {
     const S = stateRef.current
     if (S.w && S.h) layout(S.w, S.h)
+    renderStaticRef.current()
   }, [fleet, layout])
+
+  // Selection is normally reflected by the running loop reading selRef. When the
+  // loop is paused (reduced motion / hidden tab), redraw a static frame so the
+  // selected node's highlight ring still updates.
+  useEffect(() => {
+    renderStaticRef.current()
+  }, [selected])
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const S = stateRef.current
@@ -334,13 +383,41 @@ export function FleetMap({
     if (hit) onSelect((hit as Node).m.id)
   }
 
+  // Keyboard nav (progressive enhancement; the rail is the primary AT path).
+  // Arrow keys cycle selection by node order; Enter/Space re-confirms current.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (fleet.length === 0) return
+    const i = Math.max(0, fleet.findIndex((m) => m.id === selected))
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      onSelect(fleet[(i + 1) % fleet.length].id)
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      onSelect(fleet[(i - 1 + fleet.length) % fleet.length].id)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onSelect(fleet[i].id)
+    }
+  }
+
+  const selLabel = fleet.find((m) => m.id === selected)?.label
+  const mapLabel = `Fleet map, ${fleet.length} machine${fleet.length === 1 ? '' : 's'}${selLabel ? `, ${selLabel} selected` : ''}`
+
   const live = fleet.reduce((n, m) => n + m.sessions.filter((s) => s.status === 'live').length, 0)
   const woven = fleet.filter(isWoven).length
   const waking = fleet.filter((m) => m.status === 'starting').length
 
   return (
     <div className="cr-map" ref={wrapRef}>
-      <canvas ref={canvasRef} onClick={handleClick} style={{ cursor: 'pointer' }} />
+      <canvas
+        ref={canvasRef}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        tabIndex={0}
+        role="application"
+        aria-label={mapLabel}
+        style={{ cursor: 'pointer' }}
+      />
       <div className="cr-overlay">
         <h1>Your mesh</h1>
         <p>

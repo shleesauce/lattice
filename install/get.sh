@@ -16,6 +16,31 @@ set -eu
 
 BASE="${LATTICE_DOWNLOAD_BASE:-https://github.com/shleesauce/lattice/releases/latest/download}"
 
+# --- HTTPS-pin the download transport (mirrors the Go updater's requireSecureBase) ---
+# A plain-http BASE lets a MITM feed a binary; the SHA256SUMS check only helps if the
+# origin is trusted, which is exactly what pinning the transport guarantees. Allow it
+# only when https, OR the host is loopback, OR LATTICE_DOWNLOAD_INSECURE=1 (same opt-out
+# as the Go side, for local mock-cascade testing). The default GitHub https BASE passes.
+case "$BASE" in
+  https://*) ;;
+  *)
+    # Strip scheme, then take the host portion (up to the first '/' or ':').
+    _rest="${BASE#*://}"
+    _hostport="${_rest%%/*}"
+    _host="${_hostport%%:*}"
+    case "$_host" in
+      localhost|127.0.0.1|::1|"[::1]") ;;
+      *)
+        if [ "${LATTICE_DOWNLOAD_INSECURE:-}" = "1" ]; then
+          echo "lattice: warning: using INSECURE plain-http download base $BASE (LATTICE_DOWNLOAD_INSECURE=1)" >&2
+        else
+          echo "lattice: refusing to download over an insecure transport: $BASE" >&2
+          echo "lattice: must be https (set LATTICE_DOWNLOAD_INSECURE=1 to override for local testing)" >&2
+          exit 1
+        fi ;;
+    esac ;;
+esac
+
 # --- detect platform ---
 os="$(uname -s)"
 case "$os" in
@@ -35,6 +60,26 @@ PREFIX="$HOME/.lattice"
 BIN_DIR="$PREFIX/bin"
 BIN="$BIN_DIR/lattice"
 mkdir -p "$BIN_DIR"
+
+# enable_linger - best-effort enable systemd user linger so the --user service
+# starts at BOOT (not just at interactive login) — the whole point of installing
+# a persistent service on a headless box. Never fatal under `set -eu`: every step
+# is guarded, a missing loginctl or a polkit denial just falls back to a manual tip.
+enable_linger() {
+  command -v loginctl >/dev/null 2>&1 || return 1
+  # Already on? done.
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]; then
+    return 0
+  fi
+  # Modern systemd+polkit often lets a user enable their own linger, no sudo.
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  # Otherwise try sudo, but ONLY non-interactively (never block the pipe on a prompt).
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ] \
+     && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  fi
+  [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]
+}
 
 # --- download ---
 # fetch <url> <dest> - download a URL to a file via curl or wget (whichever exists).
@@ -180,7 +225,11 @@ UNIT_EOF
     # Ensure a config change is picked up on re-run.
     systemctl --user restart lattice-hub.service
     echo "lattice: systemd --user service 'lattice-hub' installed and started"
-    echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    if enable_linger; then
+      echo "lattice: reboot-survival enabled (user linger on — the hub starts at boot, no login needed)"
+    else
+      echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    fi
   else
     PIDFILE="$PREFIX/hub.pid"
     LOG="$PREFIX/hub.log"

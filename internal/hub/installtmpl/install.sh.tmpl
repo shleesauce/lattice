@@ -25,6 +25,23 @@ if [ -z "$TOKEN" ]; then
   echo "lattice: missing token. Pass --token CODE or set LATTICE_TOKEN." >&2
   exit 1
 fi
+
+# enable_linger - best-effort enable systemd user linger so the --user service
+# starts at BOOT (not just at interactive login) — the whole point of installing
+# a persistent service on a headless box. Never fatal under `set -eu`: every step
+# is guarded, a missing loginctl or a polkit denial just falls back to a manual tip.
+enable_linger() {
+  command -v loginctl >/dev/null 2>&1 || return 1
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]; then
+    return 0
+  fi
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ] \
+     && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  fi
+  [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]
+}
 [ -n "$NAME" ] || NAME="$(hostname 2>/dev/null || echo lattice-node)"
 
 # --- detect platform ---
@@ -135,7 +152,11 @@ UNIT_EOF
     # Ensure a config change is picked up on re-run.
     systemctl --user restart lattice-agent.service
     echo "lattice: systemd --user service 'lattice-agent' installed and started"
-    echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    if enable_linger; then
+      echo "lattice: reboot-survival enabled (user linger on — the agent starts at boot, no login needed)"
+    else
+      echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    fi
   else
     PIDFILE="$PREFIX/agent.pid"
     LOG="$PREFIX/agent.log"

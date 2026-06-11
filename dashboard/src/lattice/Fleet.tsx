@@ -68,7 +68,17 @@ export function Fleet({
               <div
                 key={mc.id}
                 className={`mrow ${selected === mc.id ? 'sel' : ''} ${mc.offline ? 'off' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selected === mc.id}
+                aria-label={`${mc.label} — ${STATUS_LABEL[mc.status]}`}
                 onClick={() => onSelect(mc.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelect(mc.id)
+                  }
+                }}
               >
                 <Dot status={mc.status} />
                 <Icon name={mc.kind} size={14} color="var(--fg-3)" />
@@ -101,7 +111,21 @@ export function Fleet({
                 Recent
               </div>
               {recentProjects.map((p) => (
-                <div className="mrow" key={p} onClick={() => onOpenProject(p)} title={`open ${p}`}>
+                <div
+                  className="mrow"
+                  key={p}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`open ${p}`}
+                  onClick={() => onOpenProject(p)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onOpenProject(p)
+                    }
+                  }}
+                  title={`open ${p}`}
+                >
                   <Icon name="folder" size={14} color="var(--fg-3)" />
                   <span className="name" style={{ fontWeight: 400, color: 'var(--fg-2)' }}>
                     {p}

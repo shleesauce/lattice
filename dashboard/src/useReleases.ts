@@ -8,14 +8,23 @@ import type { ReleasesResponse } from './types'
 
 const RELEASE_POLL_MS = 5 * 60 * 1000
 
-export function useReleases(): ReleasesResponse | null {
-  const [releases, setReleases] = useState<ReleasesResponse | null>(null)
+// `data` is the last successful payload (kept across a transient failure so the
+// UI doesn't flap); `error` flags that the MOST RECENT check failed. The badge
+// uses `error` to avoid implying "up to date" when we simply couldn't reach the
+// feed — a stale `data` with `error: true` means "this is old, the recheck broke".
+export interface ReleasesState {
+  data: ReleasesResponse | null
+  error: boolean
+}
+
+export function useReleases(): ReleasesState {
+  const [state, setState] = useState<ReleasesState>({ data: null, error: false })
   useEffect(() => {
     let cancelled = false
     const load = () =>
       fetchReleases()
-        .then((r) => !cancelled && setReleases(r))
-        .catch(() => {})
+        .then((r) => !cancelled && setState({ data: r, error: false }))
+        .catch(() => !cancelled && setState((prev) => ({ data: prev.data, error: true })))
     void load()
     const t = setInterval(load, RELEASE_POLL_MS)
     return () => {
@@ -23,5 +32,5 @@ export function useReleases(): ReleasesResponse | null {
       clearInterval(t)
     }
   }, [])
-  return releases
+  return state
 }

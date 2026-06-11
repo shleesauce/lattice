@@ -11,8 +11,28 @@ $ErrorActionPreference = 'Stop'
 
 $Base = if ($env:LATTICE_DOWNLOAD_BASE) { $env:LATTICE_DOWNLOAD_BASE } else { 'https://github.com/shleesauce/lattice/releases/latest/download' }
 
-# Lattice ships a single amd64 Windows build.
-$binName = 'lattice-windows-amd64.exe'
+# HTTPS-pin the download transport (mirrors the Go updater's requireSecureBase). A
+# plain-http $Base lets a MITM feed a binary; the SHA256SUMS check only helps if the
+# origin is trusted, which is what pinning transport guarantees. Allow only when https,
+# OR the host is loopback, OR LATTICE_DOWNLOAD_INSECURE=1 (same opt-out as the Go side,
+# for local mock-cascade testing). The default GitHub https base passes.
+$baseUri = [uri]$Base
+if ($baseUri.Scheme -ne 'https' -and
+    $baseUri.Host -notin @('localhost', '127.0.0.1', '::1') -and
+    $env:LATTICE_DOWNLOAD_INSECURE -ne '1') {
+  throw "lattice: refusing to download over an insecure transport: $Base - must be https (set `$env:LATTICE_DOWNLOAD_INSECURE='1' to override for local testing)"
+}
+
+# Pick the native Windows arch. On a native ARM64 PowerShell, PROCESSOR_ARCHITECTURE
+# is 'ARM64'; but an x86/amd64 PowerShell EMULATED on ARM reports AMD64/x86 there and
+# only exposes the true machine arch in PROCESSOR_ARCHITEW6432. Check both so an
+# emulated 64-bit shell on an ARM box still gets the native arm64 binary.
+$procArch = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432"
+if ($procArch -match 'ARM64') {
+  $binName = 'lattice-windows-arm64.exe'
+} else {
+  $binName = 'lattice-windows-amd64.exe'
+}
 $installDir = Join-Path $env:LOCALAPPDATA 'Lattice'
 $binPath = Join-Path $installDir 'lattice.exe'
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null

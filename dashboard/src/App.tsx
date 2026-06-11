@@ -7,7 +7,7 @@ import { useDevices } from './useDevices'
 import { useWorkspace } from './useWorkspace'
 import { usePersisted } from './usePersisted'
 import { getAuthStatus, getSetupStatus, wakeAgent } from './api'
-import type { AuthStatus, ReleasesResponse, SetupStatus } from './types'
+import type { AuthStatus, SetupStatus } from './types'
 import { FirstRunWizard } from './components/FirstRunWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Login } from './components/Login'
@@ -25,7 +25,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ManageMesh } from './components/ManageMesh'
 import { UpdateAlertBanner, VersionBadge } from './components/UpdateAlert'
-import { useReleases } from './useReleases'
+import { useReleases, type ReleasesState } from './useReleases'
 import { Icon } from './lattice/Icon'
 import { Dot } from './lattice/primitives'
 import logoMark from './design/logo-mark.svg'
@@ -410,7 +410,7 @@ function TopBar({
   onView: (v: View) => void
   conn: ConnState
   version?: string
-  releases: ReleasesResponse | null
+  releases: ReleasesState
   alive: number
   woven: number
   onSearch: () => void

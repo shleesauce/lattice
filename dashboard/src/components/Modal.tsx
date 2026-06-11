@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { useEscape } from '../useEscape'
+import { useFocusTrap } from '../useFocusTrap'
 
 interface ModalProps {
   onClose: () => void
@@ -22,6 +23,9 @@ interface ModalProps {
 // a11y role. Callers supply only their own content.
 export function Modal({ onClose, children, width, flush, ariaLabel, className }: ModalProps) {
   useEscape(onClose)
+  // Trap Tab inside the card while open (Modal mounts only when open), so focus
+  // can't fall behind the scrim; restores focus to the trigger on close.
+  const trapRef = useFocusTrap(true)
   const cls = ['modal']
   if (width === 'wide') cls.push('wide')
   if (flush) cls.push('flush')
@@ -30,6 +34,8 @@ export function Modal({ onClose, children, width, flush, ariaLabel, className }:
   return (
     <div className="scrim" onMouseDown={onClose}>
       <div
+        ref={trapRef}
+        tabIndex={-1}
         className={cls.join(' ')}
         style={style}
         onMouseDown={(e) => e.stopPropagation()}

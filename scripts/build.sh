@@ -52,6 +52,7 @@ build() {
 build darwin  arm64
 build darwin  amd64
 build windows amd64 .exe
+build windows arm64 .exe
 build linux   amd64
 build linux   arm64
 

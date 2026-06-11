@@ -19,8 +19,16 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
 }
 if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $env:COMPUTERNAME }
 
-# Lattice ships a single amd64 Windows build.
-$binName = 'lattice-windows-amd64.exe'
+# Pick the native Windows arch. On a native ARM64 PowerShell, PROCESSOR_ARCHITECTURE
+# is 'ARM64'; but an x86/amd64 PowerShell EMULATED on ARM reports AMD64/x86 there and
+# only exposes the true machine arch in PROCESSOR_ARCHITEW6432. Check both so an
+# emulated 64-bit shell on an ARM box still gets the native arm64 binary.
+$procArch = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432"
+if ($procArch -match 'ARM64') {
+  $binName = 'lattice-windows-arm64.exe'
+} else {
+  $binName = 'lattice-windows-amd64.exe'
+}
 $installDir = Join-Path $env:LOCALAPPDATA 'Lattice'
 $binPath = Join-Path $installDir 'lattice.exe'
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null

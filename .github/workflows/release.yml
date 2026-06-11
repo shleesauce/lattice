@@ -82,6 +82,7 @@ jobs:
             dist/lattice-darwin-arm64
             dist/lattice-darwin-amd64
             dist/lattice-windows-amd64.exe
+            dist/lattice-windows-arm64.exe
             dist/lattice-linux-amd64
             dist/lattice-linux-arm64
             dist/get.sh

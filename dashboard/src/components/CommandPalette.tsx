@@ -3,6 +3,7 @@
    settings, all from the keyboard. Reads the same live data the rest of the app
    already holds (machines / projects / sessions) and routes intent back up. */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useFocusTrap } from '../useFocusTrap'
 import type { Machine } from '../lattice/adapt'
 import type { Project, Session } from '../types'
 import { Icon } from '../lattice/Icon'
@@ -91,6 +92,9 @@ export function CommandPalette({
   const [active, setActive] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  // Contain Tab/Shift+Tab within the palette + restore focus on close. The
+  // palette's own rAF focuses the input first; the trap only governs cycling.
+  const trapRef = useFocusTrap(open)
 
   // Reset query + selection each time the palette opens; focus the input.
   useEffect(() => {
@@ -245,7 +249,7 @@ export function CommandPalette({
 
   return (
     <div className="cmdk-scrim" onMouseDown={onClose}>
-      <div className="cmdk" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Command palette">
+      <div ref={trapRef} tabIndex={-1} className="cmdk" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Command palette">
         <div className="cmdk-head">
           <Icon name="search" size={16} color="var(--fg-3)" />
           <input

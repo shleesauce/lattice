@@ -84,6 +84,27 @@ func TestHandleUpdateNoUpdateAvailable(t *testing.T) {
 	}
 }
 
+// An overlapping cascade is rejected (409) so a double-click / two tabs can't
+// double-restart the fleet mid-update (v0.1.8 single-flight guard).
+func TestHandleUpdateRejectsOverlappingCascade(t *testing.T) {
+	h := testHub(t)
+	primeReleases(h, "v9.9.9")
+	h.updating.Store(true) // simulate a cascade already in flight
+
+	rec := httptest.NewRecorder()
+	h.handleUpdate(rec, httptest.NewRequest(http.MethodPost, "/api/update", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("overlapping update: status=%d want 409", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["error"] != "an update is already in progress" {
+		t.Fatalf("expected in-progress error, got %v", body["error"])
+	}
+}
+
 // An OLDER latest release than the running build is also refused (no downgrade).
 func TestHandleUpdateRefusesDowngrade(t *testing.T) {
 	h := testHub(t)

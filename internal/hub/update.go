@@ -95,6 +95,18 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Single-flight: reject an overlapping cascade (impatient double-click, two
+	// tabs) so agents can't be double-restarted mid-update (v0.1.8). Released when
+	// this handler returns — the cascade round-trips run synchronously below, before
+	// the response, so the guard is held for the whole fleet pass.
+	if !h.updating.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "an update is already in progress",
+		})
+		return
+	}
+	defer h.updating.Store(false)
+
 	// Gate on a real, newer release. fetchReleases is cached + stale-on-error, so
 	// this is cheap and never blocks on a GitHub blip.
 	releases, _ := h.fetchReleases(r.Context())

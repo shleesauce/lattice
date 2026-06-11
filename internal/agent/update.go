@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"log"
+	"os"
+	"runtime"
 	"time"
 
 	"github.com/shleesauce/lattice/internal/proto"
@@ -17,12 +19,18 @@ import (
 // A var (not const) so tests can shrink it.
 var restartGrace = 750 * time.Millisecond
 
-// Indirection points for the three update side effects, so a test can assert the
-// critical ordering (ack BEFORE restart) without real downloads or service restarts.
+// Indirection points for the update side effects, so a test can assert the critical
+// ordering (ack BEFORE restart, self-exit AFTER restart on Windows) without real
+// downloads, service restarts, or actually calling os.Exit.
 var (
 	updateApply        = update.Apply
 	updateServiceLabel = update.ServiceLabel
 	updateRestart      = update.RestartByLabel
+	// exitAfterRestart terminates THIS process after a successful Windows service
+	// restart — see handleUpdate. A var so a test can assert it ran without exiting.
+	exitAfterRestart = func() { os.Exit(0) }
+	// goos is runtime.GOOS, overridable in tests to exercise the Windows path.
+	goos = runtime.GOOS
 )
 
 // handleUpdate pulls+verifies+swaps the release binary on this agent, reports the
@@ -67,7 +75,22 @@ func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []
 	log.Printf("agent: update applied (%s); restarting service %q after ack", p.Version, label)
 	time.Sleep(restartGrace)
 	if err := updateRestart(label); err != nil {
-		// Restart failed, but the binary is already swapped — it applies on next start.
+		// Restart failed, but the binary is already swapped — it applies on next
+		// start. Do NOT self-exit: the new instance didn't start, so exiting would
+		// leave the box with no agent until its next boot/logon.
 		log.Printf("agent: restart of %q failed: %v; new binary applies on next start", label, err)
+		return
+	}
+
+	// On Windows the restart (schtasks /End + /Run) starts a NEW agent but does NOT
+	// kill THIS process: the wscript-wrapped lattice.exe that initiated the call
+	// survives, so the old + new agents duel under one id → reconnect storm (the
+	// v0.1.7 cascade bug). macOS kickstart -k / linux systemctl restart SIGKILL the
+	// old process for us; Windows has no equivalent, so exit explicitly — the
+	// scheduled task's fresh instance is left as the sole agent. The ack already had
+	// restartGrace to flush, so exiting now is safe.
+	if goos == "windows" {
+		log.Printf("agent: update applied (%s); exiting old process so the restarted service is the sole agent", p.Version)
+		exitAfterRestart()
 	}
 }

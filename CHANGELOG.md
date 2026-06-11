@@ -4,6 +4,17 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.8] - 2026-06-10
+
+### Fixed
+- **One-click update no longer orphans the Windows agent.** On Windows the agent restarted itself
+  with `schtasks /End` + `/Run`, but `/End` didn't reliably kill the process that *initiated* the
+  call — so the old and new agents kept running under one identity and flooded the hub with
+  "superseded by reconnect" churn. The agent now exits cleanly after starting its replacement
+  (macOS/Linux already get killed by their service manager), so an update leaves exactly one agent.
+- **No overlapping fleet updates.** A second "Update now" while one is already running now returns a
+  409 instead of kicking off a second cascade that double-restarts every agent.
+
 ## [0.1.7] - 2026-06-10
 
 ### Added

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,6 +149,11 @@ type Hub struct {
 
 	// releases memoizes the GitHub release list (release-notes panel + update check).
 	releases *releaseCache
+
+	// updating guards the one-click fleet update (handleUpdate). A second POST
+	// /api/update while a cascade is in flight is rejected (409) so overlapping
+	// cascades can't double-restart agents (v0.1.8).
+	updating atomic.Bool
 
 	// autoNamer derives a short title from a fresh session's first user message
 	// (I — session naming, v0.1.5). Tracks which sessions are user-named (a manual

@@ -32,10 +32,15 @@ func decodeUpdateResult(t *testing.T, outbound <-chan []byte) proto.UpdateResult
 func stubUpdate(t *testing.T) {
 	t.Helper()
 	oApply, oLabel, oRestart, oGrace := updateApply, updateServiceLabel, updateRestart, restartGrace
+	oExit, oGoos := exitAfterRestart, goos
 	t.Cleanup(func() {
 		updateApply, updateServiceLabel, updateRestart, restartGrace = oApply, oLabel, oRestart, oGrace
+		exitAfterRestart, goos = oExit, oGoos
 	})
 	restartGrace = time.Millisecond
+	// Default: non-windows + a no-op exit, so existing tests never call os.Exit.
+	goos = "darwin"
+	exitAfterRestart = func() { t.Fatal("exitAfterRestart called unexpectedly (non-windows path)") }
 }
 
 // The v0.1.6 fix: the agent must ack the hub BEFORE it restarts its service, or the
@@ -91,6 +96,66 @@ func TestHandleUpdateNoServiceStillAcks(t *testing.T) {
 	if !res.OK || res.Restarted != "" {
 		t.Fatalf("ack = %+v, want OK with empty restarted", res)
 	}
+}
+
+// The v0.1.8 fix: on Windows, schtasks /End+/Run does NOT kill the calling process,
+// so the agent must exit itself AFTER a successful restart or the old + new agents
+// duel under one id (reconnect storm). Assert it acks, restarts, THEN self-exits.
+func TestHandleUpdateWindowsSelfExitsAfterRestart(t *testing.T) {
+	stubUpdate(t)
+	goos = "windows"
+	updateApply = func(context.Context, update.Options) (string, error) { return "base", nil }
+	updateServiceLabel = func() string { return "LatticeAgent" }
+	restarted := false
+	updateRestart = func(string) error { restarted = true; return nil }
+	exited := false
+	exitAfterRestart = func() { exited = true }
+
+	outbound := make(chan []byte, 4)
+	handleUpdate(context.Background(), proto.UpdatePayload{ReqID: "rw", Version: "v9.9.9"}, outbound)
+
+	if !restarted {
+		t.Fatal("restart should have been called")
+	}
+	if !exited {
+		t.Fatal("windows agent must self-exit after restart, else the old process orphans → storm")
+	}
+	res := decodeUpdateResult(t, outbound)
+	if !res.OK || res.Restarted != "LatticeAgent" {
+		t.Fatalf("ack = %+v, want OK restarted=LatticeAgent", res)
+	}
+}
+
+// If the Windows restart FAILS, the agent must NOT self-exit — the new instance
+// never started, so exiting would leave the box with no agent until next boot.
+func TestHandleUpdateWindowsRestartErrorDoesNotExit(t *testing.T) {
+	stubUpdate(t)
+	goos = "windows"
+	updateApply = func(context.Context, update.Options) (string, error) { return "base", nil }
+	updateServiceLabel = func() string { return "LatticeAgent" }
+	updateRestart = func(string) error { return context.DeadlineExceeded }
+	exited := false
+	exitAfterRestart = func() { exited = true }
+
+	outbound := make(chan []byte, 4)
+	handleUpdate(context.Background(), proto.UpdatePayload{ReqID: "rwe"}, outbound)
+
+	if exited {
+		t.Fatal("must NOT self-exit when the restart failed (would leave no agent)")
+	}
+}
+
+// Non-Windows must rely on the service manager's kill (kickstart -k / systemctl
+// restart) and never self-exit — the default stub fails the test if it does.
+func TestHandleUpdateNonWindowsDoesNotSelfExit(t *testing.T) {
+	stubUpdate(t) // goos defaults to darwin; exitAfterRestart fails the test if called
+	updateApply = func(context.Context, update.Options) (string, error) { return "base", nil }
+	updateServiceLabel = func() string { return "sh.lattice.agent" }
+	updateRestart = func(string) error { return nil }
+
+	outbound := make(chan []byte, 4)
+	handleUpdate(context.Background(), proto.UpdatePayload{ReqID: "rd", Version: "v9.9.9"}, outbound)
+	_ = decodeUpdateResult(t, outbound)
 }
 
 // A fail-closed Apply error is reported and the agent never restarts (still on the

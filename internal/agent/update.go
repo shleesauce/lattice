@@ -14,7 +14,16 @@ import (
 // the restart (kickstart -k / systemctl restart / schtasks) tears this process down
 // — otherwise the hub's lockstep round-trip times out even on a perfect update (the
 // v0.1.5 cascade race). Mirrors the hub's own 750ms pre-restart delay in handleUpdate.
-const restartGrace = 750 * time.Millisecond
+// A var (not const) so tests can shrink it.
+var restartGrace = 750 * time.Millisecond
+
+// Indirection points for the three update side effects, so a test can assert the
+// critical ordering (ack BEFORE restart) without real downloads or service restarts.
+var (
+	updateApply        = update.Apply
+	updateServiceLabel = update.ServiceLabel
+	updateRestart      = update.RestartByLabel
+)
 
 // handleUpdate pulls+verifies+swaps the release binary on this agent, reports the
 // outcome back to the hub, THEN — only after the ack has had time to land — restarts
@@ -33,7 +42,7 @@ const restartGrace = 750 * time.Millisecond
 func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []byte) {
 	result := proto.UpdateResultPayload{ReqID: p.ReqID}
 
-	if _, err := update.Apply(ctx, update.Options{Base: p.Base}); err != nil {
+	if _, err := updateApply(ctx, update.Options{Base: p.Base}); err != nil {
 		result.Error = err.Error()
 		log.Printf("agent: update failed: %v", err)
 		sendFrame(ctx, outbound, proto.TypeUpdateResult, result)
@@ -41,7 +50,7 @@ func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []
 	}
 
 	// Detect (don't restart) the service so we can name it in the ack.
-	label := update.ServiceLabel()
+	label := updateServiceLabel()
 	result.OK = true
 	result.Restarted = label
 
@@ -57,7 +66,7 @@ func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []
 
 	log.Printf("agent: update applied (%s); restarting service %q after ack", p.Version, label)
 	time.Sleep(restartGrace)
-	if err := update.RestartByLabel(label); err != nil {
+	if err := updateRestart(label); err != nil {
 		// Restart failed, but the binary is already swapped — it applies on next start.
 		log.Printf("agent: restart of %q failed: %v; new binary applies on next start", label, err)
 	}

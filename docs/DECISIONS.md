@@ -517,6 +517,45 @@ no hub-side TLS / cert management. As built (Phase 3, 2026-06-04):
   machine-management UI; the single shared token stands until then.
 - **Deferred (locked):** multi-user accounts; internet-exposed TLS / auto-cert (Tailscale is the boundary).
 
+## D38 — Persistent agent identity + per-process instance duel detector  (v0.2.0)
+The agent id was `hostname+os`, derived fresh on every register. Two consequences, both
+load-bearing bugs: (1) two machines with the same hostname **collided on one id** and cross-wired
+each other's sessions/editor/terminal; (2) there was no way to tell a benign network reconnect from
+**two rival processes** fighting over one id — the recurring "reconnect storm" (each process
+`superseded by reconnect`-evicting the other forever), which had only ever been patched
+cause-by-cause (orphan-process kill, Windows self-exit, etc.). As built (v0.2.0, additive wire change):
+
+- **Persistent agent id.** Each agent has a stable id stored at `~/.lattice/agent-id`, sent in
+  `RegisterPayload.AgentUUID` (additive). The hub keys its registry on it; **hostname+os are now
+  display-only**. Two same-hostname machines are structurally distinct.
+- **Hub-authoritative minting with legacy continuity** (`resolveAgentID`). An empty `AgentUUID` (a
+  pre-v0.2.0 agent, or a brand-new box's first run) resolves to: the legacy `hostname+os` id **iff a
+  record already exists under it** (an already-enrolled box — so its sessions don't orphan, the
+  critical live-fleet migration guarantee), else a **fresh random UUID**. The resolved id is returned
+  in the existing `RegisteredPayload.AgentID`; the agent persists it and sends it verbatim thereafter.
+  A minted id is stored under the UUID (never under `hostname+os`), so a *second* same-hostname new
+  box doesn't find a legacy record and gets its own distinct UUID.
+- **Per-process InstanceID** (`RegisterPayload.InstanceID`, additive): a random nonce minted once per
+  **process start**, never persisted. A normal reconnect re-dials with the *same* instance; two
+  distinct processes carry *different* instances.
+- **Duel detector** (`register()` + `duelGuard`). When a register arrives for an id that already has a
+  **live** connection with a **different** instance (both non-empty), it's a duel: the **newcomer
+  wins** (proceeds + displaces the incumbent via `putAgent`), the incumbent's instance is **banished**
+  (60s TTL) so its now-closed socket's reconnect is **refused** (`OK:false` ⇒ the agent treats it as
+  non-retryable and stops/exits), and a **loud WARN + ntfy** fires. Newest-process-wins matches
+  operational reality (a re-enroll/restart should beat a stale orphan); a managed loser that restarts
+  gets a fresh instance and re-wins cleanly. This **deterministically retires the storm class** rather
+  than patching its causes.
+- **Migration is fully additive & safe.** Old agents send empty identity fields ⇒ hub falls back to
+  the legacy id ⇒ behavior identical to today; the duel detector requires both instances non-empty, so
+  a mixed-version fleet degrades to legacy behavior with no false positives. Full protection lands once
+  the new binary is on the fleet (deployed later in the v0.2.0 milestone). `lattice uninstall` already
+  removes `~/.lattice`, so the new id file needs no special cleanup.
+- **Deferred (noted, not blocking):** `offlineAfter`(15s) vs `agentReadTimeout`(20s) skew is now
+  *documented* as deliberate (offline-before-teardown grace; the duel check gates on
+  `isLive(offlineAfter)` so a stale-but-unreaped socket never blocks a real reconnect) rather than
+  changed — altering live timeouts is riskier than the comment is worth.
+
 ## Open / deferred for the IDE milestone
 - **Preview framework mode** (D36) — no-strip + dev-server `base`, verified with live HMR on a real device.
 - **D9** product name — **FINALIZED as "Lattice"** (2026-06-04, M3 Phase 5). No longer provisional;

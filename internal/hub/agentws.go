@@ -85,7 +85,49 @@ func (h *Hub) register(conn *websocket.Conn) (*agentConn, error) {
 		return nil, errBadToken
 	}
 
-	id := agentID(reg.Hostname, reg.OS)
+	// Resolve the registry key (v0.2.0 identity): trust a persisted AgentUUID; else
+	// reuse the legacy hostname+os id for an already-enrolled box (no session
+	// orphaning) or mint a fresh UUID for a brand-new one.
+	id := resolveAgentID(reg, h.agentRecordExists)
+
+	now := time.Now()
+
+	// Duel guard: refuse a register from an instance we just banished as the LOSER
+	// of a duel under this id. This is what makes the loser process give up (its
+	// reconnect gets OK=false ⇒ non-retryable ⇒ it stops/exits) instead of
+	// re-entering an endless reconnect duel — the reconnect-storm class, killed.
+	if h.duel.isBanished(id, reg.InstanceID, now) {
+		ackReject(conn, "duplicate agent instance — another process holds this id")
+		return nil, errDuelRejected
+	}
+
+	// Detect a live duel: an existing, still-live connection for this id whose
+	// instance differs from the newcomer's. Both instances must be non-empty (a
+	// mixed-version fleet can't be adjudicated, so it degrades to legacy behavior).
+	// Policy: the NEWCOMER wins (this register proceeds and putAgent will displace
+	// the incumbent); the incumbent's instance is BANISHED so when its now-closed
+	// socket reconnects it is refused and gives up. Whichever process started most
+	// recently survives — which matches the operational reality (a re-enroll /
+	// service restart should win over a stale orphan) — and the loud alarm tells the
+	// operator a stray process needs killing if it recurs.
+	if existing, ok := h.registry.getAgent(id); ok {
+		existing.mu.Lock()
+		incumbentInstance := existing.instanceID
+		incumbentVersion := existing.version
+		existing.mu.Unlock()
+		if reg.InstanceID != "" && incumbentInstance != "" &&
+			incumbentInstance != reg.InstanceID && existing.isLive(offlineAfter) {
+			h.duel.banish(id, incumbentInstance, now)
+			log.Printf("agent DUEL on id=%s: newcomer instance=%s (host=%s v=%s) supersedes incumbent instance=%s (v=%s) — banishing incumbent",
+				id, reg.InstanceID, reg.Hostname, reg.AgentVersion, incumbentInstance, incumbentVersion)
+			h.notify(ntfyMessage{
+				Title:    "Lattice: duplicate agent process",
+				Message:  "Two processes are claiming \"" + h.agentDisplayName(id) + "\". Keeping the newest and stopping the duplicate. If this keeps happening, kill the stray lattice process on that machine.",
+				Priority: 4,
+				Tags:     []string{"warning", "busts_in_silhouette"},
+			})
+		}
+	}
 
 	// Best-effort: if this was a per-machine token (not the master), record which
 	// agent it's bound to and stamp last_used_at so the operator can see usage.
@@ -96,20 +138,20 @@ func (h *Hub) register(conn *websocket.Conn) (*agentConn, error) {
 	}
 
 	name := reg.Hostname
-	now := time.Now()
 
 	ac := &agentConn{
-		id:       id,
-		name:     name,
-		hostname: reg.Hostname,
-		os:       reg.OS,
-		arch:     reg.Arch,
-		version:  reg.AgentVersion,
-		caps:     reg.Capabilities,
-		conn:     conn,
-		local:    isLoopbackAddr(conn.RemoteAddr()),
-		lastSeen: now,
-		online:   true,
+		id:         id,
+		name:       name,
+		hostname:   reg.Hostname,
+		os:         reg.OS,
+		arch:       reg.Arch,
+		version:    reg.AgentVersion,
+		instanceID: reg.InstanceID,
+		caps:       reg.Capabilities,
+		conn:       conn,
+		local:      isLoopbackAddr(conn.RemoteAddr()),
+		lastSeen:   now,
+		online:     true,
 	}
 
 	if err := h.store.UpsertAgent(AgentRecord{
@@ -364,8 +406,11 @@ func isLoopbackAddr(addr net.Addr) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// agentID derives a stable, deterministic id from hostname+os so reconnects
-// update the same row.
+// agentID derives the LEGACY hostname+os id. As of v0.2.0 the registry key is a
+// persistent per-machine id (see resolveAgentID); this derivation survives only as
+// the continuity fallback for an already-enrolled box that registers without a
+// persisted AgentUUID (a pre-v0.2.0 agent, or a v0.2.0 agent's very first run),
+// so such a box keeps its existing id and its sessions don't orphan.
 func agentID(hostname, os string) string {
 	h := strings.ToLower(strings.TrimSpace(hostname))
 	if h == "" {

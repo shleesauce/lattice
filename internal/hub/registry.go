@@ -59,9 +59,14 @@ type agentConn struct {
 	os       string
 	arch     string
 	version  string
-	conn     *websocket.Conn
-	local    bool // WS connected from loopback ⇒ co-located with the hub host
-	writeMu  sync.Mutex
+	// instanceID is the agent's per-process nonce (v0.2.0). Two live conns for one
+	// id with DIFFERENT instanceIDs are two rival processes (a duel); a benign
+	// network reconnect re-dials with the SAME instanceID. Empty for a pre-v0.2.0
+	// agent (duel detection then degrades off — both sides must be non-empty).
+	instanceID string
+	conn       *websocket.Conn
+	local      bool // WS connected from loopback ⇒ co-located with the hub host
+	writeMu    sync.Mutex
 
 	mu       sync.Mutex
 	metrics  proto.HeartbeatPayload

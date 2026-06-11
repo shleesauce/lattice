@@ -8,8 +8,6 @@ import (
 	"log"
 	"net"
 	"net/url"
-	"runtime"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -28,16 +26,26 @@ const editorDialTimeout = 5 * time.Second
 // each, reads the sessionId handshake, and splices it to the right local
 // code-server. It has its own reconnect/backoff (independent of the main
 // /ws/agent link) and is rooted at the process ctx so it survives hub blips.
-func runTunnel(ctx context.Context, agentWSURL string, cfg config, state *agentState) {
-	tunnelURL, err := tunnelURLFrom(agentWSURL, cfg.token, computeAgentID(cfg.name))
-	if err != nil {
-		log.Printf("agent tunnel: bad url: %v", err)
-		return
-	}
-
+func runTunnel(ctx context.Context, agentWSURL string, cfg config, state *agentState, ident *identity) {
 	// Shares the agent's reconnect skeleton + jitter (M1/FIX 5). The tunnel has no
 	// non-retryable rejection, so stop is always false.
+	//
+	// The tunnel must register under the SAME id the main link uses, so it reads it
+	// from the shared identity holder on EACH attempt. On a fresh box that id is ""
+	// until the main /ws/agent register completes and adopt()s the hub-assigned id;
+	// until then the tunnel simply backs off and retries (no editor session can
+	// exist yet, so there's nothing to carry). Once the id is known the URL is built
+	// with it and the tunnel connects.
 	reconnectLoop(ctx, "agent tunnel", func() (stop, connected bool) {
+		id := ident.get()
+		if id == "" {
+			return false, false // id not assigned yet — back off and retry
+		}
+		tunnelURL, err := tunnelURLFrom(agentWSURL, cfg.token, id)
+		if err != nil {
+			log.Printf("agent tunnel: bad url: %v", err)
+			return false, false
+		}
 		return false, serveTunnel(ctx, tunnelURL, state)
 	})
 }
@@ -121,6 +129,9 @@ func handleTunnelStream(stream net.Conn, state *agentState) {
 
 // tunnelURLFrom derives the /ws/tunnel URL (with token + agent query) from the
 // already-resolved agent /ws/agent URL, so both connections target the same hub.
+// agentID is the agent's persistent id (v0.2.0), matching the id the hub keyed its
+// registry on, so the editor proxy finds this agent's tunnel by the session's
+// agentId.
 func tunnelURLFrom(agentWSURL, token, agentID string) (string, error) {
 	u, err := url.Parse(agentWSURL)
 	if err != nil {
@@ -132,20 +143,4 @@ func tunnelURLFrom(agentWSURL, token, agentID string) (string, error) {
 	q.Set("agent", agentID)
 	u.RawQuery = q.Encode()
 	return u.String(), nil
-}
-
-// computeAgentID mirrors the hub's agentID() derivation EXACTLY so the editor
-// proxy finds this agent's tunnel by the session's agentId. Note the hub builds
-// it from reg.OS (runtime.GOOS); we pass that in via osID().
-func computeAgentID(hostname string) string {
-	h := strings.ToLower(strings.TrimSpace(hostname))
-	if h == "" {
-		h = "unknown"
-	}
-	return h + "-" + osID()
-}
-
-// osID is runtime.GOOS lowercased/trimmed, matching the hub's agentID() os term.
-func osID() string {
-	return strings.ToLower(strings.TrimSpace(runtime.GOOS))
 }

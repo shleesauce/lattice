@@ -28,8 +28,9 @@ import (
 
 // Registration errors.
 var (
-	errFirstFrame = errors.New("hub: first frame must be register")
-	errBadToken   = errors.New("hub: invalid token")
+	errFirstFrame   = errors.New("hub: first frame must be register")
+	errBadToken     = errors.New("hub: invalid token")
+	errDuelRejected = errors.New("hub: duplicate agent instance (duel-banished)")
 )
 
 // offlineAfter is how long without a heartbeat before an agent is considered
@@ -69,6 +70,14 @@ const revokedTokenTTL = 30 * 24 * time.Hour
 // agent. Agents heartbeat every 5s, so a healthy link refreshes this on every
 // read; a half-open socket (sleeping laptop, network partition) trips it and
 // the read loop unwinds instead of leaking the goroutine + connection.
+//
+// It is deliberately LONGER than offlineAfter (15s): the sweep flips an agent to
+// offline (so the UI stops showing it live and dispatch is refused) one heartbeat
+// window before the socket itself is torn down. That ordering is intentional —
+// "registered but not live" is a brief, well-defined grace, not a bug — and the
+// v0.2.0 duel detector only treats an incumbent as a real rival while it is still
+// isLive(offlineAfter), so a stale-but-not-yet-reaped socket never blocks a
+// legitimate reconnect.
 const agentReadTimeout = 20 * time.Second
 
 // agentWriteTimeout bounds a hub→agent write so a dead/slow agent socket cannot
@@ -156,6 +165,10 @@ type Hub struct {
 	// cascades can't double-restart agents (v0.1.8).
 	updating atomic.Bool
 
+	// duel adjudicates two rival agent processes claiming one id (v0.2.0). It holds
+	// the short-lived banish set the register path consults; see identity.go.
+	duel *duelGuard
+
 	// autoNamer derives a short title from a fresh session's first user message
 	// (I — session naming, v0.1.5). Tracks which sessions are user-named (a manual
 	// rename always wins) and which are already being titled (de-dupe concurrent
@@ -240,6 +253,7 @@ func Run(ctx context.Context, args []string, version string) error {
 		hooks:         newHookStore(),
 		releases:      newReleaseCache(),
 		autoNamer:     newAutoNamer(),
+		duel:          newDuelGuard(),
 	}
 
 	// Secure-by-default: a fully-configured hub (setup done) with NO admin password

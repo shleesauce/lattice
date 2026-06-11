@@ -88,6 +88,44 @@ func TestPhase3RoundTrip(t *testing.T) {
 			t.Fatalf("caps mismatch: %+v", out.Capabilities)
 		}
 	})
+
+	t.Run("IdentityInRegister", func(t *testing.T) {
+		// v0.2.0: the persistent agent id + per-process instance nonce ride the
+		// register frame additively.
+		in := RegisterPayload{
+			Token: "t", Hostname: "h", OS: "darwin", Arch: "arm64", Protocol: ProtocolVersion,
+			AgentUUID: "550e8400-e29b-41d4-a716-446655440000", InstanceID: "deadbeefcafef00d",
+		}
+		var out RegisterPayload
+		roundTrip(t, TypeRegister, in, &out)
+		if out.AgentUUID != in.AgentUUID || out.InstanceID != in.InstanceID {
+			t.Fatalf("identity mismatch: got uuid=%q instance=%q", out.AgentUUID, out.InstanceID)
+		}
+	})
+
+	t.Run("IdentityOmittedWhenEmpty", func(t *testing.T) {
+		// A pre-v0.2.0-shaped register (no identity fields) must omit them on the
+		// wire so the hub can tell "absent" from "present" — the duel detector and
+		// the legacy-id fallback both hinge on emptiness.
+		b, err := Encode(TypeRegister, RegisterPayload{Token: "t", Hostname: "h", OS: "linux"})
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		if s := string(b); contains(s, "agentUuid") || contains(s, "instanceId") {
+			t.Fatalf("empty identity fields must be omitted, got: %s", s)
+		}
+	})
+}
+
+// contains is a tiny substring helper kept local to the test (no strings import
+// churn in the production file's test).
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // roundTrip encodes payload, decodes the envelope, and lifts it back into out.

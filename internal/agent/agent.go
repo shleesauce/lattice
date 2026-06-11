@@ -59,13 +59,24 @@ func Run(ctx context.Context, args []string, version string) error {
 	// the process-lifetime ctx so sessions are NOT killed on a hub reconnect.
 	state := newAgentState(ctx)
 
+	// Identity (v0.2.0): the persistent agent id (~/.lattice/agent-id) + this
+	// process's instance nonce. Shared by the main link and the editor tunnel so
+	// both register under the SAME id; on a fresh box the id is "" until the hub
+	// assigns one on first register, then persisted here.
+	ident := newIdentity()
+	if id := ident.get(); id != "" {
+		log.Printf("agent: persistent id %s (instance %s)", id, ident.instance)
+	} else {
+		log.Printf("agent: no persistent id yet — hub will assign one (instance %s)", ident.instance)
+	}
+
 	// Second dial-out (D27): the editor tunnel. Its own persistent connection +
 	// reconnect loop, independent of the main /ws/agent link, so code-server
 	// traffic is multiplexed over yamux without a new inbound listener (D2).
-	go runTunnel(ctx, wsURL, cfg, state)
+	go runTunnel(ctx, wsURL, cfg, state, ident)
 
 	reconnectLoop(ctx, "agent", func() (stop, connected bool) {
-		s, c, err := session(ctx, wsURL, cfg, version, state)
+		s, c, err := session(ctx, wsURL, cfg, version, state, ident)
 		if err != nil {
 			log.Printf("agent: session ended: %v", err)
 		}
@@ -191,7 +202,7 @@ func resolveURL(hub string) (string, error) {
 // non-retryable rejection (e.g. bad token); otherwise the caller reconnects.
 // The process-global state is shared across reconnects; this connection only
 // swaps the output sink and drives the read loop.
-func session(ctx context.Context, wsURL string, cfg config, version string, state *agentState) (stop bool, connected bool, err error) {
+func session(ctx context.Context, wsURL string, cfg config, version string, state *agentState, ident *identity) (stop bool, connected bool, err error) {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return false, false, fmt.Errorf("dial %s: %w", wsURL, err)
@@ -221,6 +232,10 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 		AgentVersion: version,
 		Protocol:     proto.ProtocolVersion,
 		Capabilities: detectCapabilities(sessCtx),
+		// Identity (v0.2.0): persistent id ("" on a fresh box ⇒ hub assigns one) +
+		// this process's instance nonce (for the hub's duel detector).
+		AgentUUID:  ident.get(),
+		InstanceID: ident.instance,
 	})
 	if err != nil {
 		return false, false, err
@@ -252,8 +267,13 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 	}
 	if !reg.OK {
 		log.Printf("agent: registration rejected: %s", reg.Error)
-		return true, false, nil // non-retryable
+		return true, false, nil // non-retryable (bad token, or duel-banished instance)
 	}
+	// Adopt the id the hub resolved. On a fresh box this is the first time we learn
+	// our persistent id (the hub minted it, or reused a legacy record); adopt()
+	// persists it to ~/.lattice/agent-id and unblocks the editor tunnel. A no-op
+	// once we already had one.
+	ident.adopt(reg.AgentID)
 	log.Printf("agent: registered as %s", reg.AgentID)
 
 	// Point every pump at THIS connection's outbound channel. On disconnect the

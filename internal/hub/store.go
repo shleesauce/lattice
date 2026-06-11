@@ -213,6 +213,25 @@ func (s *Store) UpdateMetrics(id string, m proto.HeartbeatPayload, seen time.Tim
 	return err
 }
 
+// AgentExists reports whether a persisted agent row with this id exists. Used by
+// the v0.2.0 identity resolver: a register frame carrying NO persistent id (a
+// pre-v0.2.0 agent, or a fresh box) reuses its legacy hostname+os id ONLY when a
+// record already exists under it (an already-enrolled machine — so its sessions
+// don't orphan); otherwise the hub mints a fresh UUID. A lookup error is treated
+// as "exists" by the caller's policy is NOT applied here — this returns the raw
+// result and surfaces the error.
+func (s *Store) AgentExists(id string) (bool, error) {
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM agents WHERE id=? LIMIT 1`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ListAgents returns every persisted agent with its last-known metrics parsed
 // from metrics_json. A malformed/empty metrics blob yields zero-value metrics
 // rather than failing the whole listing. Used by the hub to keep offline

@@ -467,6 +467,28 @@ type RegisterPayload struct {
 	Protocol     int    `json:"protocol"`
 	// Phase 3 (additive): what this agent can run, for placement (D19).
 	Capabilities Capabilities `json:"capabilities,omitempty"`
+
+	// --- v0.2.0 identity (additive): persistent agent id + per-process instance ---
+	//
+	// AgentUUID is this agent's PERSISTENT, machine-stable identity. It is minted
+	// once at first enrollment and stored at ~/.lattice/agent-id, so it survives a
+	// hostname change and — crucially — makes two same-hostname machines DISTINCT.
+	// The hub keys its registry on this id (hostname+os become display-only). Empty
+	// ⇒ a pre-v0.2.0 agent OR a brand-new agent whose id the hub will ASSIGN: the
+	// hub falls back to the legacy hostname+os id (reusing an existing fleet record
+	// so sessions don't orphan) or mints a fresh UUID, and returns the resolved id
+	// in RegisteredPayload.AgentID for the agent to persist. Once persisted, the
+	// agent always sends it.
+	AgentUUID string `json:"agentUuid,omitempty"`
+	// InstanceID is a fresh random nonce minted every PROCESS START (never
+	// persisted). Two LIVE connections claiming one AgentUUID with DIFFERENT
+	// InstanceIDs are two rival processes — the reconnect-storm class — which the
+	// hub now DETECTS and resolves (keep newest, banish + alarm on the loser)
+	// instead of letting them duel silently. A normal network reconnect re-dials
+	// with the SAME InstanceID and is never flagged. Empty ⇒ a pre-v0.2.0 agent;
+	// the duel detector requires both sides non-empty, so a mixed-version fleet
+	// degrades safely to the legacy behavior.
+	InstanceID string `json:"instanceId,omitempty"`
 }
 
 // HeartbeatPayload carries the live metrics rendered on the dashboard. Sent on

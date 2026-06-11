@@ -4,6 +4,79 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-06-11
+
+A deliberate, multi-session milestone: a four-pass security/resilience audit, a ground-up fix
+for the reconnect-storm class (stable machine identity), and a frontend pass that makes the
+console usable on a phone and reachable by keyboard / screen reader — plus cross-OS installer
+gaps closed.
+
+### Added
+- **The dashboard works on phones and tablets.** It had no responsive layout at all, so the
+  default Fleet view overflowed off the side of a small screen. It now reflows: on a phone the
+  three-pane control room stacks into one scrollable column, and the top bar collapses to its
+  essentials. Desktop is unchanged.
+- **You can drive the fleet from the keyboard and with a screen reader.** Machine rows in the
+  rail are now real buttons (Tab to them, Enter/Space to select), the mesh map is keyboard-
+  navigable with arrow keys and announces the selected machine, and dialogs (the ⌘K palette,
+  modals) trap focus so Tab can't wander off behind them.
+- **Native Windows-on-ARM build.** Lattice now ships a `windows-arm64` binary, and the Windows
+  installers detect your CPU architecture and pull the right one — so an ARM Windows machine no
+  longer silently installs the x64 build to run under emulation.
+
+### Changed
+- **Your machines now keep a stable identity.** A machine used to be identified by
+  `hostname + OS`, which meant two machines with the same hostname collided, and a machine's
+  identity was re-derived on every reconnect. Each machine now mints a persistent id
+  (`~/.lattice/agent-id`) that the hub keys everything on; hostname and OS are display-only.
+  Existing fleets keep their current identity (no re-enrollment, no lost sessions); two same-named
+  machines now get distinct identities.
+- **Reconnect storms are designed out, not patched.** If two agent processes ever claim one
+  machine's identity (a stale orphan plus a fresh restart, say), the hub now detects the duel,
+  keeps the newcomer, and banishes the loser for a minute so it stops retrying — with a loud
+  warning and a phone notification. This retires the whole class of "superseded by reconnect"
+  floods that earlier releases fought one cause at a time.
+- **Animations respect your system and your battery.** The live mesh map's animation pauses when
+  you've asked for reduced motion and when its browser tab is in the background, instead of
+  redrawing 60 times a second forever.
+- **Linux installs survive a reboot on their own.** The Linux installer now enables systemd user
+  *lingering* automatically (best-effort), so a headless server's hub/agent comes back after a
+  reboot without someone logging in first. If it can't, it falls back to telling you the one
+  command to run.
+- **A stuck machine can't stall a fleet update.** A one-click update now has an overall time
+  budget: a wedged machine is marked "will update on next start" and the rest of the fleet
+  proceeds, instead of one slow box holding up everyone.
+- **Honest update status.** When the hub runs under a process manager it can't restart itself
+  (e.g. pm2), the update flow now tells you a manual restart is needed and shows the command,
+  instead of a green check followed by a silent reload onto the old version. And the version
+  badge can now tell "you're up to date" apart from "couldn't reach the update check."
+
+### Fixed
+- **A render error no longer white-screens the whole console.** A crash in one part of the UI is
+  now caught and shown as a recoverable error panel rather than a blank page.
+- **A background panic no longer takes down the hub.** The hub's long-running internal loops now
+  recover from an unexpected panic and restart themselves instead of dropping every agent and
+  tunnel.
+- **The Linux `curl … | sh` installer runs under real `/bin/sh`.** It used a bash-only option
+  that aborts under dash/BusyBox — exactly the default shell on the Linux machines it targets —
+  so the advertised one-liner died on the first line. Fixed.
+- Multi-row database cleanups now run in single transactions, so an interrupted cleanup can't
+  leave a half-finished state.
+
+### Security
+- **A hub with no admin password is no longer an open door.** The remote-command, update, and
+  power endpoints now require the master enrollment token even when no admin password is set —
+  previously, anyone who could reach the port on your tailnet could run commands on every machine
+  in the fleet. (Set an admin password for the full browser experience.)
+- **The first-run setup wizard can't be hijacked.** Claiming admin on a fresh hub now requires
+  being on the same machine (loopback) or holding the master token, so a tailnet peer can't grab
+  the admin slot during the setup window.
+- **Installers and the self-updater refuse insecure downloads.** Both the bootstrap installers and
+  the binary self-updater now require an HTTPS download source (loopback and an explicit opt-out
+  aside), so a plain-HTTP source can't feed a tampered binary.
+- Per-machine enrollment tokens widened to 128-bit; the two unauthenticated capability endpoints
+  are now rate-limited per IP.
+
 ## [0.1.9] - 2026-06-10
 
 ### Changed

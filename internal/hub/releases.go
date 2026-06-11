@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,18 @@ import (
 // releasesAPI is the GitHub Releases endpoint for this repo. Read-only, public, no
 // token — the unauthenticated rate limit (60/h per IP) is plenty behind the cache.
 const releasesAPI = "https://api.github.com/repos/shleesauce/lattice/releases"
+
+// releasesEndpoint resolves the Releases API URL. It defaults to this repo's GitHub
+// endpoint but can be overridden with LATTICE_RELEASES_API — so a self-hosted fork
+// can point the release-notes panel and update check at its OWN releases instead of
+// being pinned to upstream, and so the update cascade can be exercised against a
+// local mock release server without touching the public repo.
+func releasesEndpoint() string {
+	if v := strings.TrimSpace(os.Getenv("LATTICE_RELEASES_API")); v != "" {
+		return v
+	}
+	return releasesAPI
+}
 
 // releaseCacheTTL bounds how often the hub hits GitHub. Release notes + the update
 // check don't need to be fresher than this, and it keeps us well under the limit.
@@ -62,7 +75,7 @@ func (h *Hub) fetchReleases(ctx context.Context) ([]releaseInfo, error) {
 		return c.releases, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesAPI+"?per_page=20", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesEndpoint()+"?per_page=20", nil)
 	if err != nil {
 		return c.releases, err
 	}

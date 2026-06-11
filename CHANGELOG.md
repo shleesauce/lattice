@@ -4,6 +4,23 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.6] - 2026-06-10
+
+### Added
+- **`LATTICE_RELEASES_API` override.** Point the release-notes panel and update check at a
+  different releases endpoint — so a self-hosted fork tracks its OWN releases instead of being
+  pinned to upstream (and the update cascade can be exercised against a local release server).
+
+### Fixed
+- **One-click fleet update is more reliable.** Agents now acknowledge the update *before*
+  restarting their own service, instead of restarting first and racing the confirmation off
+  the wire — the cause of the "agent did not respond in time" message during the 0.1.5 update
+  even when the upgrade actually succeeded.
+- **Honest per-machine update status.** The update view now shows each machine as **updated**,
+  **pending**, or **failed**. A slow or sleeping machine that doesn't confirm in time shows an
+  amber "pending — applies on restart" instead of a red failure, and an agent that drops offline
+  mid-update is skipped immediately rather than stalling the rest of the fleet.
+
 ## [0.1.5] - 2026-06-09
 
 ### Added

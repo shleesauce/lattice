@@ -4,6 +4,15 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.9] - 2026-06-10
+
+### Changed
+- **The dashboard no longer loads anything from the internet.** It used to pull two fonts from
+  the Google Fonts CDN that nothing in the UI actually used — so every dashboard load made a
+  render-blocking request to Google. Those are gone; Lattice ships the fonts it actually renders
+  (Hanken Grotesk + IBM Plex Mono) locally. A self-hosted fleet console now starts fully offline,
+  makes zero third-party requests, and paints a touch faster — no visual change.
+
 ## [0.1.8] - 2026-06-10
 
 ### Fixed

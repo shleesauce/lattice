@@ -40,13 +40,35 @@ func (h *Hub) isAllowedPreviewPort(port int) bool {
 // belongs to a MACHINE, not a code session. The agent dials 127.0.0.1:port
 // directly; nothing new is exposed on its external interface (D2).
 //
-// Asset-path caveat: dev servers that emit ROOT-ABSOLUTE asset URLs (Vite's
-// /@vite/client, Next's /_next/…) ignore the /preview/{agent}/{port}/ prefix and
-// 404 against the hub. The fix is on the dev server (set Vite `base` / Next
-// `basePath`+`assetPrefix` to the prefix, or a relative base); the proxy stays a
-// transparent tunnel and does not rewrite app payloads.
+// STRIP mode: the proxy strips /preview/{agent}/{port} before forwarding, so the
+// backend sees /. Works for any dev server that emits RELATIVE asset URLs (plain
+// http.server, code-server-style apps). Framework dev servers that emit
+// ROOT-ABSOLUTE asset URLs (Vite's /@vite/client, Next's /_next/…) ignore the
+// prefix and 404 — use /fpreview/ (no-strip) for those instead.
 func (h *Hub) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/preview/")
+	h.servePreview(w, r, "/preview/", true)
+}
+
+// handleFrameworkPreviewProxy reverse-proxies /fpreview/{agentId}/{port}/* in
+// NO-STRIP mode for framework dev servers (Vite / Next). The dev server is launched
+// with its base path set to the SAME /fpreview/{agent}/{port}/ prefix (Vite
+// `--base`, Next `basePath`+`assetPrefix`), so it already emits correctly-prefixed
+// asset + HMR URLs; the proxy forwards the FULL path unchanged. Stripping would make
+// a base-configured Vite 302 `/` → its base, which the strip undoes → infinite loop
+// (see docs/NEXT-tunneled-preview.md). The exact base string is surfaced in the dock
+// for copy-paste; it's per-machine (the agentId is hostname-os) so it can't live in a
+// committed config.
+func (h *Hub) handleFrameworkPreviewProxy(w http.ResponseWriter, r *http.Request) {
+	h.servePreview(w, r, "/fpreview/", false)
+}
+
+// servePreview is the shared body for both preview modes. route is the leading
+// path segment ("/preview/" or "/fpreview/"); strip controls whether that prefix is
+// removed before the request is forwarded to the agent's dev server. The browser
+// always stays under route (the trailing-slash 302 + every asset request), so the
+// mode is encoded in the PATH — a request and all the assets it pulls share it.
+func (h *Hub) servePreview(w http.ResponseWriter, r *http.Request, route string, strip bool) {
+	rest := strings.TrimPrefix(r.URL.Path, route)
 	agentID, after, _ := strings.Cut(rest, "/")
 	portStr, _, hasSlash := strings.Cut(after, "/")
 	if agentID == "" || portStr == "" {
@@ -63,15 +85,16 @@ func (h *Hub) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("preview port not allowed (dev-server range is %d-%d)", h.previewPortMin, h.previewPortMax), http.StatusForbidden)
 		return
 	}
-	prefix := "/preview/" + agentID + "/" + portStr
+	prefix := strings.TrimSuffix(route, "/") + "/" + agentID + "/" + portStr
 
 	if _, ok := h.registry.getTunnel(agentID); !ok {
 		http.Error(w, "agent tunnel offline", http.StatusBadGateway)
 		return
 	}
 
-	// Trailing-slash 302 (MANDATORY): dev servers that emit relative asset URLs
-	// need the browser to sit under /preview/{agent}/{port}/ to resolve them.
+	// Trailing-slash 302 (MANDATORY): the browser must sit under the prefix so the
+	// dev server's asset URLs (relative in strip mode, base-prefixed in no-strip)
+	// resolve back through the same route.
 	if !hasSlash {
 		target := prefix + "/"
 		if r.URL.RawQuery != "" {
@@ -84,13 +107,20 @@ func (h *Hub) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 	dial := func() (net.Conn, error) { return h.dialPreviewStream(agentID, port) }
 	fwdProto := forwardedProto(r)
 
+	// In no-strip mode the FULL path is forwarded (the base-configured backend
+	// expects its prefix); an empty strip-prefix leaves req.URL.Path untouched.
+	stripPrefix := prefix
+	if !strip {
+		stripPrefix = ""
+	}
+
 	// dev-server HMR is a WebSocket — mandatory or hot-reload hangs.
 	if isWebSocketUpgrade(r) {
-		tunnelWebSocket(w, r, prefix, fwdProto, dial)
+		tunnelWebSocket(w, r, stripPrefix, fwdProto, dial)
 		return
 	}
 
-	tunnelReverseProxy(prefix, fwdProto, dial, "preview proxy: agent="+agentID+" port="+portStr).ServeHTTP(w, r)
+	tunnelReverseProxy(stripPrefix, fwdProto, dial, "preview proxy: agent="+agentID+" port="+portStr).ServeHTTP(w, r)
 }
 
 // dialPreviewStream opens a fresh yamux stream to the agent and writes the

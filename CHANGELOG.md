@@ -4,6 +4,16 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.7] - 2026-06-10
+
+### Added
+- **Preview Vite / Next dev servers, not just plain ones.** The dock's Preview tab now has a
+  **Vite/Next** toggle. Framework dev servers emit root-absolute asset URLs (`/@vite/client`,
+  `/_next/…`) that ignored the preview path prefix and failed to render; the toggle switches the
+  proxy to a no-strip mode (`/fpreview/…`) that forwards the full path, and the dock shows the
+  exact `--base=…` string to launch the dev server with (Next: use it as `basePath` + `assetPrefix`).
+  So you can now preview a Vite or Next app on any machine from any device that reaches the hub.
+
 ## [0.1.6] - 2026-06-10
 
 ### Added

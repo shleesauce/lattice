@@ -239,15 +239,30 @@ function DockPreview({ agentId, machineLabel }: { agentId: string; machineLabel:
   const [draft, setDraft] = useState('3000')
   const [port, setPort] = useState('')
   const [nonce, setNonce] = useState(0)
+  // Framework mode: Vite/Next dev servers emit root-absolute asset URLs, so the hub
+  // forwards the FULL path (/fpreview/) instead of stripping the prefix (/preview/).
+  // The dev server must be launched with its base set to the basePath below.
+  const [framework, setFramework] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   // The hub serves the dashboard, so a root-relative path is same-origin.
-  const src = port ? `/preview/${encodeURIComponent(agentId)}/${port}/` : ''
+  const route = framework ? 'fpreview' : 'preview'
+  const basePath = port ? `/${route}/${encodeURIComponent(agentId)}/${port}/` : ''
+  const src = basePath
 
   const go = () => {
     const p = draft.trim().replace(/^:/, '')
     if (!/^\d+$/.test(p)) return
     setPort(p)
     setNonce((n) => n + 1)
+  }
+
+  const copyBase = () => {
+    if (!basePath) return
+    void navigator.clipboard?.writeText(basePath).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
   }
 
   return (
@@ -270,6 +285,20 @@ function DockPreview({ agentId, machineLabel }: { agentId: string; machineLabel:
           spellCheck={false}
           autoComplete="off"
         />
+        <button
+          type="button"
+          className="dock-preview-btn"
+          aria-pressed={framework}
+          title={
+            framework
+              ? 'Framework mode ON — forwards the full path for Vite/Next (launch with the base below)'
+              : 'Switch to framework mode for Vite/Next dev servers'
+          }
+          onClick={() => setFramework((f) => !f)}
+          style={framework ? { color: 'var(--teal)', borderColor: 'var(--teal)' } : undefined}
+        >
+          Vite/Next
+        </button>
         {src && (
           <button type="button" className="dock-preview-btn" title="reload" onClick={() => setNonce((n) => n + 1)}>
             <Icon name="refresh-cw" size={13} />
@@ -282,6 +311,21 @@ function DockPreview({ agentId, machineLabel }: { agentId: string; machineLabel:
         )}
         <button type="submit" className="dock-preview-go">Go</button>
       </form>
+      {framework && basePath && (
+        <div
+          className="dock-preview-basehint"
+          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', fontSize: 11, color: 'var(--fg-3)', borderBottom: '1px solid var(--border)' }}
+        >
+          <span>Launch with base:</span>
+          <code style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-mono, monospace)' }}>{`--base=${basePath}`}</code>
+          <button type="button" className="dock-preview-btn" title="copy the base path" onClick={copyBase}>
+            {copied ? 'copied' : 'copy'}
+          </button>
+          <span style={{ marginLeft: 'auto' }} title="Next.js: set basePath + assetPrefix to this same path">
+            (Next: basePath + assetPrefix)
+          </span>
+        </div>
+      )}
       <div className="dock-preview-stage">
         {src ? (
           <iframe key={`${src}#${nonce}`} src={src} title="preview" className="dock-preview-frame" />
@@ -291,6 +335,8 @@ function DockPreview({ agentId, machineLabel }: { agentId: string; machineLabel:
             <br />
             <span style={{ color: 'var(--fg-3)', fontSize: 11 }}>
               Any localhost port on {machineLabel} — tunneled through the hub, no LAN or 0.0.0.0 needed.
+              <br />
+              Vite/Next? Toggle <strong>Vite/Next</strong> and launch the dev server with the shown base.
             </span>
           </div>
         )}

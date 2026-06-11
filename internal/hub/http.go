@@ -120,9 +120,12 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/editor/", h.requireAuth(h.handleEditorProxy))
 
 	// Preview: reverse-proxy an agent's dev server over the same tunnel (D32).
-	// /preview/{agentId}/{port}/* — works for any localhost dev server on the
-	// machine, from any device that can reach the hub (phone included).
+	// /preview/{agentId}/{port}/* — STRIP mode, for dev servers with relative asset
+	// URLs, from any device that can reach the hub (phone included).
 	mux.HandleFunc("/preview/", h.requireAuth(h.handlePreviewProxy))
+	// /fpreview/{agentId}/{port}/* — NO-STRIP mode for framework dev servers
+	// (Vite / Next) launched with their base set to this prefix.
+	mux.HandleFunc("/fpreview/", h.requireAuth(h.handleFrameworkPreviewProxy))
 
 	mux.Handle("/", h.staticHandler())
 	return mux

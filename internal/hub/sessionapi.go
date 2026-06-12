@@ -97,7 +97,7 @@ func (h *Hub) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]sessionView, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, toSessionView(rec))
+		out = append(out, h.sessionViewLive(rec))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }

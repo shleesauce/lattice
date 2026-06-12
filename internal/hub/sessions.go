@@ -66,9 +66,14 @@ type sessionView struct {
 	PRURL           string `json:"prUrl,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 	LastActiveAt    string `json:"lastActiveAt"`
+	// Waiting is a live, derived flag (not persisted): the session is blocked on a
+	// permission/decision right now. Set only on the list/broadcast views the
+	// dashboard renders dots from (see sessionViewLive); drives the red status dot.
+	Waiting bool `json:"waiting,omitempty"`
 }
 
-// toSessionView renders a SessionRecord for the API.
+// toSessionView renders a SessionRecord for the API. Waiting is left false — it's a
+// live flag the pure render can't see; the list builders use sessionViewLive.
 func toSessionView(r SessionRecord) sessionView {
 	return sessionView{
 		ID:              r.ID,
@@ -88,6 +93,15 @@ func toSessionView(r SessionRecord) sessionView {
 		CreatedAt:       r.CreatedAt.UTC().Format(time.RFC3339),
 		LastActiveAt:    r.LastActiveAt.UTC().Format(time.RFC3339),
 	}
+}
+
+// sessionViewLive renders a session for the dashboard list/broadcast WITH live
+// derived state the pure toSessionView can't see — the "waiting on a decision" flag
+// from the in-memory approval store, which turns the status dot red.
+func (h *Hub) sessionViewLive(r SessionRecord) sessionView {
+	v := toSessionView(r)
+	v.Waiting = h.approvals.hasForSession(r.ID)
+	return v
 }
 
 // deletedAtStr renders a trash timestamp, or "" when the session isn't trashed.

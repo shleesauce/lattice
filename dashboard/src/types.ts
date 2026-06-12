@@ -192,6 +192,7 @@ export interface Session {
   archived?: boolean
   deletedAt?: string // RFC3339 when trashed; absent/empty otherwise
   notifyOnIdle?: boolean // claude: ping my phone when it waits/finishes (fire-and-forget)
+  waiting?: boolean // live, derived: blocked on a permission/decision right now → red status dot
   model?: string // claude: full model id this session launched with (e.g. claude-opus-4-8[1m])
   prUrl?: string // claude: detected GitHub PR URL for this session (D)
   createdAt: string // RFC3339

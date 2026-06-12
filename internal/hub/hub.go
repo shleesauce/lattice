@@ -545,7 +545,7 @@ func (h *Hub) broadcastSessions() {
 	}
 	out := make([]sessionView, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, toSessionView(rec))
+		out = append(out, h.sessionViewLive(rec))
 	}
 	h.registry.broadcast(map[string]any{
 		"type":     "sessions",

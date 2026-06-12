@@ -71,6 +71,22 @@ func (a *approvalStore) consume(nonce string, now time.Time) (pendingApproval, b
 	return p, true
 }
 
+// hasForSession reports whether the session currently has an armed approval — i.e.
+// it is blocked waiting on the operator's decision. Drives the dashboard's red
+// "needs you" status dot (BUG-009). Reuses the approval lifecycle (armed on the
+// awaiting edge, dropped on resume/consume/sweep), so there's no separate state to
+// go stale.
+func (a *approvalStore) hasForSession(sessionID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.pending {
+		if p.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
 // dropForSession disarms any approvals for a session that resumed or ended, so a
 // stale tap can't inject into a session that's no longer waiting on input.
 func (a *approvalStore) dropForSession(sessionID string) {

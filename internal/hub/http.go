@@ -250,6 +250,13 @@ func (h *Hub) handleAgentRename(w http.ResponseWriter, r *http.Request, agentID 
 // enroll token it used (if any). A removed box that re-enrolls with the MASTER
 // token reappears — that's expected; only its per-machine token is revoked.
 func (h *Hub) handleAgentRemove(w http.ResponseWriter, r *http.Request, agentID string) {
+	// Privilege-class: disconnects an agent, orphans its sessions, and revokes its
+	// enroll token. Fail closed on a passwordless hub (see requirePrivileged) so a
+	// tailnet peer can't loop it to disconnect agents and revoke tokens — a
+	// persistent fleet DoS.
+	if !h.requirePrivileged(w, r) {
+		return
+	}
 	if conn, ok := h.registry.getAgent(agentID); ok {
 		// Drop the live socket so the box stops checking in under this id; its read
 		// loop unwinds and the deferred cleanup runs (orphan + broadcast) too.

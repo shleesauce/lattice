@@ -57,6 +57,13 @@ func (h *Hub) roundTripT(agentID, reqID string, timeout time.Duration, t proto.M
 // handleFiles answers GET /api/agents/{id}/files?path=<p> with the agent's
 // directory listing (FileListResultPayload JSON).
 func (h *Hub) handleFiles(w http.ResponseWriter, r *http.Request, agentID string) {
+	// Privilege-class: reads an agent's filesystem. On a passwordless hub this must
+	// fail closed (see requirePrivileged) — an ungated read of any agent path lets a
+	// tailnet peer exfiltrate ~/.lattice/.lattice-token (the master token) and SSH
+	// keys/.env, i.e. an escalation straight to fleet RCE.
+	if !h.requirePrivileged(w, r) {
+		return
+	}
 	reqID := newReqID()
 	env, err := h.roundTrip(agentID, reqID, proto.TypeFileList, proto.FileReqPayload{
 		ReqID: reqID, Path: r.URL.Query().Get("path"),
@@ -81,6 +88,11 @@ func (h *Hub) handleFiles(w http.ResponseWriter, r *http.Request, agentID string
 // the raw file bytes (the hub base64-decodes the agent's FileGetResult.Content)
 // with a Content-Disposition: attachment header.
 func (h *Hub) handleDownload(w http.ResponseWriter, r *http.Request, agentID string) {
+	// Privilege-class: streams an agent's file bytes — same RCE-via-token-read risk
+	// as handleFiles, so it fails closed on a passwordless hub (see requirePrivileged).
+	if !h.requirePrivileged(w, r) {
+		return
+	}
 	filePath := r.URL.Query().Get("path")
 	if strings.TrimSpace(filePath) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is required"})

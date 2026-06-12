@@ -40,6 +40,16 @@ jobs:
       - name: Verify module checksums
         run: go mod verify
 
+      # A tag push doesn't trigger ci.yml (branches/PRs only), so without these a tag
+      # cut from an unverified commit would publish straight to the cascade channel.
+      # Gate the release on the same checks CI runs (TS types are gated by tsc in
+      # build.sh below).
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
       - name: Build all targets (tag stamps main.Version)
         run: LATTICE_VERSION=${{ github.ref_name }} bash scripts/build.sh
 

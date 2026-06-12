@@ -190,7 +190,31 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAgentSub routes the /api/agents/{id}/{action} subtree.
+// agentAction declares one /api/agents/{id}/<action> sub-action: its HTTP method and
+// whether it is privilege-class (RCE/destructive → master token even on a passwordless
+// hub, via requirePrivileged). handleAgentSub enforces BOTH from this table before
+// dispatch, so privilege is decided in one place instead of by each handler remembering
+// to call requirePrivileged — the exact gap that let the post-ship audit's passwordless
+// file-read→RCE and remove→DoS holes ship. An action absent from the table is rejected
+// (fail closed), so a newly added sub-action can't go live ungated.
+type agentAction struct {
+	method     string
+	privileged bool
+	handle     func(*Hub, http.ResponseWriter, *http.Request, string)
+}
+
+var agentActions = map[string]agentAction{
+	"exec":     {http.MethodPost, true, (*Hub).handleExec},
+	"files":    {http.MethodGet, true, (*Hub).handleFiles},
+	"download": {http.MethodGet, true, (*Hub).handleDownload},
+	"power":    {http.MethodPost, true, (*Hub).handlePower},
+	"remove":   {http.MethodPost, true, (*Hub).handleAgentRemove},
+	"wake":     {http.MethodPost, false, (*Hub).handleWake},
+	"rename":   {http.MethodPost, false, (*Hub).handleAgentRename},
+}
+
+// handleAgentSub routes the /api/agents/{id}/{action} subtree, enforcing each
+// action's method + privilege from agentActions before dispatch.
 func (h *Hub) handleAgentSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/agents/")
 	id, action, ok := strings.Cut(rest, "/")
@@ -198,39 +222,18 @@ func (h *Hub) handleAgentSub(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
-	switch action {
-	case "exec":
-		if requireMethod(w, r, http.MethodPost) {
-			h.handleExec(w, r, id)
-		}
-	case "files":
-		if requireMethod(w, r, http.MethodGet) {
-			h.handleFiles(w, r, id)
-		}
-	case "download":
-		if requireMethod(w, r, http.MethodGet) {
-			h.handleDownload(w, r, id)
-		}
-	case "wake":
-		if requireMethod(w, r, http.MethodPost) {
-			h.handleWake(w, r, id)
-		}
-	case "power":
-		if requireMethod(w, r, http.MethodPost) {
-			h.handlePower(w, r, id)
-		}
-	case "rename":
-		if requireMethod(w, r, http.MethodPost) {
-			h.handleAgentRename(w, r, id)
-		}
-	case "remove":
-		if requireMethod(w, r, http.MethodPost) {
-			h.handleAgentRemove(w, r, id)
-		}
-	default:
+	spec, known := agentActions[action]
+	if !known {
 		http.NotFound(w, r)
+		return
 	}
+	if !requireMethod(w, r, spec.method) {
+		return
+	}
+	if spec.privileged && !h.requirePrivileged(w, r) {
+		return
+	}
+	spec.handle(h, w, r, id)
 }
 
 // requireMethod reports whether r used the wanted HTTP method. On a mismatch it
@@ -275,13 +278,9 @@ func (h *Hub) handleAgentRename(w http.ResponseWriter, r *http.Request, agentID 
 // enroll token it used (if any). A removed box that re-enrolls with the MASTER
 // token reappears — that's expected; only its per-machine token is revoked.
 func (h *Hub) handleAgentRemove(w http.ResponseWriter, r *http.Request, agentID string) {
-	// Privilege-class: disconnects an agent, orphans its sessions, and revokes its
-	// enroll token. Fail closed on a passwordless hub (see requirePrivileged) so a
-	// tailnet peer can't loop it to disconnect agents and revoke tokens — a
-	// persistent fleet DoS.
-	if !h.requirePrivileged(w, r) {
-		return
-	}
+	// Privilege-class (disconnects an agent, orphans its sessions, revokes its enroll
+	// token → fleet DoS if looped): gated by agentActions[*].privileged in
+	// handleAgentSub before dispatch.
 	if conn, ok := h.registry.getAgent(agentID); ok {
 		// Drop the live socket so the box stops checking in under this id; its read
 		// loop unwinds and the deferred cleanup runs (orphan + broadcast) too.
@@ -307,10 +306,8 @@ func (h *Hub) handleAgentRemove(w http.ResponseWriter, r *http.Request, agentID 
 }
 
 func (h *Hub) handleExec(w http.ResponseWriter, r *http.Request, agentID string) {
-	// RCE-class: fail closed even on a passwordless hub (see requirePrivileged).
-	if !h.requirePrivileged(w, r) {
-		return
-	}
+	// RCE-class (runs an arbitrary command on the agent box): gated by
+	// agentActions[*].privileged in handleAgentSub before dispatch.
 	var body struct {
 		Command string `json:"command"`
 	}

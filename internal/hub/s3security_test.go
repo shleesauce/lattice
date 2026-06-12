@@ -3,6 +3,7 @@ package hub
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +44,42 @@ func TestRequirePrivilegedAuthEnabledDefers(t *testing.T) {
 	rec := httptest.NewRecorder()
 	if !h.requirePrivileged(rec, httptest.NewRequest(http.MethodPost, "/api/update", nil)) {
 		t.Fatal("auth-enabled hub should defer to requireAuth (pass)")
+	}
+}
+
+// handleAgentSub must enforce each action's privilege + method from the agentActions
+// table, centrally, so privilege can't be forgotten in a handler (the cause of the
+// post-ship-audit passwordless-hub holes) and a new/unknown action fails closed.
+func TestAgentSubActionGating(t *testing.T) {
+	h := testHub(t) // passwordless (no admin password) → privileged actions need the token
+
+	do := func(method, path string, priv bool) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader("{}"))
+		if priv {
+			req = privileged(req)
+		}
+		h.handleAgentSub(rec, req)
+		return rec.Code
+	}
+
+	// Privileged action (files) on a passwordless hub with NO token → 401, before any
+	// agent round-trip. This is the hole the audit closed, now enforced centrally.
+	if code := do(http.MethodGet, "/api/agents/studio/files", false); code != http.StatusUnauthorized {
+		t.Fatalf("ungated privileged action: status=%d want 401", code)
+	}
+	// Unknown action → 404 (fail closed: a new sub-action can't ship ungated).
+	if code := do(http.MethodPost, "/api/agents/studio/bogus", true); code != http.StatusNotFound {
+		t.Fatalf("unknown action: status=%d want 404", code)
+	}
+	// Method is enforced from the table: wake is POST-only, so GET → 405.
+	if code := do(http.MethodGet, "/api/agents/studio/wake", true); code != http.StatusMethodNotAllowed {
+		t.Fatalf("wrong method: status=%d want 405", code)
+	}
+	// A non-privileged action (wake) is NOT blocked by the privilege gate even with no
+	// token: it reaches handleWake, which 404s an unknown target (proves it wasn't 401'd).
+	if code := do(http.MethodPost, "/api/agents/ghost/wake", false); code != http.StatusNotFound {
+		t.Fatalf("non-privileged action should reach the handler (404 unknown target), got %d", code)
 	}
 }
 

@@ -6,11 +6,12 @@
      Git      — the same PTY, auto-running `git status` + `git diff` for the project
    The dock is contextual: it follows whatever session is active. */
 import { useEffect, useMemo, useState } from 'react'
-import type { Agent, FileListResult, Session } from '../../types'
-import { downloadUrl, fetchFiles, terminalWsUrl } from '../../api'
+import type { Agent, FileEntry, FileListResult, Session } from '../../types'
+import { downloadUrl, fetchFileText, fetchFiles, terminalWsUrl } from '../../api'
 import { XtermSession } from './XtermSession'
 import { Icon } from '../../lattice/Icon'
 import { humanBytes } from '../../format'
+import { renderMarkdown } from '../../lib/markdown'
 
 export type DockView = 'files' | 'terminal' | 'preview' | 'git'
 
@@ -135,9 +136,15 @@ function DockFiles({ agentId, start }: { agentId: string; start: string }) {
   const [res, setRes] = useState<FileListResult | null>(null)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [err, setErr] = useState('')
+  // A file open in the in-panel viewer (BUG-008) — click a file to read it here
+  // (markdown rendered, text/code as-is) instead of round-tripping a download.
+  const [viewing, setViewing] = useState<FileEntry | null>(null)
 
   // Reset to the session's directory when the active session changes.
-  useEffect(() => setPath(start), [start, agentId])
+  useEffect(() => {
+    setPath(start)
+    setViewing(null)
+  }, [start, agentId])
 
   useEffect(() => {
     let cancelled = false
@@ -177,6 +184,10 @@ function DockFiles({ agentId, start }: { agentId: string; start: string }) {
 
   const crumbs = useMemo(() => path.split('/').filter(Boolean), [path])
 
+  if (viewing) {
+    return <FileViewer agentId={agentId} file={viewing} onClose={() => setViewing(null)} />
+  }
+
   return (
     <div className="dock-files">
       <div className="dock-crumbs term-scroll">
@@ -215,15 +226,81 @@ function DockFiles({ agentId, start }: { agentId: string; start: string }) {
                   <span className="dock-file-nm">{e.name}</span>
                 </button>
               ) : (
-                <a key={e.path} className="dock-file" href={downloadUrl(agentId, e.path)} title="download" download>
+                <button key={e.path} type="button" className="dock-file" onClick={() => setViewing(e)} title="view">
                   <Icon name="file-code" size={14} color="var(--fg-3)" />
                   <span className="dock-file-nm">{e.name}</span>
                   <span className="dock-file-sz">{humanBytes(e.size)}</span>
-                </a>
+                </button>
               ),
             )}
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+// FileViewer reads a single file in-panel (BUG-008): markdown is rendered, anything
+// else shows as plain text. It streams bytes from the SAME privilege-gated /download
+// route the list already links, so no new hub endpoint or auth path. A download link
+// stays available, and a NUL-byte sniff falls back to "use download" for binaries.
+const MD_RE = /\.(md|markdown|mdx)$/i
+
+function FileViewer({ agentId, file, onClose }: { agentId: string; file: FileEntry; onClose: () => void }) {
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [text, setText] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setState('loading')
+    setText('')
+    setErr('')
+    fetchFileText(agentId, file.path)
+      .then((t) => {
+        if (cancelled) return
+        setText(t)
+        setState('ready')
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setErr(e instanceof Error ? e.message : String(e))
+        setState('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agentId, file.path])
+
+  const isMd = MD_RE.test(file.name)
+  const looksBinary = state === 'ready' && text.slice(0, 8192).includes('\u0000')
+
+  return (
+    <div className="dock-files">
+      <div className="dock-viewer-head">
+        <button type="button" className="dock-crumb" onClick={onClose} title="back to files">
+          <Icon name="chevron-right" size={13} style={{ transform: 'rotate(180deg)', opacity: 0.7 }} />
+          back
+        </button>
+        <span className="dock-viewer-nm" title={file.path}>{file.name}</span>
+        <span className="dock-file-sz">{humanBytes(file.size)}</span>
+        <a className="dock-viewer-dl" href={downloadUrl(agentId, file.path)} download title="download">
+          download
+        </a>
+      </div>
+      <div className="dock-files-list term-scroll">
+        {state === 'loading' && <div className="dock-files-msg">loading…</div>}
+        {state === 'error' && <div className="dock-files-msg err">{err}</div>}
+        {state === 'ready' && looksBinary && <div className="dock-files-msg">binary file — use download.</div>}
+        {state === 'ready' && !looksBinary &&
+          (isMd ? (
+            <div
+              className="dock-viewer-md prose-transcript text-[13px] leading-relaxed text-zinc-300"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+            />
+          ) : (
+            <pre className="dock-viewer-pre">{text}</pre>
+          ))}
       </div>
     </div>
   )

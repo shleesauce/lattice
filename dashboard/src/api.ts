@@ -84,6 +84,19 @@ export function downloadUrl(agentId: string, path: string): string {
   return `/api/agents/${encodeURIComponent(agentId)}/download?${qs}`
 }
 
+// fetchFileText streams a file's bytes from the agent (via the same privilege-gated
+// /download route the file list links) and returns them as text for the in-panel
+// viewer (BUG-008). Same-origin, so the session cookie authorizes it like every other
+// dashboard call. On a non-2xx it throws the hub's error body (or the status line).
+export async function fetchFileText(agentId: string, path: string): Promise<string> {
+  const res = await fetch(downloadUrl(agentId, path))
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(body.trim() || `${res.status} ${res.statusText}`)
+  }
+  return res.text()
+}
+
 // wakeAgent wakes a sleeping machine. Relay-aware: the hub picks a LIVE agent on
 // the target's own subnet to emit the magic packet (so the broadcast actually
 // reaches it) and surfaces "no relay reachable on that subnet" instead of failing

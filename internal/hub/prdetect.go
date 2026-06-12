@@ -126,7 +126,7 @@ func (h *Hub) notifyPROpened(rec SessionRecord, prURL string) {
 	}
 	msg := ntfyMessage{
 		Title:    h.sessionLabel(rec) + " — PR opened",
-		Message:  "Claude on " + prettyAgentName(rec.AgentID) + " opened a pull request.",
+		Message:  "Claude on " + h.agentDisplayName(rec.AgentID) + " opened a pull request.",
 		Priority: 4,
 		Tags:     []string{"twisted_rightwards_arrows"},
 		Click:    prURL,

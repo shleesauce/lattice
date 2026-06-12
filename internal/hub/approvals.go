@@ -181,7 +181,7 @@ func (h *Hub) onSessionExit(agentID, sessionID string) {
 	}
 	msg := ntfyMessage{
 		Title:    h.sessionLabel(rec) + " — finished",
-		Message:  "Claude on " + prettyAgentName(agentID) + " ended its session.",
+		Message:  "Claude on " + h.agentDisplayName(agentID) + " ended its session.",
 		Priority: 3,
 		Tags:     []string{"checkered_flag"},
 	}
@@ -201,7 +201,7 @@ func (h *Hub) notifyWaiting(rec SessionRecord, agentID string, now time.Time) {
 	}
 	msg := ntfyMessage{
 		Title:    h.sessionLabel(rec) + " — waiting",
-		Message:  "Claude on " + prettyAgentName(agentID) + " is waiting for you.",
+		Message:  "Claude on " + h.agentDisplayName(agentID) + " is waiting for you.",
 		Priority: 4,
 		Tags:     []string{"hourglass_flowing_sand"},
 	}
@@ -284,7 +284,7 @@ func (h *Hub) handleApproval(w http.ResponseWriter, r *http.Request) {
 		log.Printf("audit: approval log failed: %v", err)
 	}
 	h.broadcastSessions()
-	approvalPage(w, http.StatusOK, verb+" — sent to "+prettyAgentName(p.agentID)+".")
+	approvalPage(w, http.StatusOK, verb+" — sent to "+h.agentDisplayName(p.agentID)+".")
 }
 
 // approvalPage renders a tiny mobile-friendly confirmation for the approve link.

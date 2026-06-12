@@ -2,7 +2,7 @@ module github.com/shleesauce/lattice
 
 go 1.26
 
-toolchain go1.26.3
+toolchain go1.26.4
 
 require (
 	github.com/aymanbagabas/go-pty v0.2.3

@@ -38,9 +38,9 @@ func toEnrollTokenView(rec EnrollTokenRecord) enrollTokenView {
 }
 
 // handleEnrollTokens lists (GET) or mints (POST) per-machine enrollment tokens.
-// Both are admin-auth-gated (registered behind requireAuth) — these are operator
-// ops, and the full token is returned in the clear because the operator must hand
-// it to a new machine.
+// Both are credential-gated (registered behind requireAuthOrToken, so a passwordless
+// hub still demands the master token) — these are operator ops, and the full token
+// is returned in the clear because the operator must hand it to a new machine.
 func (h *Hub) handleEnrollTokens(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

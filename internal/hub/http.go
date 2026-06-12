@@ -54,9 +54,12 @@ func (h *Hub) routes() http.Handler {
 	mux.HandleFunc("/api/enroll", h.requireAuth(h.handleEnroll))
 	// Phase 4: per-machine revocable enrollment tokens (admin ops). Distinct mux
 	// patterns from /api/enroll: the exact /api/enroll/tokens lists/mints, and the
-	// /api/enroll/tokens/ prefix parses {token}/revoke.
-	mux.HandleFunc("/api/enroll/tokens", h.requireAuth(h.handleEnrollTokens))
-	mux.HandleFunc("/api/enroll/tokens/", h.requireAuth(h.handleEnrollTokenItem))
+	// /api/enroll/tokens/ prefix parses {token}/revoke. requireAuthOrToken (NOT plain
+	// requireAuth) — these list/mint fleet enrollment credentials, so on a
+	// passwordless hub they must still demand the master token rather than ride the
+	// auth-off pass-through (mirrors handleEnroll, which hands out the same secret).
+	mux.HandleFunc("/api/enroll/tokens", h.requireAuthOrToken(h.handleEnrollTokens))
+	mux.HandleFunc("/api/enroll/tokens/", h.requireAuthOrToken(h.handleEnrollTokenItem))
 	mux.HandleFunc("/api/agents/", h.requireAuth(h.handleAgentSub))
 
 	// Phase 3: workspace (projects → sessions, placement, audit, settings) — gated.

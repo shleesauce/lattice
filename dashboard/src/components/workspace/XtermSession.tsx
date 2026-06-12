@@ -79,6 +79,9 @@ export const XtermSession = forwardRef<XtermSessionHandle, Props>(function Xterm
     if (!host) return
     setPhase('connecting')
 
+    // xterm + addons are created ONCE per sessionId. The socket is (re)opened by
+    // connect() below — a dropped socket auto-reconnects without recreating the
+    // terminal, so scrollback survives and the hub replays the session on reattach.
     const term = new Terminal({
       fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
       fontSize: 12.5,
@@ -102,61 +105,120 @@ export const XtermSession = forwardRef<XtermSessionHandle, Props>(function Xterm
     safeFit()
 
     const urlFor = makeUrlRef.current ?? ((c: number, r: number) => sessionWsUrl(sessionId, c, r))
-    const ws = new WebSocket(urlFor(term.cols, term.rows))
-    wsRef.current = ws
-    let closedByUs = false
 
-    ws.onopen = () => {
-      setPhase('live')
-      safeFit()
+    let disposed = false
+    let exited = false
+    let firstConnect = true
+    let attempt = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+
+    // Only send a resize when the dimensions actually changed, debounced — so
+    // dragging the panel split doesn't spam the PTY with resizes that make the
+    // shell re-print its prompt (BUG-006). fit() still runs every observer tick so
+    // the view stays fitted; only the network message is throttled.
+    let lastCols = 0
+    let lastRows = 0
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    const sendResize = () => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      if (term.cols === lastCols && term.rows === lastRows) return
+      lastCols = term.cols
+      lastRows = term.rows
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      if (initialInputRef.current) {
-        ws.send(JSON.stringify({ type: 'input', data: encodeB64(new TextEncoder().encode(initialInputRef.current)) }))
-      }
-      term.focus()
     }
 
-    ws.onmessage = (ev) => {
-      let msg: { type: string; kind?: string; data?: string }
-      try {
-        msg = JSON.parse(ev.data as string)
-      } catch {
-        return
+    const scheduleReconnect = () => {
+      if (disposed || reconnectTimer) return
+      attempt += 1
+      const delay = Math.min(1000 * 2 ** (attempt - 1), 15000) // 1s,2s,4s… capped 15s
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined
+        if (!disposed) connect()
+      }, delay)
+    }
+
+    const connect = () => {
+      if (disposed) return
+      const ws = new WebSocket(urlFor(term.cols, term.rows))
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        if (disposed) return
+        attempt = 0
+        setPhase('live')
+        safeFit()
+        lastCols = term.cols
+        lastRows = term.rows
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+        // Seed input (e.g. `cd <project>`) only on the FIRST attach — on a reconnect
+        // the hub replays scrollback, so re-sending it would re-run the command.
+        if (firstConnect && initialInputRef.current) {
+          ws.send(JSON.stringify({ type: 'input', data: encodeB64(new TextEncoder().encode(initialInputRef.current)) }))
+        }
+        firstConnect = false
+        term.focus()
       }
-      // Both terminal and claude sessions replay as base64 PTY bytes (D35), so do
-      // not gate replay on kind — a claude replay arrives with kind="claude".
-      if ((msg.type === 'replay' && msg.data) || (msg.type === 'output' && msg.data)) {
-        term.write(decodeB64(msg.data))
-      } else if (msg.type === 'exit') {
-        setPhase('exited')
-        term.write('\r\n\x1b[2m— session ended —\x1b[0m\r\n')
+
+      ws.onmessage = (ev) => {
+        let msg: { type: string; kind?: string; data?: string }
+        try {
+          msg = JSON.parse(ev.data as string)
+        } catch {
+          return
+        }
+        // Both terminal and claude sessions replay as base64 PTY bytes (D35), so do
+        // not gate replay on kind — a claude replay arrives with kind="claude".
+        if ((msg.type === 'replay' && msg.data) || (msg.type === 'output' && msg.data)) {
+          term.write(decodeB64(msg.data))
+        } else if (msg.type === 'exit') {
+          exited = true
+          setPhase('exited')
+          term.write('\r\n\x1b[2m— session ended —\x1b[0m\r\n')
+        }
+      }
+
+      ws.onclose = () => {
+        if (disposed || exited) return
+        wsRef.current = null
+        // An unexpected drop (mobile network blip, sleep) auto-reconnects with
+        // backoff; the "reattaching…" overlay is now truthful (it used to sit there
+        // forever until a manual page refresh — BUG-002).
+        setPhase('error')
+        scheduleReconnect()
+      }
+      ws.onerror = () => {
+        /* onclose fires next and owns the reconnect */
       }
     }
 
-    ws.onclose = () => {
-      if (!closedByUs) setPhase((p) => (p === 'exited' ? p : 'error'))
-    }
-    ws.onerror = () => setPhase('error')
+    connect()
 
     const onData = term.onData((data) => {
-      if (ws.readyState !== WebSocket.OPEN) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'input', data: encodeB64(new TextEncoder().encode(data)) }))
     })
 
     const ro = new ResizeObserver(() => {
       safeFit()
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(sendResize, 150)
     })
     ro.observe(host)
 
     return () => {
-      closedByUs = true
-      wsRef.current = null
+      disposed = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (resizeTimer) clearTimeout(resizeTimer)
       ro.disconnect()
       onData.dispose()
-      ws.close()
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws) {
+        ws.onclose = null // don't let teardown trip the reconnect path
+        ws.close()
+      }
       term.dispose()
     }
   }, [sessionId])

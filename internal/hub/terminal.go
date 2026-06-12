@@ -164,6 +164,31 @@ func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 // otherwise identical for both, so both handlers share it.
 func relayBrowserInput(conn *websocket.Conn, ac *agentConn, termKey string) {
 	conn.SetReadLimit(1 << 20)
+	conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
+	// Keepalive (mirrors dashboardws): every pong refreshes the read deadline so a
+	// quiet terminal stays attached, and the periodic ping keeps mobile NAT/proxy
+	// mappings warm so the socket isn't silently dropped mid-session. gorilla allows
+	// WriteControl concurrently with the output pump's writes, so no extra lock.
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(terminalPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteTimeout)); err != nil {
+					conn.Close() // unblocks ReadMessage below → deferred cleanup runs
+					return
+				}
+			}
+		}
+	}()
 	for {
 		conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
 		_, raw, err := conn.ReadMessage()

@@ -88,10 +88,19 @@ const agentWriteTimeout = 10 * time.Second
 // socket cannot block the agentws read loop forwarding PTY output.
 const terminalWriteTimeout = 10 * time.Second
 
-// terminalReadTimeout bounds how long the hub waits for the next frame from a
-// browser terminal. An idle interactive shell still pings via gorilla control
-// frames; a dead browser trips this and the bridge unwinds.
+// terminalReadTimeout bounds how long the hub waits for the next frame (or pong)
+// from a browser terminal/session. Each pong refreshes it (see terminalPingInterval),
+// so a HEALTHY idle shell is never dropped; a dead browser trips it and the bridge
+// unwinds.
 const terminalReadTimeout = 5 * time.Minute
+
+// terminalPingInterval is how often the hub pings the browser on a terminal/session
+// WS. Without it an idle mobile socket gets silently dropped by NAT/proxy idle
+// timeouts (often ~60s) long before terminalReadTimeout — the cause of the "greys out
+// every couple minutes, refresh fixes it" symptom. The ping keeps the mapping warm,
+// each pong refreshes the read deadline, and a FAILED ping closes the conn so a dead
+// socket is detected in seconds instead of lingering to the 5m timeout.
+const terminalPingInterval = 30 * time.Second
 
 // pendingTimeout bounds a file/wake round-trip to the agent before the hub
 // gives up and returns an error to the HTTP caller.

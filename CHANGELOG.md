@@ -4,6 +4,56 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-06-11
+
+A reliability + security point release on top of v0.2.0, driven by real-world dogfooding and a
+post-ship audit: the mobile terminal experience is fixed (it dropped every few minutes and never
+recovered), phone notifications are far quieter, sessions blocked on a decision now show red, and
+two ways a passwordless hub could be abused are closed. Desktop is unchanged.
+
+### Added
+- **Read files in the panel without downloading.** Clicking a file in the dock now opens it in
+  place — markdown is rendered, text and code show as-is, binaries offer a download — so you can
+  read a README or a log on any machine in the fleet without round-tripping a download.
+- **Sessions that need you turn red.** The per-session status dot used to glow green no matter
+  what; a session blocked waiting on a permission/decision now shows a red dot, so you can see at
+  a glance which one needs your input.
+
+### Fixed
+- **The mobile terminal stays connected.** A session on a phone used to grey out with a red
+  "reconnecting" error every couple of minutes, recoverable only by a full page refresh. The hub
+  now keeps the browser socket alive (it wasn't pinging idle terminal sockets, so mobile networks
+  silently dropped them), and the browser actually auto-reconnects instead of showing the error
+  forever — reattaching replays the session so you pick up where you left off.
+- **Resizing the side panel no longer garbles the terminal.** Dragging the split used to spam the
+  shell into reprinting its prompt on every pixel; resizes are now debounced and sent only when
+  the size truly changes. (This also resolves the Git and Terminal tabs looking "both broken" —
+  they shared that backend.)
+- **Phone notifications are much quieter.** Lattice pinged your phone after *every* finished turn,
+  which was unusable. It now notifies only on events that need you — a permission prompt, a session
+  finishing, or a PR opening.
+
+### Security
+- **A passwordless hub can no longer be used to read fleet files or mint credentials.** The audit
+  found that on a hub with no admin password set, the agent file-read/download, agent-remove, and
+  enrollment-token endpoints were reachable with no credential — a path to reading a machine's
+  secrets (and from there the whole fleet) or disconnecting agents. They now require the hub token
+  even when no password is set, matching the existing exec/update/power protection. (Hubs WITH a
+  password set were never exposed.)
+- **Authorization is declared in one place now.** That hole existed because each endpoint wired
+  its own auth and a few were missed; routes and agent sub-actions are gated from a single
+  fail-closed table, so a new endpoint can't ship unprotected.
+- **The self-updater won't follow a downgrade.** Its HTTPS check covered only the first hop; a
+  redirect to plain http could have slipped an unverified binary through. Every hop is re-checked.
+- **Built on Go 1.26.4**, closing two standard-library vulnerabilities Lattice actually exercises
+  (the TLS and update-download paths).
+
+### Changed
+- Identity-migration hardening: a pre-v0.2.0 agent (or one that can't write its id file) is no
+  longer at risk of being assigned a fresh id on every restart and orphaning its sessions.
+- Internal: releases are gated on the full test suite + vet, and the installers handle IPv6
+  loopback and an unset `$USER` in headless setups.
+
 ## [0.2.0] - 2026-06-11
 
 A deliberate, multi-session milestone: a four-pass security/resilience audit, a ground-up fix

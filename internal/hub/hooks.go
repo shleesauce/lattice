@@ -158,9 +158,12 @@ func (h *Hub) handleHookState(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// onHookStop records a turn-done edge: audit it and, for an opted-in fire-and-forget
-// session, ping the phone exactly like the idle-watcher's idle edge did — but now
-// precise (claude really finished a turn, not merely went quiet for 45s).
+// onHookStop records a turn-done edge: audit it + refresh the dashboard, but does
+// NOT ping the phone. A turn finishing fires on EVERY interactive exchange, which
+// made ntfy unusably noisy (dogfood BUG-005); the phone is reserved for the
+// meaningful "needs you / done" edges — a permission gate (onHookAwaiting), the
+// session ending (notifyExit), or a PR opening (notifyPROpened). The dashboard still
+// reflects every turn live via broadcastSessions.
 func (h *Hub) onHookStop(sessionID string, now time.Time) {
 	rec, ok, err := h.store.GetSession(sessionID)
 	if err != nil || !ok {
@@ -170,9 +173,6 @@ func (h *Hub) onHookStop(sessionID string, now time.Time) {
 		log.Printf("audit: turn_done log failed: %v", err)
 	}
 	h.broadcastSessions()
-	if rec.NotifyOnIdle {
-		h.notifyWaiting(rec, rec.AgentID, now)
-	}
 	// D: a finished turn is exactly when claude has just printed a PR URL (e.g. after
 	// `gh pr create`). Enrich off the same transcript pipeline — own goroutine so it
 	// never delays the hook.

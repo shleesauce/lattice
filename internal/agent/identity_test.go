@@ -43,6 +43,40 @@ func TestAgentIDPersistence(t *testing.T) {
 	}
 }
 
+// TestAdoptRetriesOnPersistFailure asserts adopt() does not give up after a failed
+// write: a box whose ~/.lattice is briefly unwritable still persists its id on a
+// later register, instead of flapping to a new hub-minted UUID on every restart.
+func TestAdoptRetriesOnPersistFailure(t *testing.T) {
+	// Point HOME at a regular FILE so MkdirAll(~/.lattice) fails.
+	bad := filepath.Join(t.TempDir(), "home-is-a-file")
+	if err := os.WriteFile(bad, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	t.Setenv("HOME", bad)
+	t.Setenv("USERPROFILE", bad)
+
+	id := &identity{instance: processInstanceID}
+	id.adopt("agent-1")
+	if id.get() != "agent-1" {
+		t.Fatalf("adopt must set the in-memory id even when persistence fails, got %q", id.get())
+	}
+	if id.persisted {
+		t.Fatal("persisted must stay false after a failed write so adopt retries")
+	}
+
+	// Disk recovers: a later register (same id) must now persist it.
+	good := t.TempDir()
+	t.Setenv("HOME", good)
+	t.Setenv("USERPROFILE", good)
+	id.adopt("agent-1")
+	if !id.persisted {
+		t.Fatal("adopt should persist on retry once the dir is writable")
+	}
+	if got := loadPersistedAgentID(); got != "agent-1" {
+		t.Fatalf("retry persist: got %q want agent-1", got)
+	}
+}
+
 // TestInstanceIDStability asserts the per-process nonce is non-empty and stable
 // within a process (every reconnect must carry the same value), which is what lets
 // the hub tell a benign reconnect from a rival process.

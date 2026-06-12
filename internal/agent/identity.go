@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,16 +37,18 @@ var processInstanceID = randomHex(16)
 // once the hub assigns an id on first enrollment. Guarded so the tunnel goroutine
 // can read it concurrently with the register path setting it.
 type identity struct {
-	mu       sync.Mutex
-	id       string // persistent agent id; "" until known (hub-assigned on first run)
-	instance string // per-process instance nonce
+	mu        sync.Mutex
+	id        string // persistent agent id; "" until known (hub-assigned on first run)
+	instance  string // per-process instance nonce
+	persisted bool   // whether id is durably written to ~/.lattice/agent-id
 }
 
 // newIdentity loads any persisted agent id from ~/.lattice/agent-id and pairs it
 // with this process's instance nonce. An absent/empty file ⇒ id "", which the hub
-// fills in on first register.
+// fills in on first register. A loaded id is already on disk, so persisted=true.
 func newIdentity() *identity {
-	return &identity{id: loadPersistedAgentID(), instance: processInstanceID}
+	id := loadPersistedAgentID()
+	return &identity{id: id, instance: processInstanceID, persisted: id != ""}
 }
 
 // get returns the current persistent id ("" until the hub has assigned one).
@@ -55,24 +58,36 @@ func (i *identity) get() string {
 	return i.id
 }
 
-// adopt records the hub-assigned id and persists it, but only the FIRST time (an
-// already-known id is never overwritten — the persisted file is the source of
-// truth once it exists). Best-effort persistence: a write failure is logged by the
-// caller's path; the in-memory value is still set so the tunnel can proceed.
+// adopt records the hub-assigned id and persists it to ~/.lattice/agent-id. The
+// in-memory id is set once and never overwritten (the file is the source of truth
+// once it exists), but persistence is RETRIED on every adopt until it succeeds:
+// adopt runs on each successful register, so if the first write fails (disk full,
+// permissions, unresolvable home) a later reconnect tries again instead of leaving
+// the box to flap to a brand-new hub-minted UUID — and orphan its sessions — on
+// every restart. A persist failure is logged loudly (with the path) rather than
+// swallowed; the in-memory value is still set so the editor tunnel can proceed.
 func (i *identity) adopt(id string) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return
 	}
 	i.mu.Lock()
-	already := i.id != ""
-	if !already {
+	if i.id == "" {
 		i.id = id
 	}
+	cur := i.id
+	needPersist := !i.persisted
 	i.mu.Unlock()
-	if !already {
-		_ = persistAgentID(id)
+	if !needPersist {
+		return
 	}
+	if err := persistAgentID(cur); err != nil {
+		log.Printf("agent: WARN persist agent-id failed (will retry on next register): %v", err)
+		return
+	}
+	i.mu.Lock()
+	i.persisted = true
+	i.mu.Unlock()
 }
 
 // agentIDPath is ~/.lattice/agent-id (the persistent id file).

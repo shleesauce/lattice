@@ -38,97 +38,122 @@ func checkSameOrigin(r *http.Request) bool {
 	return strings.EqualFold(u.Host, r.Host)
 }
 
+// routePolicy is the authorization a route requires. Centralizing this in a table
+// (rather than wrapping each handler by hand at its mux.HandleFunc) makes the whole
+// auth posture readable in one place AND means a new route can't silently ship
+// ungated — the wiring loop forces every entry to name a policy. The post-ship audit's
+// HIGH passwordless-hub holes existed precisely because privilege was wired per-handler
+// and three sibling handlers were missed; this is the prevent-recurrence seam.
+type routePolicy int
+
+const (
+	// policyOpen: no credential. Bootstrap/liveness/capability-nonce surfaces a peer
+	// must reach before (or without) an admin session. A handler so marked is trusted
+	// to self-gate if it needs to (e.g. handleSetup → setupAllowed).
+	policyOpen routePolicy = iota
+	// policyAuth: admin session/Bearer when a password hash is set; pass-through on a
+	// passwordless hub (the legacy "open on a trusted network" mode).
+	policyAuth
+	// policyAuthOrToken: like policyAuth, but ALSO demands the master token on a
+	// passwordless hub (for credential-bearing endpoints that hand out / mint secrets).
+	policyAuthOrToken
+	// policyPrivileged: RCE/destructive — the master token is required even on a
+	// passwordless hub. Composes admin-auth (when set) with the fail-closed token gate.
+	policyPrivileged
+	// policyTokenGated: authenticated INSIDE the handler by an enrollment token (the
+	// register frame / ?token=), not admin auth. Must never be admin-wrapped.
+	policyTokenGated
+)
+
+// gate turns a routePolicy into the middleware wrapper for a handler. Fails closed on
+// an unrecognized policy so a future enum value can't accidentally expose a route.
+func (h *Hub) gate(p routePolicy, fn http.HandlerFunc) http.HandlerFunc {
+	switch p {
+	case policyOpen, policyTokenGated:
+		return fn
+	case policyAuth:
+		return h.requireAuth(fn)
+	case policyAuthOrToken:
+		return h.requireAuthOrToken(fn)
+	case policyPrivileged:
+		// Admin-auth (a no-op pass on a passwordless hub) THEN the fail-closed
+		// privilege check — requirePrivileged assumes requireAuth already ran.
+		return h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+			if !h.requirePrivileged(w, r) {
+				return
+			}
+			fn(w, r)
+		})
+	default:
+		return func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "forbidden: unspecified route policy", http.StatusForbidden)
+		}
+	}
+}
+
 // routes wires the HTTP handlers: REST under /api, the two WS endpoints, and
 // the embedded dashboard with SPA fallback for everything else.
 func (h *Hub) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// OPEN (never gated): liveness, setup wizard, auth endpoints. /api/health in
-	// particular MUST stay open — the fleet watchdog + version tooling curl it
-	// unauthenticated.
-	mux.HandleFunc("/api/health", h.handleHealth)
+	// The complete authorization posture, one row per route (see routePolicy). Every
+	// new route must add a row here and pick a policy — there is no ungated default.
+	for _, rt := range []struct {
+		pattern string
+		policy  routePolicy
+		handler http.HandlerFunc
+	}{
+		// OPEN — no credential. /api/health is curled unauthenticated by the fleet
+		// watchdog + version tooling. The capability endpoints carry their own
+		// credential in the path/body (nonce / HookToken), NOT an admin session, so
+		// the phone/agent that hits them with no admin token must not be blocked.
+		{"/api/health", policyOpen, h.handleHealth},
+		{"/api/approvals/", policyOpen, h.handleApproval},   // single-use nonce in path = the credential
+		{"/api/hooks/state", policyOpen, h.handleHookState}, // per-session HookToken in body = the credential
+		{"/api/setup/status", policyOpen, h.handleSetupStatus},
+		{"/api/setup/check-root", policyOpen, h.handleSetupCheckRoot},
+		{"/api/setup", policyOpen, h.handleSetup}, // self-gates via setupAllowed (loopback OR token)
+		{"/api/auth/status", policyOpen, h.handleAuthStatus},
+		{"/api/auth/login", policyOpen, h.handleAuthLogin},
+		{"/api/auth/logout", policyOpen, h.handleAuthLogout},
+		{"/dl/", policyOpen, h.handleDownloadBinary},   // bootstrap: a new box has no credential yet
+		{"/install.sh", policyOpen, h.handleInstallSh}, // "
+		{"/install.ps1", policyOpen, h.handleInstallPs1},
 
-	// GATED (admin auth required when a password hash is configured; see auth.go).
-	mux.HandleFunc("/api/fleet", h.requireAuth(h.handleFleet))
-	mux.HandleFunc("/api/devices", h.requireAuth(h.handleDevices))
-	mux.HandleFunc("/api/enroll", h.requireAuth(h.handleEnroll))
-	// Phase 4: per-machine revocable enrollment tokens (admin ops). Distinct mux
-	// patterns from /api/enroll: the exact /api/enroll/tokens lists/mints, and the
-	// /api/enroll/tokens/ prefix parses {token}/revoke. requireAuthOrToken (NOT plain
-	// requireAuth) — these list/mint fleet enrollment credentials, so on a
-	// passwordless hub they must still demand the master token rather than ride the
-	// auth-off pass-through (mirrors handleEnroll, which hands out the same secret).
-	mux.HandleFunc("/api/enroll/tokens", h.requireAuthOrToken(h.handleEnrollTokens))
-	mux.HandleFunc("/api/enroll/tokens/", h.requireAuthOrToken(h.handleEnrollTokenItem))
-	mux.HandleFunc("/api/agents/", h.requireAuth(h.handleAgentSub))
+		// AUTH — admin session/Bearer when a password is set; pass-through otherwise.
+		{"/api/fleet", policyAuth, h.handleFleet},
+		{"/api/devices", policyAuth, h.handleDevices},
+		{"/api/enroll", policyAuth, h.handleEnroll},    // self-tightens to token via requireAuthOrToken inside
+		{"/api/agents/", policyAuth, h.handleAgentSub}, // per-ACTION privilege enforced in handleAgentSub
+		{"/api/projects", policyAuth, h.handleProjects},
+		{"/api/sessions", policyAuth, h.handleSessions},
+		{"/api/sessions/", policyAuth, h.handleSessions},
+		{"/api/workflows", policyAuth, h.handleWorkflows},
+		{"/api/placement", policyAuth, h.handlePlacement},
+		{"/api/settings", policyAuth, h.handleSettings},
+		{"/api/releases", policyAuth, h.handleReleases},
+		{"/ws/dashboard", policyAuth, h.handleDashboardWS},
+		{"/ws/terminal", policyAuth, h.handleTerminalWS},
+		{"/ws/session", policyAuth, h.handleSessionWS},
+		{"/editor/", policyAuth, h.handleEditorProxy},             // code-server over the tunnel (D27)
+		{"/preview/", policyAuth, h.handlePreviewProxy},           // dev server, STRIP mode (D32)
+		{"/fpreview/", policyAuth, h.handleFrameworkPreviewProxy}, // dev server, NO-STRIP (Vite/Next)
 
-	// Phase 3: workspace (projects → sessions, placement, audit, settings) — gated.
-	mux.HandleFunc("/api/projects", h.requireAuth(h.handleProjects))
-	mux.HandleFunc("/api/sessions", h.requireAuth(h.handleSessions))
-	mux.HandleFunc("/api/sessions/", h.requireAuth(h.handleSessions))
+		// AUTH-OR-TOKEN — credential-bearing: master token even on a passwordless hub.
+		// These list/mint fleet enrollment secrets, so they must not ride auth-off.
+		{"/api/enroll/tokens", policyAuthOrToken, h.handleEnrollTokens},
+		{"/api/enroll/tokens/", policyAuthOrToken, h.handleEnrollTokenItem},
 
-	// Workflow templates (E, v0.1.5): paste a GitHub issue/PR URL → a pre-briefed
-	// Claude session in a dedicated worktree, auto-placed. Admin-gated like the rest
-	// of the workspace API (it creates a session).
-	mux.HandleFunc("/api/workflows", h.requireAuth(h.handleWorkflows))
-	mux.HandleFunc("/api/placement", h.requireAuth(h.handlePlacement))
-	mux.HandleFunc("/api/settings", h.requireAuth(h.handleSettings))
-	// Release notes + update check (v0.1.5): recent GitHub releases with the running
-	// build flagged. Admin-gated like the rest of the workspace API.
-	mux.HandleFunc("/api/releases", h.requireAuth(h.handleReleases))
-	// One-click fleet auto-update (v0.1.5 / H): hub self-updates then cascades every
-	// agent in lockstep. Admin-gated — it swaps binaries fleet-wide.
-	mux.HandleFunc("/api/update", h.requireAuth(h.handleUpdate))
+		// PRIVILEGED — RCE/destructive: master token even on a passwordless hub.
+		{"/api/update", policyPrivileged, h.handleUpdate}, // swaps every machine's binary fleet-wide
 
-	// Fire-and-forget approve/deny (v0.1.5) — OPEN by design: the unguessable
-	// single-use nonce in the path is a capability credential (see handleApproval).
-	// The phone tapping the ntfy action button carries no admin token, so this must
-	// NOT be admin-gated; the nonce alone authorizes the one keystroke it injects.
-	mux.HandleFunc("/api/approvals/", h.handleApproval)
-
-	// Claude Code hook callbacks (C, v0.1.5) — OPEN by design like /api/approvals:
-	// the per-session HookToken in the body is the capability credential. The hook
-	// script runs on the agent box with no admin token, so this must NOT be
-	// admin-gated; the token alone authorizes the precise state edge it reports.
-	mux.HandleFunc("/api/hooks/state", h.handleHookState)
-
-	// Phase 2: first-run setup wizard (unauthenticated; gated 409 once complete).
-	mux.HandleFunc("/api/setup/status", h.handleSetupStatus)
-	mux.HandleFunc("/api/setup/check-root", h.handleSetupCheckRoot)
-	mux.HandleFunc("/api/setup", h.handleSetup)
-
-	// Phase 3: admin auth endpoints (open: these are how you obtain a session).
-	mux.HandleFunc("/api/auth/status", h.handleAuthStatus)
-	mux.HandleFunc("/api/auth/login", h.handleAuthLogin)
-	mux.HandleFunc("/api/auth/logout", h.handleAuthLogout)
-
-	// Packaging / enrollment (Phase 4): binary distribution + installers (open —
-	// bootstrap surfaces a new machine must reach before it has any credential).
-	mux.HandleFunc("/dl/", h.handleDownloadBinary)
-	mux.HandleFunc("/install.sh", h.handleInstallSh)
-	mux.HandleFunc("/install.ps1", h.handleInstallPs1)
-
-	// TOKEN-GATED agent surfaces: already authenticated by the enrollment token
-	// inside the handler (register frame / ?token=), NOT admin auth. Do not wrap.
-	mux.HandleFunc("/ws/agent", h.handleAgentWS)
-	mux.HandleFunc("/ws/tunnel", h.handleTunnelWS) // IDE: agent's 2nd dial-out (yamux editor tunnel, D27)
-
-	// Browser WS surfaces — admin-gated like the REST API.
-	mux.HandleFunc("/ws/dashboard", h.requireAuth(h.handleDashboardWS))
-	mux.HandleFunc("/ws/terminal", h.requireAuth(h.handleTerminalWS))
-	mux.HandleFunc("/ws/session", h.requireAuth(h.handleSessionWS))
-
-	// IDE: reverse-proxy an agent's embedded code-server over the tunnel (D27).
-	// /editor/{sessionId}/* — the trailing wildcard captures all workbench assets.
-	mux.HandleFunc("/editor/", h.requireAuth(h.handleEditorProxy))
-
-	// Preview: reverse-proxy an agent's dev server over the same tunnel (D32).
-	// /preview/{agentId}/{port}/* — STRIP mode, for dev servers with relative asset
-	// URLs, from any device that can reach the hub (phone included).
-	mux.HandleFunc("/preview/", h.requireAuth(h.handlePreviewProxy))
-	// /fpreview/{agentId}/{port}/* — NO-STRIP mode for framework dev servers
-	// (Vite / Next) launched with their base set to this prefix.
-	mux.HandleFunc("/fpreview/", h.requireAuth(h.handleFrameworkPreviewProxy))
+		// TOKEN-GATED — authenticated inside the handler by the enrollment token
+		// (register frame / ?token=), NOT admin auth. Must NOT be admin-wrapped.
+		{"/ws/agent", policyTokenGated, h.handleAgentWS},
+		{"/ws/tunnel", policyTokenGated, h.handleTunnelWS}, // agent's 2nd dial-out (yamux editor tunnel, D27)
+	} {
+		mux.HandleFunc(rt.pattern, h.gate(rt.policy, rt.handler))
+	}
 
 	mux.Handle("/", h.staticHandler())
 	return mux

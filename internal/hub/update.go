@@ -109,12 +109,9 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RCE-class: a fleet update swaps every machine's binary. Fail closed even on a
-	// passwordless hub (see requirePrivileged) — this must never ride the auth-off
-	// pass-through.
-	if !h.requirePrivileged(w, r) {
-		return
-	}
+	// RCE-class (swaps every machine's binary): gated by policyPrivileged at the route
+	// (see routePolicy/gate), so it fails closed with the master token even on a
+	// passwordless hub BEFORE this handler runs — no inline guard needed here.
 
 	// Single-flight: reject an overlapping cascade (impatient double-click, two
 	// tabs) so agents can't be double-restarted mid-update (v0.1.8). Released when

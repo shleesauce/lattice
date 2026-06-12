@@ -72,6 +72,18 @@ func Apply(ctx context.Context, opts Options) (string, error) {
 	dir := filepath.Dir(target)
 
 	client := &http.Client{Timeout: 60 * time.Second}
+	// Re-validate every redirect hop with the same HTTPS-pin rule. Without this, a
+	// pinned https base that 301s to a plain-http mirror would have its binary AND
+	// SHA256SUMS travel over http while requireSecureBase (first hop only) still
+	// passes. Skipped entirely under --insecure (the operator already opted out).
+	if !opts.Insecure {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after %d redirects", len(via))
+			}
+			return requireSecureURL(req.URL)
+		}
+	}
 
 	// Download the new binary into the SAME directory as the target so the final
 	// rename stays on one filesystem and is atomic.
@@ -178,6 +190,16 @@ func requireSecureBase(base string) error {
 	if err != nil {
 		return fmt.Errorf("invalid download base %q: %w", base, err)
 	}
+	return requireSecureURL(u)
+}
+
+// requireSecureURL applies the HTTPS-pin rule (https OR loopback OR the explicit
+// LATTICE_DOWNLOAD_INSECURE opt-out) to a single parsed URL. Used both for the
+// configured base and for EACH redirect hop (see the client's CheckRedirect): a
+// pinned https base that 301s to a plain-http mirror would otherwise re-open the
+// exact in-transit surface the pin closes, since Go's default client follows
+// https→http redirects silently.
+func requireSecureURL(u *url.URL) error {
 	if u.Scheme == "https" {
 		return nil
 	}
@@ -185,10 +207,10 @@ func requireSecureBase(base string) error {
 		return nil
 	}
 	if os.Getenv("LATTICE_DOWNLOAD_INSECURE") == "1" {
-		fmt.Fprintf(os.Stderr, "lattice: warning: using INSECURE plain-http download base %q (LATTICE_DOWNLOAD_INSECURE=1)\n", base)
+		fmt.Fprintf(os.Stderr, "lattice: warning: using INSECURE plain-http download URL %q (LATTICE_DOWNLOAD_INSECURE=1)\n", u.Redacted())
 		return nil
 	}
-	return fmt.Errorf("refusing insecure download base %q: must be https (set LATTICE_DOWNLOAD_INSECURE=1 to allow plain http for local testing)", base)
+	return fmt.Errorf("refusing insecure download URL %q: must be https (set LATTICE_DOWNLOAD_INSECURE=1 to allow plain http for local testing)", u.Redacted())
 }
 
 // isLoopbackHost reports whether host is the loopback interface by name or IP.

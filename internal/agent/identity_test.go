@@ -84,7 +84,10 @@ func TestInstanceIDStability(t *testing.T) {
 	if processInstanceID == "" {
 		t.Fatal("process instance id must be non-empty")
 	}
-	if randomHex(16) == randomHex(16) {
+	// Two separate calls (held in vars so staticcheck doesn't read it as one
+	// identical expression compared to itself) must differ.
+	a, b := randomHex(16), randomHex(16)
+	if a == b {
 		t.Fatal("randomHex must produce distinct values")
 	}
 	if newIdentity().instance != processInstanceID {

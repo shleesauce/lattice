@@ -30,7 +30,7 @@ func mockRelease(t *testing.T, body []byte, checksum string) string {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		_, _ = fmt.Fprintf(w, "%s  %s\n", checksum, asset)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -89,7 +89,7 @@ func TestApplyRejectsAssetNotListed(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/"+assetName(), func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) })
 	mux.HandleFunc("/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s  some-other-file\n", sum(body))
+		_, _ = fmt.Fprintf(w, "%s  some-other-file\n", sum(body))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

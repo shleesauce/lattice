@@ -17,8 +17,10 @@ $Base = if ($env:LATTICE_DOWNLOAD_BASE) { $env:LATTICE_DOWNLOAD_BASE } else { 'h
 # OR the host is loopback, OR LATTICE_DOWNLOAD_INSECURE=1 (same opt-out as the Go side,
 # for local mock-cascade testing). The default GitHub https base passes.
 $baseUri = [uri]$Base
+# DnsSafeHost (not .Host) strips the brackets from an IPv6 literal, so [::1] matches
+# the loopback list; .Host keeps them ([::1]) and would never match.
 if ($baseUri.Scheme -ne 'https' -and
-    $baseUri.Host -notin @('localhost', '127.0.0.1', '::1') -and
+    $baseUri.DnsSafeHost -notin @('localhost', '127.0.0.1', '::1') -and
     $env:LATTICE_DOWNLOAD_INSECURE -ne '1') {
   throw "lattice: refusing to download over an insecure transport: $Base - must be https (set `$env:LATTICE_DOWNLOAD_INSECURE='1' to override for local testing)"
 }

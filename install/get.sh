@@ -14,6 +14,11 @@
 # target — so the advertised `curl … | sh` one-liner died on this line. Use `set -eu`.
 set -eu
 
+# USER isn't guaranteed set in headless contexts (cloud-init, `ssh host 'curl|sh'`);
+# under `set -u` a bare $USER expansion would be fatal AFTER the hub is installed
+# (enable_linger + the systemd tip line use it). Resolve it once, defensively.
+USER="${USER:-$(id -un 2>/dev/null || echo unknown)}"
+
 BASE="${LATTICE_DOWNLOAD_BASE:-https://github.com/shleesauce/lattice/releases/latest/download}"
 
 # --- HTTPS-pin the download transport (mirrors the Go updater's requireSecureBase) ---
@@ -24,12 +29,17 @@ BASE="${LATTICE_DOWNLOAD_BASE:-https://github.com/shleesauce/lattice/releases/la
 case "$BASE" in
   https://*) ;;
   *)
-    # Strip scheme, then take the host portion (up to the first '/' or ':').
+    # Strip scheme, then take the host portion (up to the first '/').
     _rest="${BASE#*://}"
     _hostport="${_rest%%/*}"
-    _host="${_hostport%%:*}"
+    case "$_hostport" in
+      # Bracketed IPv6 literal (e.g. [::1]:8000): take what's INSIDE the brackets,
+      # else %%:* cuts at the first inner colon and yields a bare "[".
+      \[*) _host="${_hostport#\[}"; _host="${_host%%\]*}" ;;
+      *)   _host="${_hostport%%:*}" ;;
+    esac
     case "$_host" in
-      localhost|127.0.0.1|::1|"[::1]") ;;
+      localhost|127.0.0.1|::1) ;;
       *)
         if [ "${LATTICE_DOWNLOAD_INSECURE:-}" = "1" ]; then
           echo "lattice: warning: using INSECURE plain-http download base $BASE (LATTICE_DOWNLOAD_INSECURE=1)" >&2

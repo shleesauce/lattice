@@ -6,6 +6,10 @@
 #         LATTICE_TOKEN=CODE  curl -fsSL {{.HubURL}}/install.sh | sh
 set -eu
 
+# USER isn't guaranteed set in headless contexts; under `set -u` a bare $USER
+# expansion (enable_linger + the systemd tip line) would be fatal. Resolve once.
+USER="${USER:-$(id -un 2>/dev/null || echo unknown)}"
+
 HUB_URL="{{.HubURL}}"
 HUB="{{.HubHostPort}}"
 TOKEN="${LATTICE_TOKEN:-}"

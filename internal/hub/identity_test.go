@@ -7,9 +7,11 @@ import (
 	"github.com/shleesauce/lattice/internal/proto"
 )
 
-// TestResolveAgentID covers the three identity-resolution paths that make the
-// live-fleet migration safe: trust a persisted UUID, reuse a legacy id for an
-// already-enrolled box (no orphaning), mint a fresh UUID for a brand-new box.
+// TestResolveAgentID covers the identity-resolution paths that make the live-fleet
+// migration safe: trust a persisted UUID, reuse a legacy id for an already-enrolled
+// box (no orphaning), mint a fresh UUID for a brand-new v0.2.0 box, and pin a
+// pre-v0.2.0 agent (no InstanceID, can't persist) to the legacy id even when no
+// record exists yet — minting an id it would forget on restart would orphan it.
 func TestResolveAgentID(t *testing.T) {
 	t.Run("trusts persisted AgentUUID verbatim", func(t *testing.T) {
 		reg := proto.RegisterPayload{AgentUUID: "fixed-uuid-123", Hostname: "studio", OS: "darwin"}
@@ -32,8 +34,10 @@ func TestResolveAgentID(t *testing.T) {
 		}
 	})
 
-	t.Run("mints a fresh UUID for a brand-new box", func(t *testing.T) {
-		reg := proto.RegisterPayload{Hostname: "laptop", OS: "darwin"}
+	t.Run("mints a fresh UUID for a brand-new v0.2.0 box", func(t *testing.T) {
+		// A v0.2.0 agent carries an InstanceID even before it has a persisted id, so
+		// it can store whatever the hub assigns — minting is safe.
+		reg := proto.RegisterPayload{Hostname: "laptop", OS: "darwin", InstanceID: "inst-a"}
 		legacy := agentID(reg.Hostname, reg.OS)
 		got := resolveAgentID(reg, func(string) bool { return false }) // nothing enrolled yet
 		if got == "" || got == legacy {
@@ -44,6 +48,18 @@ func TestResolveAgentID(t *testing.T) {
 		got2 := resolveAgentID(reg, func(string) bool { return false })
 		if got2 == got {
 			t.Fatalf("two same-hostname new boxes collided on %q", got)
+		}
+	})
+
+	t.Run("pins a pre-v0.2.0 agent to the legacy id without minting", func(t *testing.T) {
+		// No AgentUUID and no InstanceID ⇒ pre-v0.2.0: it can't persist a minted id,
+		// so even with NO existing record it must get the stable legacy id (not a
+		// fresh UUID it would forget on restart, orphaning its sessions every time).
+		reg := proto.RegisterPayload{Hostname: "oldbox", OS: "linux"}
+		legacy := agentID(reg.Hostname, reg.OS)
+		got := resolveAgentID(reg, func(string) bool { return false }) // nothing enrolled yet
+		if got != legacy {
+			t.Fatalf("got %q want legacy %q (a pre-v0.2.0 agent must never be minted a UUID)", got, legacy)
 		}
 	})
 }

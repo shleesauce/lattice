@@ -38,14 +38,19 @@ const banishTTL = 60 * time.Second
 //
 //   - A non-empty AgentUUID (a v0.2.0 agent that has a persisted id) is trusted
 //     and used verbatim — that IS the machine's stable identity.
-//   - An empty AgentUUID (a pre-v0.2.0 agent, or a brand-new box on first run)
-//     falls back to the legacy hostname+os id ONLY when a record already exists
-//     under it — i.e. an already-enrolled machine, so reusing it keeps that box's
-//     sessions/labels attached (no orphaning, the critical live-fleet migration
-//     guarantee). Otherwise it mints a fresh random UUID, which the agent then
-//     persists. Because a minted id is stored under the UUID (never under
-//     hostname+os), a SECOND new box with the same hostname does NOT find a legacy
-//     record and gets its OWN distinct UUID — collisions are structurally gone.
+//   - An empty AgentUUID but a non-empty InstanceID is a v0.2.0 agent on its very
+//     first run (it can and WILL persist whatever id it's assigned): reuse the
+//     legacy hostname+os id when a record already exists under it (an already-
+//     enrolled machine, so its sessions/labels stay attached — the live-fleet
+//     migration guarantee), otherwise mint a fresh random UUID. Because a minted id
+//     is stored under the UUID (never under hostname+os), a SECOND new box with the
+//     same hostname does NOT find a legacy record and gets its OWN distinct UUID —
+//     collisions are structurally gone.
+//   - An empty AgentUUID AND empty InstanceID is a pre-v0.2.0 agent that CANNOT
+//     persist a hub-minted id. Minting one would orphan its sessions and re-mint a
+//     brand-new id on every restart, so it is pinned to the stable legacy
+//     hostname+os id regardless of record existence — this is the documented
+//     "mixed-version fleet degrades to legacy" guarantee.
 //
 // exists reports whether a persisted agent record already has that id.
 func resolveAgentID(reg proto.RegisterPayload, exists func(string) bool) string {
@@ -53,6 +58,11 @@ func resolveAgentID(reg proto.RegisterPayload, exists func(string) bool) string 
 		return id
 	}
 	legacy := agentID(reg.Hostname, reg.OS)
+	// A peer that sends no InstanceID is pre-v0.2.0 and can't persist an assigned id;
+	// never mint a UUID it would forget on restart — pin it to the legacy id.
+	if strings.TrimSpace(reg.InstanceID) == "" {
+		return legacy
+	}
 	if exists(legacy) {
 		return legacy
 	}

@@ -43,6 +43,9 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .mrow.off { opacity: .62; }
 .mrow .wake-mini { opacity: 0; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 7px; color: var(--blue); border: 1px solid var(--border-focus); transition: opacity var(--dur) var(--ease); }
 .mrow.off:hover .wake-mini { opacity: 1; }
+/* Keyboard parity: reveal the wake button when it (or its row) is keyboard-focused
+   so it isn't an invisible tab stop for keyboard/AT users. */
+.mrow .wake-mini:focus-visible, .mrow.off:focus-within .wake-mini { opacity: 1; }
 .mrow .wake-mini:hover { background: var(--fill-blue); }
 
 /* projects header controls — filter + new */
@@ -601,6 +604,10 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
       segmented control + search + version + settings always fit one row. ── */
 @media (max-width: 900px) {
   .cr3 { grid-template-columns: 220px 1fr 280px; }
+  /* The rail's fixed 248px width ignores the shrunk 220px grid track and overflows
+     under the map (which paints above it), hiding the status text + wake button.
+     Let the grid track size it. */
+  .cr3 .rail { width: auto; }
   .topbar { gap: 10px; }
   .topbar .tb-stat { display: none; }
   /* Search shrinks (and absorbs the freed space) before the seg control does. */

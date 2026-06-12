@@ -117,7 +117,16 @@ export function FleetMap({
       layout(w, h)
     }
     resize()
-    const ro = new ResizeObserver(resize)
+    // Repaint after a resize when the rAF loop ISN'T running (reduced motion or a
+    // hidden tab): resize() reassigns cvs.width/height, which clears the canvas
+    // bitmap, and only the loop repaints — so without this the map blanks on every
+    // resize and even on the ResizeObserver's guaranteed initial post-mount
+    // notification (which fires after sync()). renderStaticRef is the established
+    // "paint one frame off-loop" seam; raf!==0 means the loop already owns repaint.
+    const ro = new ResizeObserver(() => {
+      resize()
+      if (!raf) renderStaticRef.current()
+    })
     ro.observe(wrap)
 
     const { alive: GREEN, idle: IDLE, detached: BLUE, reachable: DOWN, waking: YELLOW, offline: EXIT } = NODE_COLORS

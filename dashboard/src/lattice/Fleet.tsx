@@ -74,6 +74,10 @@ export function Fleet({
                 aria-label={`${mc.label} — ${STATUS_LABEL[mc.status]}`}
                 onClick={() => onSelect(mc.id)}
                 onKeyDown={(e) => {
+                  // Don't hijack keys from a nested control (the wake button): its
+                  // Enter/Space bubbles here and this preventDefault() would cancel
+                  // the button's native activation, making wake mouse-only.
+                  if (e.target !== e.currentTarget) return
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
                     onSelect(mc.id)

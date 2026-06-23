@@ -1,55 +1,60 @@
 #!/usr/bin/env bash
-# Lattice fleet-sync — keep every agent on the SAME current build, persistently.
+# Lattice fleet-sync - keep every agent on the SAME current build, persistently.
 #
-# The fix for version skew (found in the 2026-06-01 audit: studio/mbp/emu/mini-ops
-# were on three different -dirty builds). Run this after any agent/proto change:
+# The fix for version skew (agents drifting onto different -dirty builds with no
+# mechanism to keep them in lockstep). Run this after any agent/proto change:
 #   1. rebuild the dashboard + cross-compile every target (scripts/build.sh)
 #   2. restart the local hub so it serves the new binaries at /dl + the new SPA
 #   3. re-run the hub installer ON each agent box over SSH, which downloads the
 #      fresh binary AND (re)installs the OS-native persistence (launchd on macOS,
-#      scheduled task on Windows) — so a sync never downgrades durability.
+#      scheduled task on Windows) - so a sync never downgrades durability.
 #
 # Why the installer and not deploy-fleet.sh: deploy-fleet.sh uses nohup (no
-# persistence — that's how mbp/pc drifted/dropped before). The hub installer is
+# persistence - that's how agents drifted/dropped before). The hub installer is
 # the canonical D14 path and lays down launchd/schtasks, matching D33's always-on.
 #
-# Targets are the agent-backed Macs + the Windows box. mini-ops (the hub host) is
-# rebuilt+restarted directly here, not over SSH. Kinzie's machines are excluded by
-# the hub itself (devices.go) and were never agents, so they're untouched.
+# Targets come from scripts/fleet.env (LATTICE_FLEET). The hub host itself is
+# rebuilt+restarted directly here, not over SSH.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-TOKEN="$(cat .lattice-token)"
-HUB_TS="mini-ops.tail3c8bee.ts.net:7400"   # tailnet URL agents dial
-HUB_LOCAL="http://localhost:7400"
+TOKEN="$(cat .lattice-token 2>/dev/null)"
+[ -n "$TOKEN" ] || { echo "lattice: no token in .lattice-token" >&2; exit 1; }
 
-# Agent boxes to sync: "ssh_alias:lattice_name:os". mini-ops handled separately.
-TARGETS=(
-  "studio:studio:darwin"
-  "mbp:mbp:darwin"
-  "emu:emu:darwin"
-  "pc:pc:windows"
-)
+# Verify step pipes hub JSON into inline python3; without it the sync can't
+# confirm the fleet came back. Fail fast rather than skipping verification.
+command -v python3 >/dev/null || { echo "lattice: python3 required" >&2; exit 1; }
+
+# Operator-local fleet config (gitignored). See scripts/fleet.env.example.
+FLEET_ENV="$(dirname "$0")/fleet.env"
+[ -f "$FLEET_ENV" ] || { echo "missing $FLEET_ENV - copy scripts/fleet.env.example"; exit 1; }
+# shellcheck disable=SC1090
+. "$FLEET_ENV"
+HUB_TS="$LATTICE_HUB_TS"        # tailnet URL agents dial
+HUB_LOCAL="$LATTICE_HUB_LOCAL"
+# Agent boxes to sync: "ssh_alias:lattice_name:os". The hub host is handled
+# separately above (rebuilt+restarted directly, not over SSH).
+TARGETS=("${LATTICE_FLEET[@]}")
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 # 1. Rebuild everything (dashboard embed + all cross-compiled binaries).
 say "building (dashboard + all targets)"
 if ! bash scripts/build.sh; then
-  echo "build failed — aborting sync (fleet left untouched)"; exit 1
+  echo "build failed - aborting sync (fleet left untouched)"; exit 1
 fi
 
 # 2. Restart the local hub so it serves the fresh binaries + SPA.
 say "restarting local hub (pm2 lattice-hub)"
-pm2 restart lattice-hub >/dev/null 2>&1 || echo "  WARN: pm2 restart lattice-hub failed — is pm2 up?"
+pm2 restart lattice-hub >/dev/null 2>&1 || echo "  WARN: pm2 restart lattice-hub failed - is pm2 up?"
 # Give it a moment, then health-check.
 for _ in 1 2 3 4 5; do
   code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$HUB_LOCAL/api/devices" 2>/dev/null)"
   [ "$code" = 200 ] && break
   sleep 1
 done
-[ "${code:-}" = 200 ] && echo "  hub healthy ($code)" || { echo "  hub not healthy ($code) — aborting"; exit 1; }
+[ "${code:-}" = 200 ] && echo "  hub healthy ($code)" || { echo "  hub not healthy ($code) - aborting"; exit 1; }
 
 # 3. Re-run the hub installer on each agent box (downloads fresh binary +
 #    re-lays persistence). The installer restarts the agent itself.
@@ -66,8 +71,10 @@ for entry in "${TARGETS[@]}"; do
       FAILED+=("$name"); echo "  $name: install FAILED"
     fi
   else
+    # Token via LATTICE_TOKEN env (matches the Windows path) so it never lands in
+    # the remote `ps`/argv while the installer runs; --name preserved.
     if ssh -o ConnectTimeout=20 -o BatchMode=yes "$alias" \
-        "curl -fsSL http://$HUB_TS/install.sh | sh -s -- --token $TOKEN --name $name" 2>&1 | tail -4; then
+        "LATTICE_TOKEN='$TOKEN' sh -c 'curl -fsSL http://$HUB_TS/install.sh | sh -s -- --name $name'" 2>&1 | tail -4; then
       :
     else
       FAILED+=("$name"); echo "  $name: install FAILED"
@@ -94,7 +101,7 @@ for x in d:
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
   echo
-  echo "SYNC INCOMPLETE — failed: ${FAILED[*]}"
+  echo "SYNC INCOMPLETE - failed: ${FAILED[*]}"
   exit 1
 fi
-say "fleet-sync complete — all agents on $(git describe --tags --always --dirty 2>/dev/null || echo current)"
+say "fleet-sync complete - all agents on $(git describe --tags --always --dirty 2>/dev/null || echo current)"

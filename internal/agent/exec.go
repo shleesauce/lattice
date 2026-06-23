@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // outputChunk is the byte size of each streamed read; small enough to feel live,
@@ -102,13 +102,5 @@ func sendExit(ctx context.Context, outbound chan<- []byte, cmdID string, code in
 	if runErr != nil {
 		payload.Error = runErr.Error()
 	}
-	frame, err := proto.Encode(proto.TypeCommandExit, payload)
-	if err != nil {
-		log.Printf("agent: encode exit: %v", err)
-		return
-	}
-	select {
-	case outbound <- frame:
-	case <-ctx.Done():
-	}
+	sendFrame(ctx, outbound, proto.TypeCommandExit, payload)
 }

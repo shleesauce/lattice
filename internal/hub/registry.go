@@ -9,7 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // Agent is the JSON shape served over REST and inside fleet WS events. Keys
@@ -35,6 +35,10 @@ type Agent struct {
 	// surfaced so an OFFLINE machine can still be woken (WoL) by a peer on its
 	// LAN. Filled from the most recent heartbeat (live or persisted).
 	MACs []string `json:"macs"`
+	// LANIPs are the agent's last-known private IPv4 CIDRs (e.g. 192.168.1.46/24).
+	// The hub matches a sleeper's last-known subnet against live agents' subnets
+	// to pick a WoL relay on the SAME broadcast domain (v0.1.5 Phase F).
+	LANIPs []string `json:"lanIPs"`
 	// Capabilities is what the agent can run (Phase 3, D19). Drives placement's
 	// hard filter and is shown in the fleet view.
 	Capabilities proto.Capabilities `json:"capabilities"`
@@ -55,9 +59,14 @@ type agentConn struct {
 	os       string
 	arch     string
 	version  string
-	conn     *websocket.Conn
-	local    bool // WS connected from loopback ⇒ co-located with the hub host
-	writeMu  sync.Mutex
+	// instanceID is the agent's per-process nonce (v0.2.0). Two live conns for one
+	// id with DIFFERENT instanceIDs are two rival processes (a duel); a benign
+	// network reconnect re-dials with the SAME instanceID. Empty for a pre-v0.2.0
+	// agent (duel detection then degrades off — both sides must be non-empty).
+	instanceID string
+	conn       *websocket.Conn
+	local      bool // WS connected from loopback ⇒ co-located with the hub host
+	writeMu    sync.Mutex
 
 	mu       sync.Mutex
 	metrics  proto.HeartbeatPayload
@@ -66,16 +75,27 @@ type agentConn struct {
 	online   bool
 }
 
+// wsSend is the one place a gorilla WebSocket text frame is written: it takes the
+// write lock, optionally honors a closed flag (skip the write on an already-closed
+// bridge), sets the per-call write deadline, and writes the frame. b is the
+// already-marshaled payload. closed may be nil for conns that have no close flag.
+func wsSend(conn *websocket.Conn, mu *sync.Mutex, closed *bool, deadline time.Duration, b []byte) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if closed != nil && *closed {
+		return nil
+	}
+	conn.SetWriteDeadline(time.Now().Add(deadline))
+	return conn.WriteMessage(websocket.TextMessage, b)
+}
+
 // send marshals an envelope and writes it as a WS text frame under the lock.
 func (a *agentConn) send(t proto.MessageType, payload any) error {
 	b, err := proto.Encode(t, payload)
 	if err != nil {
 		return err
 	}
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	a.conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout))
-	return a.conn.WriteMessage(websocket.TextMessage, b)
+	return wsSend(a.conn, &a.writeMu, nil, agentWriteTimeout, b)
 }
 
 // isLive reports whether the agent has heartbeated within the window — used to
@@ -122,13 +142,14 @@ func (a *agentConn) view(window time.Duration, now time.Time) Agent {
 		LoadAvg1:     a.metrics.LoadAvg1,
 		CPUCount:     a.metrics.CPUCount,
 		MACs:         copyMACs(a.metrics.MACs),
+		LANIPs:       copyMACs(a.metrics.LANIPs),
 		Capabilities: a.caps,
 		Local:        a.local,
 	}
 }
 
-// copyMACs returns a non-nil copy so the JSON view always serializes "macs" as
-// [] rather than null.
+// copyMACs returns a non-nil copy so the JSON view always serializes a string
+// slice (macs / lanIPs) as [] rather than null.
 func copyMACs(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)
@@ -146,10 +167,18 @@ func (d *dashboardConn) send(obj any) error {
 	if err != nil {
 		return err
 	}
+	return wsSend(d.conn, &d.writeMu, nil, agentWriteTimeout, b)
+}
+
+// ping writes a WebSocket ping control frame under the same write lock the data
+// pushes use, so the keepalive can never interleave with a broadcast on the same
+// gorilla conn (which is not safe for concurrent writes). The read loop's pong
+// handler refreshes the read deadline when the browser answers.
+func (d *dashboardConn) ping() error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	d.conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout))
-	return d.conn.WriteMessage(websocket.TextMessage, b)
+	return d.conn.WriteMessage(websocket.PingMessage, nil)
 }
 
 // terminalConn is a live browser↔hub terminal WebSocket bridge. gorilla
@@ -162,19 +191,14 @@ type terminalConn struct {
 	closed  bool
 }
 
-// send writes a JSON object to the browser terminal conn under its write lock.
+// send writes a JSON object to the browser terminal conn under its write lock,
+// skipping the write if the bridge has already been closed.
 func (t *terminalConn) send(obj any) error {
 	b, err := json.Marshal(obj)
 	if err != nil {
 		return err
 	}
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
-	if t.closed {
-		return nil
-	}
-	t.conn.SetWriteDeadline(time.Now().Add(terminalWriteTimeout))
-	return t.conn.WriteMessage(websocket.TextMessage, b)
+	return wsSend(t.conn, &t.writeMu, &t.closed, terminalWriteTimeout, b)
 }
 
 // close marks the bridge closed and closes the underlying connection once.
@@ -253,10 +277,18 @@ func (r *Registry) removeTunnel(agentID string, s *yamux.Session) {
 }
 
 // putTerminal maps a termId to its browser bridge.
+// putTerminal stores or replaces a browser bridge by termId/sessionId. When it
+// displaces an existing bridge for the same key (a re-attach to a session),
+// it closes the old bridge so its read loop errors out and the now-orphaned
+// browser socket doesn't linger half-open until its read deadline.
 func (r *Registry) putTerminal(termID string, t *terminalConn) {
 	r.termMu.Lock()
-	defer r.termMu.Unlock()
+	old := r.terms[termID]
 	r.terms[termID] = t
+	r.termMu.Unlock()
+	if old != nil && old != t {
+		old.close()
+	}
 }
 
 // getTerminal returns the browser bridge for a termId.
@@ -304,15 +336,25 @@ func (r *Registry) clearPending(reqID string) {
 	r.pendMu.Unlock()
 }
 
-// putAgent stores or replaces an agent connection by id.
+// putAgent stores or replaces an agent connection by id. When it displaces a
+// previous connection for the same id (a reconnect under the deterministic
+// agent id — laptop wake, NAT rebind), it closes the old socket so its parked
+// readLoop errors out immediately instead of lingering until the read deadline.
 func (r *Registry) putAgent(a *agentConn) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	old := r.agents[a.id]
 	r.agents[a.id] = a
+	r.mu.Unlock()
+	if old != nil && old != a {
+		old.conn.Close()
+	}
 }
 
-// removeAgent removes a connection only if it is still the registered one.
-func (r *Registry) removeAgent(a *agentConn) {
+// removeAgent removes a connection only if it is still the registered one. It
+// reports whether it actually deleted, so a stale connection's deferred cleanup
+// can skip side effects (orphaning sessions, broadcasting) that would clobber
+// the live reconnected agent sharing the same id.
+func (r *Registry) removeAgent(a *agentConn) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur, ok := r.agents[a.id]; ok && cur == a {
@@ -320,7 +362,9 @@ func (r *Registry) removeAgent(a *agentConn) {
 		cur.online = false
 		cur.mu.Unlock()
 		delete(r.agents, a.id)
+		return true
 	}
+	return false
 }
 
 // getAgent returns the live connection for an id.
@@ -329,6 +373,27 @@ func (r *Registry) getAgent(id string) (*agentConn, bool) {
 	defer r.mu.RUnlock()
 	a, ok := r.agents[id]
 	return a, ok
+}
+
+// liveAgent returns the connection for an id only if it is registered AND has
+// heartbeated within offlineAfter. It folds the registered+isLive(offlineAfter)
+// two-step every request handler needs into one call.
+func (r *Registry) liveAgent(id string) (*agentConn, bool) {
+	a, ok := r.getAgent(id)
+	if !ok || !a.isLive(offlineAfter) {
+		return nil, false
+	}
+	return a, true
+}
+
+// liveAgentCount returns how many agents are currently connected, from the
+// in-memory registry only — no DB round-trip. Used by the unauthenticated
+// /api/health liveness probe so a health-hammer can't starve the single SQLite
+// connection by recomputing fleet() (up to 3 DB reads) on every hit.
+func (r *Registry) liveAgentCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.agents)
 }
 
 // snapshot returns the current fleet as dashboard Agent objects.

@@ -1,18 +1,26 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createSession, fetchSettings, previewPlacement } from '../../api'
-import type { Agent, PlacementCandidate, PlacementResult, Project, SessionKind, SessionWithPlacement } from '../../types'
+import { canHostClaude, CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, type Agent, type PlacementCandidate, type PlacementResult, type Project, type SessionKind, type SessionWithPlacement } from '../../types'
+import type { LoadState } from '../../useWorkspace'
+import { parseHubError } from '../../lib/hubError'
+import { Modal } from '../Modal'
+import { Icon } from '../../lattice/Icon'
 
 // Either start a session inside a synced project (auto-placed across the mesh)
 // or directly on one machine to do device-local work. The two flows share the
 // kind/title controls but differ on placement: projects preview + override,
-// devices are pinned by definition.
+// devices are pinned by definition. A project target may carry a pre-selected
+// project (launched from the sidebar) or null (launched from ⌘K / empty state) —
+// when null the dialog opens on a searchable picker over every project.
 export type NewSessionTarget =
-  | { kind: 'project'; project: Project }
+  | { kind: 'project'; project: Project | null }
   | { kind: 'device'; agent: Agent }
 
 interface Props {
   target: NewSessionTarget
   agents: Agent[]
+  projects: Project[]
+  projectsState: LoadState
   onClose: () => void
   onCreated: (res: SessionWithPlacement) => void
 }
@@ -22,28 +30,82 @@ function agentLabel(agents: Agent[], id: string): string {
   return a?.name || a?.hostname || id.slice(0, 8)
 }
 
-export function NewSessionDialog({ target, agents, onClose, onCreated }: Props) {
-  if (target.kind === 'device') {
-    return <DeviceSessionDialog agent={target.agent} onClose={onClose} onCreated={onCreated} />
+export function NewSessionDialog({ target, agents, projects, projectsState, onClose, onCreated }: Props) {
+  // A session can run inside a synced PROJECT (auto-placed across the mesh) or
+  // DEVICE-LOCAL on one machine. When the dialog is opened on a device we still
+  // let the user flip to a project — so "select a project" is reachable from
+  // whichever prompt they opened. Launched from a project there's no specific
+  // device to pin, so the flip isn't offered (placement chooses the machine).
+  const deviceAgent = target.kind === 'device' ? target.agent : null
+  const initialProject = target.kind === 'project' ? target.project : null
+  const [scope, setScope] = useState<'project' | 'device'>(target.kind)
+
+  const scopeTabs = deviceAgent ? (
+    <ScopeTabs scope={scope} onScope={setScope} deviceName={deviceAgent.hostname || deviceAgent.name || deviceAgent.id.slice(0, 8)} />
+  ) : null
+
+  if (scope === 'device' && deviceAgent) {
+    return <DeviceSessionDialog agent={deviceAgent} scopeTabs={scopeTabs} onClose={onClose} onCreated={onCreated} />
   }
-  return <ProjectSessionDialog project={target.project} agents={agents} onClose={onClose} onCreated={onCreated} />
+  return (
+    <ProjectSessionDialog
+      initialProject={initialProject}
+      projects={projects}
+      projectsState={projectsState}
+      agents={agents}
+      scopeTabs={scopeTabs}
+      onClose={onClose}
+      onCreated={onCreated}
+    />
+  )
+}
+
+// Segmented Project ⇄ This-device switch, shown when the dialog was opened on a
+// device so the user can flip to a project picker (and back) without reopening.
+function ScopeTabs({ scope, onScope, deviceName }: { scope: 'project' | 'device'; onScope: (s: 'project' | 'device') => void; deviceName: string }) {
+  return (
+    <div className="scope-tabs">
+      <button type="button" className={`scope-tab${scope === 'project' ? ' on' : ''}`} onClick={() => onScope('project')}>
+        <Icon name="folder" size={13} />
+        Project
+      </button>
+      <button type="button" className={`scope-tab${scope === 'device' ? ' on' : ''}`} onClick={() => onScope('device')}>
+        <Icon name="server" size={13} />
+        {deviceName}
+      </button>
+    </div>
+  )
 }
 
 // ───────────────────────────── project target ─────────────────────────────
 
 function ProjectSessionDialog({
-  project,
+  initialProject,
+  projects,
+  projectsState,
   agents,
+  scopeTabs,
   onClose,
   onCreated,
 }: {
-  project: Project
+  initialProject: Project | null
+  projects: Project[]
+  projectsState: LoadState
   agents: Agent[]
+  scopeTabs?: React.ReactNode
   onClose: () => void
   onCreated: (res: SessionWithPlacement) => void
 }) {
+  // The chosen project. null until picked — opens straight on the picker when
+  // launched without a project (⌘K / empty state).
+  const [project, setProject] = useState<Project | null>(initialProject)
+  const [picking, setPicking] = useState(initialProject == null)
   const [kind, setKind] = useState<SessionKind>('claude')
   const [title, setTitle] = useState('')
+  const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [model, setModel] = useState(DEFAULT_CLAUDE_MODEL)
+  const [fastMode, setFastMode] = useState(false)
+  const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [pinAgentId, setPinAgentId] = useState<string>('')
   const [preview, setPreview] = useState<PlacementResult | null>(null)
   const [previewState, setPreviewState] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -56,8 +118,9 @@ function ProjectSessionDialog({
   const [primaryAgent, setPrimaryAgent] = useState<string>('')
   const userPinnedRef = useRef(false)
 
-  // Capability gates — computed from agents list
-  const claudeAvailable = agents.some((a) => a.online && (a.capabilities?.claudeInstalled ?? false))
+  // Capability gates — computed from agents list. Claude needs a box that can
+  // actually host it (installed AND authable — F14), not merely have the binary.
+  const claudeAvailable = agents.some((a) => a.online && canHostClaude(a))
   const editorAvailable = agents.some((a) => a.online && (a.capabilities?.codeServerInstalled ?? false))
 
   useEffect(() => {
@@ -70,11 +133,17 @@ function ProjectSessionDialog({
     }
   }, [])
 
+  const projectPath = project?.path
   useEffect(() => {
+    if (!projectPath) {
+      setPreview(null)
+      setPreviewState('idle')
+      return
+    }
     let cancelled = false
     setPreviewState('loading')
     setError(null)
-    previewPlacement({ kind, projectPath: project.path })
+    previewPlacement({ kind, projectPath })
       .then((r) => {
         if (cancelled) return
         setPreview(r)
@@ -90,7 +159,7 @@ function ProjectSessionDialog({
     return () => {
       cancelled = true
     }
-  }, [kind, project.path, primaryAgent])
+  }, [kind, projectPath, primaryAgent])
 
   // A manual pick (or unpin) freezes the default — the Studio won't re-assert
   // itself on the next preview refresh.
@@ -102,6 +171,7 @@ function ProjectSessionDialog({
   const noEligible = preview ? preview.candidates.every((c) => !c.eligible) : false
 
   const submit = async () => {
+    if (!project) return
     setCreating(true)
     setError(null)
     try {
@@ -111,6 +181,10 @@ function ProjectSessionDialog({
         projectPath: project.path,
         title: title.trim() || undefined,
         pinAgentId: pinAgentId || undefined,
+        permissionMode: kind === 'claude' ? permissionMode : undefined,
+        model: kind === 'claude' ? model : undefined,
+        fastMode: kind === 'claude' ? fastMode : undefined,
+        notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
     } catch (e) {
@@ -122,38 +196,71 @@ function ProjectSessionDialog({
   const titlePlaceholder = kind === 'claude' ? 'pair-on-mesh' : kind === 'editor' ? 'edit-mesh' : 'build-watcher'
 
   return (
-    <div className="scrim" onClick={onClose}>
-      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+    <Modal width="wide" onClose={onClose} ariaLabel="New session">
         <h3>New session</h3>
+        {scopeTabs}
         <div className="sub">
           Lattice places it on the best machine in your mesh. It survives sleep and disconnects — reattach from any node.
         </div>
 
-        <label className="flabel">Session type</label>
-        <TypeGrid kind={kind} onChange={setKind} claudeDisabled={!claudeAvailable} editorDisabled={!editorAvailable} />
-
-        <label className="flabel">Name</label>
-        <input
-          className="field mono"
-          placeholder={titlePlaceholder}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          autoFocus
+        <label className="flabel">Project</label>
+        <ProjectField
+          project={project}
+          picking={picking}
+          projects={projects}
+          projectsState={projectsState}
+          onPick={(p) => {
+            setProject(p)
+            setPicking(false)
+          }}
+          onTogglePicking={() => setPicking((v) => !v)}
         />
 
-        <label className="flabel">
-          Place on
-          <span className="hint">ranked by free RAM · load · locality</span>
-        </label>
-        <PlacementList
-          state={previewState}
-          preview={preview}
-          agents={agents}
-          pinAgentId={pinAgentId}
-          onPin={handlePin}
-        />
+        {project && (
+          <>
+            <label className="flabel">Session type</label>
+            <TypeGrid kind={kind} onChange={setKind} claudeDisabled={!claudeAvailable} editorDisabled={!editorAvailable} />
 
-        {noEligible && (
+            <label className="flabel">Name</label>
+            <input
+              className="field mono"
+              placeholder={titlePlaceholder}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              autoFocus
+            />
+
+            {kind === 'claude' && (
+              <>
+                <label className="flabel">
+                  Model
+                  <span className="hint">which Claude model this session runs</span>
+                </label>
+                <ModelSelect value={model} onChange={setModel} fastMode={fastMode} onFastMode={setFastMode} />
+                <label className="flabel">
+                  Permissions
+                  <span className="hint">how much Claude asks before acting</span>
+                </label>
+                <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+                <NotifyToggle value={notifyOnIdle} onChange={setNotifyOnIdle} />
+              </>
+            )}
+
+            <label className="flabel">
+              Place on
+              <span className="hint">ranked by free RAM · load · locality</span>
+            </label>
+            <PlacementList
+              state={previewState}
+              preview={preview}
+              agents={agents}
+              pinAgentId={pinAgentId}
+              onPin={handlePin}
+            />
+          </>
+        )}
+
+        {project && noEligible && (
           <div
             style={{
               marginTop: 12,
@@ -185,11 +292,100 @@ function ProjectSessionDialog({
             className="btn btn-primary"
             type="button"
             onClick={submit}
-            disabled={creating || (noEligible && !pinAgentId)}
+            disabled={!project || creating || (noEligible && !pinAgentId)}
           >
-            {creating ? 'Creating…' : 'Create & open'}
+            {creating ? 'Creating…' : !project ? 'Pick a project' : 'Create & open'}
           </button>
         </footer>
+    </Modal>
+  )
+}
+
+// ───────────────────────────── project picker ─────────────────────────────
+// Picks the project the session runs in, from every folder the hub scans under
+// the configured projects root (/api/projects). Pre-selected when launched from a
+// project; a searchable list when launched cold (⌘K / empty state). Always
+// changeable so you can retarget without reopening the dialog.
+function ProjectField({
+  project,
+  picking,
+  projects,
+  projectsState,
+  onPick,
+  onTogglePicking,
+}: {
+  project: Project | null
+  picking: boolean
+  projects: Project[]
+  projectsState: LoadState
+  onPick: (p: Project) => void
+  onTogglePicking: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (picking) {
+      setQuery('')
+      const t = requestAnimationFrame(() => searchRef.current?.focus())
+      return () => cancelAnimationFrame(t)
+    }
+  }, [picking])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = q ? projects.filter((p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)) : projects
+    return [...list].sort((a, b) => a.name.localeCompare(b.name))
+  }, [projects, query])
+
+  if (!picking && project) {
+    return (
+      <button type="button" className="proj-pick-current" onClick={onTogglePicking} title="change project">
+        <Icon name="folder" size={15} color="var(--teal)" />
+        <span className="proj-pick-nm">{project.name}</span>
+        <span className="proj-pick-path">{project.path}</span>
+        <span className="proj-pick-change">change</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="proj-pick">
+      <div className="proj-pick-search">
+        <Icon name="search" size={14} color="var(--fg-3)" />
+        <input
+          ref={searchRef}
+          className="proj-pick-input"
+          placeholder="search projects…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {project && (
+          <button type="button" className="proj-pick-cancel" onClick={onTogglePicking} title="keep current">
+            <Icon name="x" size={13} />
+          </button>
+        )}
+      </div>
+      <div className="proj-pick-list term-scroll">
+        {projectsState === 'loading' && <div className="proj-pick-msg">loading projects…</div>}
+        {projectsState === 'error' && <div className="proj-pick-msg err">// projects unavailable</div>}
+        {projectsState === 'ready' && filtered.length === 0 && (
+          <div className="proj-pick-msg">{query ? `no projects match “${query.trim()}”` : '// no projects'}</div>
+        )}
+        {filtered.map((p) => (
+          <button
+            key={p.path}
+            type="button"
+            className={`proj-pick-row${project?.path === p.path ? ' on' : ''}`}
+            onClick={() => onPick(p)}
+          >
+            <Icon name="folder" size={14} color={project?.path === p.path ? 'var(--teal)' : 'var(--fg-3)'} />
+            <span className="proj-pick-nm">{p.name}</span>
+            <span className="proj-pick-path">{p.path}</span>
+          </button>
+        ))}
       </div>
     </div>
   )
@@ -199,17 +395,27 @@ function ProjectSessionDialog({
 
 function DeviceSessionDialog({
   agent,
+  scopeTabs,
   onClose,
   onCreated,
 }: {
   agent: Agent
+  scopeTabs?: React.ReactNode
   onClose: () => void
   onCreated: (res: SessionWithPlacement) => void
 }) {
-  const claudeReady = agent.capabilities?.claudeInstalled ?? false
+  // Claude is offered on a device only when it can actually run there (installed AND
+  // authable — F14). A box like the hub host has claude but can't sign in, so it
+  // gets terminal/editor only; we tell the user which case it is.
+  const claudeReady = canHostClaude(agent)
+  const claudeInstalledButLocked = (agent.capabilities?.claudeInstalled ?? false) && !claudeReady
   const editorReady = agent.capabilities?.codeServerInstalled ?? false
   const [kind, setKind] = useState<SessionKind>(claudeReady ? 'claude' : 'terminal')
   const [title, setTitle] = useState('')
+  const [permissionMode, setPermissionMode] = useState('bypassPermissions')
+  const [model, setModel] = useState(DEFAULT_CLAUDE_MODEL)
+  const [fastMode, setFastMode] = useState(false)
+  const [notifyOnIdle, setNotifyOnIdle] = useState(false)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -225,18 +431,22 @@ function DeviceSessionDialog({
         scope: 'device',
         pinAgentId: agent.id,
         title: title.trim() || undefined,
+        permissionMode: kind === 'claude' ? permissionMode : undefined,
+        model: kind === 'claude' ? model : undefined,
+        fastMode: kind === 'claude' ? fastMode : undefined,
+        notifyOnIdle: kind === 'claude' ? notifyOnIdle : undefined,
       })
       onCreated(res)
     } catch (e) {
-      setError(parseHostError(e))
+      setError(parseHubError(e, 'failed to create session'))
       setCreating(false)
     }
   }
 
   return (
-    <div className="scrim" onClick={onClose}>
-      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+    <Modal width="wide" onClose={onClose} ariaLabel="New session">
         <h3>New session</h3>
+        {scopeTabs}
         <div className="sub">
           Device-local — runs in <span style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{deviceName}</span>'s home directory.
         </div>
@@ -246,7 +456,9 @@ function DeviceSessionDialog({
 
         {!claudeReady && (
           <p style={{ margin: '6px 0 0', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--st-orphaned)' }}>
-            no claude on this device — terminal only
+            {claudeInstalledButLocked
+              ? "claude can't sign in on this device (background service) — terminal/editor only"
+              : 'no claude on this device — terminal only'}
           </p>
         )}
         {!editorReady && (
@@ -263,6 +475,22 @@ function DeviceSessionDialog({
           onChange={(e) => setTitle(e.target.value)}
           autoFocus
         />
+
+        {kind === 'claude' && (
+          <>
+            <label className="flabel">
+              Model
+              <span className="hint">which Claude model this session runs</span>
+            </label>
+            <ModelSelect value={model} onChange={setModel} fastMode={fastMode} onFastMode={setFastMode} />
+            <label className="flabel">
+              Permissions
+              <span className="hint">how much Claude asks before acting</span>
+            </label>
+            <PermissionModeSelect value={permissionMode} onChange={setPermissionMode} />
+            <NotifyToggle value={notifyOnIdle} onChange={setNotifyOnIdle} />
+          </>
+        )}
 
         {/* Pinned machine row */}
         <div
@@ -296,23 +524,8 @@ function DeviceSessionDialog({
             {creating ? 'Creating…' : 'Start session'}
           </button>
         </footer>
-      </div>
-    </div>
+    </Modal>
   )
-}
-
-function parseHostError(e: unknown): string {
-  const raw = e instanceof Error ? e.message : 'failed to create session'
-  const idx = raw.indexOf('{')
-  if (idx !== -1) {
-    try {
-      const parsed = JSON.parse(raw.slice(idx)) as { error?: string }
-      if (parsed.error) return parsed.error
-    } catch {
-      /* fall through to raw */
-    }
-  }
-  return raw
 }
 
 // ───────────────────────────── session type grid ─────────────────────────────
@@ -567,6 +780,184 @@ function RankRow({ candidate, label, badgeLabel, isChosen, isBest, isSelected, o
         </div>
       </div>
     </div>
+  )
+}
+
+// ───────────────────────────── permission mode selector ─────────────────────────────
+
+const PERMISSION_MODES: { value: string; label: string }[] = [
+  { value: 'bypassPermissions', label: 'Bypass permissions' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'acceptEdits', label: 'Accept edits' },
+  { value: 'plan', label: 'Plan mode' },
+  { value: 'default', label: 'Ask permissions' },
+]
+
+// Claude model picker: a dropdown over the catalog (default pre-selected) plus a
+// "fast mode" toggle that maps to claude's low-effort setting at launch. Threaded
+// through SessionCreatePayload → claudeCommand `--model <id>` / `--effort low`.
+function ModelSelect({
+  value,
+  onChange,
+  fastMode,
+  onFastMode,
+}: {
+  value: string
+  onChange: (v: string) => void
+  fastMode: boolean
+  onFastMode: (v: boolean) => void
+}) {
+  return (
+    <>
+      <select
+        className="field mono"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ cursor: 'pointer' }}
+      >
+        {CLAUDE_MODELS.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+            {m.legacy ? ' · Legacy' : ''}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={fastMode}
+        onClick={() => onFastMode(!fastMode)}
+        className="notify-toggle"
+        style={{
+          marginTop: 10,
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 11,
+          padding: '11px 14px',
+          borderRadius: 13,
+          cursor: 'pointer',
+          textAlign: 'left',
+          border: `1px solid ${fastMode ? 'var(--border-alive)' : 'var(--border)'}`,
+          background: fastMode ? 'color-mix(in oklch, var(--teal) 8%, var(--void))' : 'transparent',
+          boxShadow: fastMode ? 'var(--glow-alive)' : 'none',
+          transition: 'background .15s, border-color .15s',
+        }}
+      >
+        <Icon name="zap" size={15} color={fastMode ? 'var(--teal)' : 'var(--fg-3)'} />
+        <span style={{ flex: 1 }}>
+          <span style={{ display: 'block', fontSize: 13, color: 'var(--fg-1)', fontWeight: 500 }}>Fast mode</span>
+          <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 1 }}>
+            lower effort, snappier replies
+          </span>
+        </span>
+        <span
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            width: 34,
+            height: 20,
+            borderRadius: 999,
+            background: fastMode ? 'var(--teal)' : 'color-mix(in oklch, var(--fg-3) 30%, transparent)',
+            position: 'relative',
+            transition: 'background .15s',
+          }}
+        >
+          <span
+            style={{
+              position: 'absolute',
+              top: 2,
+              left: fastMode ? 16 : 2,
+              width: 16,
+              height: 16,
+              borderRadius: '50%',
+              background: 'var(--void)',
+              transition: 'left .15s',
+            }}
+          />
+        </span>
+      </button>
+    </>
+  )
+}
+
+function PermissionModeSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="perm-seg">
+      {PERMISSION_MODES.map((m) => (
+        <button
+          key={m.value}
+          type="button"
+          className={`perm-seg-opt${value === m.value ? ' on' : ''}`}
+          onClick={() => onChange(m.value)}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// Fire-and-forget opt-in: when armed, the hub pings your phone (ntfy) the moment
+// this Claude run goes quiet waiting on you, or finishes — and the push carries
+// Approve / Deny buttons so you can answer a prompt without opening the laptop.
+function NotifyToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      className="notify-toggle"
+      style={{
+        marginTop: 10,
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 11,
+        padding: '11px 14px',
+        borderRadius: 13,
+        cursor: 'pointer',
+        textAlign: 'left',
+        border: `1px solid ${value ? 'var(--border-alive)' : 'var(--border)'}`,
+        background: value ? 'color-mix(in oklch, var(--teal) 8%, var(--void))' : 'transparent',
+        boxShadow: value ? 'var(--glow-alive)' : 'none',
+        transition: 'background .15s, border-color .15s',
+      }}
+    >
+      <Icon name="smartphone" size={15} color={value ? 'var(--teal)' : 'var(--fg-3)'} />
+      <span style={{ flex: 1 }}>
+        <span style={{ display: 'block', fontSize: 13, color: 'var(--fg-1)', fontWeight: 500 }}>Ping my phone</span>
+        <span style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--fg-3)', marginTop: 1 }}>
+          notify + approve from anywhere when it waits or finishes
+        </span>
+      </span>
+      <span
+        aria-hidden
+        style={{
+          flexShrink: 0,
+          width: 34,
+          height: 20,
+          borderRadius: 999,
+          background: value ? 'var(--teal)' : 'color-mix(in oklch, var(--fg-3) 30%, transparent)',
+          position: 'relative',
+          transition: 'background .15s',
+        }}
+      >
+        <span
+          style={{
+            position: 'absolute',
+            top: 2,
+            left: value ? 16 : 2,
+            width: 16,
+            height: 16,
+            borderRadius: '50%',
+            background: 'var(--void)',
+            transition: 'left .15s',
+          }}
+        />
+      </span>
+    </button>
   )
 }
 

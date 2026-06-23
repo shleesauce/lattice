@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { dashboardWsUrl, fetchProjects, fetchSessions } from './api'
-import type { Project, Session } from './types'
+import { useCallback, useRef, useState } from 'react'
+import { fetchProjects, fetchSessions } from './api'
+import { useLiveResource } from './useLiveResource'
+import type { DashboardEvent, Project, Session } from './types'
 
 export type LoadState = 'loading' | 'ready' | 'error'
 
-interface WorkspaceState {
+export interface WorkspaceState {
   projects: Project[]
   sessions: Session[]
   projectsState: LoadState
@@ -70,40 +71,33 @@ export function useWorkspace(): WorkspaceState {
     setSessions((prev) => prev.filter((x) => x.id !== id))
   }, [])
 
-  useEffect(() => {
-    aliveRef.current = true
+  // Mount loads both lists; reconnect resyncs both (the hub only pushes on the
+  // next mutation, so without this the sidebar stays stale after a blip). The
+  // steady poll re-pulls sessions only — projects rarely change.
+  const resyncAll = useCallback(() => {
     void refreshProjects()
     void refreshSessions()
-    const t = setInterval(() => void refreshSessions(), SESSION_POLL_MS)
-
-    // Real-time: the hub broadcasts a full session snapshot on every mutation
-    // (create / archive / trash / restore / status change), so the list reflects
-    // instantly instead of waiting for the next poll. Poll stays as a fallback.
-    let ws: WebSocket | null = null
-    try {
-      ws = new WebSocket(dashboardWsUrl())
-      ws.onmessage = (ev) => {
-        if (!aliveRef.current) return
-        try {
-          const m = JSON.parse(ev.data as string)
-          if (m.type === 'sessions' && Array.isArray(m.sessions)) {
-            setSessions(m.sessions as Session[])
-            setSessionsState('ready')
-          }
-        } catch {
-          /* ignore non-JSON frames */
-        }
-      }
-    } catch {
-      /* WS optional — polling covers it */
-    }
-
-    return () => {
-      aliveRef.current = false
-      clearInterval(t)
-      ws?.close()
-    }
   }, [refreshProjects, refreshSessions])
+
+  // Real-time: the hub broadcasts a full session snapshot on every mutation
+  // (create / archive / trash / restore / status change) over the shared
+  // dashboard socket, so the list reflects instantly instead of waiting for the
+  // next poll.
+  const onMessage = useCallback((m: DashboardEvent) => {
+    if (!aliveRef.current) return
+    if (m.type === 'sessions') {
+      setSessions(m.sessions)
+      setSessionsState('ready')
+    }
+  }, [])
+
+  useLiveResource({
+    aliveRef,
+    onMount: resyncAll,
+    onReconnect: resyncAll,
+    onEvent: onMessage,
+    poll: { ms: SESSION_POLL_MS, fn: refreshSessions },
+  })
 
   return {
     projects,

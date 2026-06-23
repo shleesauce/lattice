@@ -118,11 +118,22 @@ export function devicesToMachines(devices: Device[], sessions: Session[]): Machi
       tailscaleIP: d.tailscaleIP,
       hasClaude: d.capabilities?.claudeInstalled ?? false,
       hasEditor: d.capabilities?.codeServerInstalled ?? false,
-      sessions: mine.map((s) => ({ id: s.id, name: s.title || s.kind, status: s.status, dur: durSince(s.createdAt) })),
+      // A session blocked on a permission/decision shows red ('danger') instead of
+      // its plain status (which stays 'live'→green) — the "needs you" cue (BUG-009).
+      sessions: mine.map((s) => ({ id: s.id, name: s.title || s.kind, status: s.waiting ? 'danger' : s.status, dur: durSince(s.createdAt) })),
       x: pos.x,
       y: pos.y,
     }
   })
+}
+
+// "Woven" = a live lattice agent actually checked into the mesh fabric. Counts
+// online agent-backed nodes whose agent is live (status live/idle/detached) and
+// EXCLUDES reachable-only hosts — a box whose agent died, or a device with no
+// agent at all (e.g. a phone reachable over Tailscale). Those are reachable, not
+// woven. Offline nodes are excluded too.
+export function isWoven(m: Machine): boolean {
+  return m.hasAgent && m.online && m.status !== 'reachable'
 }
 
 export const STATUS_LABEL: Record<string, string> = {

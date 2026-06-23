@@ -1,20 +1,16 @@
 package hub
 
 import (
-	"context"
 	"errors"
-	"io"
-	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
-	"github.com/dylanstoryyy/lattice/internal/tunnel"
+	"github.com/shleesauce/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/tunnel"
 )
 
 // editorIdleConnTimeout bounds how long a pooled editor stream lingers idle
@@ -77,49 +73,15 @@ func (h *Hub) handleEditorProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dial := func() (net.Conn, error) { return h.dialEditorStream(rec.AgentID, sessionID) }
+	fwdProto := forwardedProto(r)
+
 	if isWebSocketUpgrade(r) {
-		h.proxyEditorWebSocket(w, r, rec.AgentID, sessionID, prefix)
+		tunnelWebSocket(w, r, prefix, fwdProto, dial)
 		return
 	}
 
-	fwdProto := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		fwdProto = "https"
-	}
-
-	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			origHost := req.Host
-			req.URL.Scheme = "http"
-			req.URL.Host = editorBackendHost
-			req.Host = editorBackendHost
-			req.Header.Set("X-Forwarded-Host", origHost)
-			req.Header.Set("X-Forwarded-Proto", fwdProto)
-			req.Header.Set("X-Forwarded-Prefix", prefix+"/")
-			p := strings.TrimPrefix(req.URL.Path, prefix)
-			if p == "" {
-				p = "/"
-			}
-			req.URL.Path = p
-		},
-		ModifyResponse: rewriteEditorLocation(prefix),
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return h.dialEditorStream(rec.AgentID, sessionID)
-			},
-			// One code-server, one user: a small idle pool keeps the workbench's
-			// asset burst snappy without holding many streams open forever.
-			MaxIdleConns:        8,
-			IdleConnTimeout:     editorIdleConnTimeout,
-			DisableCompression:  true,
-			TLSHandshakeTimeout: 0,
-		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, e error) {
-			log.Printf("editor proxy: session=%s: %v", sessionID, e)
-			http.Error(w, "editor backend error: "+e.Error(), http.StatusBadGateway)
-		},
-	}
-	rp.ServeHTTP(w, r)
+	tunnelReverseProxy(prefix, fwdProto, dial, "editor proxy: session="+sessionID).ServeHTTP(w, r)
 }
 
 // rewriteEditorLocation resolves code-server's redirect Location headers so the
@@ -145,77 +107,6 @@ func rewriteEditorLocation(prefix string) func(*http.Response) error {
 		resp.Header.Set("Location", base.ResolveReference(parsed).RequestURI())
 		return nil
 	}
-}
-
-// proxyEditorWebSocket tunnels a WebSocket upgrade (the code-server extension host
-// + terminals run over WS). httputil.ReverseProxy strips hop-by-hop Upgrade/
-// Connection headers, so the upgrade is done by hand: open a tunnel stream, write
-// the rewritten upgrade request, hijack the client, and io.Copy both ways.
-func (h *Hub) proxyEditorWebSocket(w http.ResponseWriter, r *http.Request, agentID, sessionID, prefix string) {
-	backendPath := strings.TrimPrefix(r.URL.Path, prefix)
-	if backendPath == "" {
-		backendPath = "/"
-	}
-
-	stream, err := h.dialEditorStream(agentID, sessionID)
-	if err != nil {
-		http.Error(w, "editor tunnel dial failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer stream.Close()
-
-	reqURI := backendPath
-	if r.URL.RawQuery != "" {
-		reqURI += "?" + r.URL.RawQuery
-	}
-	upstreamReq, err := http.NewRequest(r.Method, "http://"+editorBackendHost+reqURI, nil)
-	if err != nil {
-		http.Error(w, "request build failed", http.StatusInternalServerError)
-		return
-	}
-	for k, vv := range r.Header {
-		for _, v := range vv {
-			upstreamReq.Header.Add(k, v)
-		}
-	}
-	fwdProto := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		fwdProto = "https"
-	}
-	upstreamReq.Header.Set("X-Forwarded-Host", r.Host)
-	upstreamReq.Header.Set("X-Forwarded-Proto", fwdProto)
-	upstreamReq.Header.Set("X-Forwarded-Prefix", prefix+"/")
-	upstreamReq.Host = editorBackendHost
-
-	if err := upstreamReq.Write(stream); err != nil {
-		http.Error(w, "upstream write failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "hijack not supported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, buf, err := hj.Hijack()
-	if err != nil {
-		http.Error(w, "hijack failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-
-	// Flush any bytes the client already sent past the request line into the tunnel.
-	if buf.Reader.Buffered() > 0 {
-		pending := make([]byte, buf.Reader.Buffered())
-		if _, err := io.ReadFull(buf.Reader, pending); err == nil {
-			stream.Write(pending)
-		}
-	}
-
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(stream, clientConn); done <- struct{}{} }()
-	go func() { io.Copy(clientConn, stream); done <- struct{}{} }()
-	<-done
 }
 
 // dialEditorStream opens a fresh yamux stream to the agent and writes the

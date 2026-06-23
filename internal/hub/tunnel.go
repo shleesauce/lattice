@@ -6,7 +6,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/dylanstoryyy/lattice/internal/tunnel"
+	"github.com/shleesauce/lattice/internal/tunnel"
 )
 
 // handleTunnelWS accepts an agent's SECOND dial-out WebSocket (D27) and runs a
@@ -21,13 +21,24 @@ import (
 // matching the hub's agentID() derivation, so the editor proxy can find this
 // tunnel by the session's agentId.
 func (h *Hub) handleTunnelWS(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("token") != h.token {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
-		return
-	}
+	token := r.URL.Query().Get("token")
 	agentID := r.URL.Query().Get("agent")
 	if agentID == "" {
 		http.Error(w, "agent is required", http.StatusBadRequest)
+		return
+	}
+	// FIX 2: bind the tunnel to the token's IDENTITY, not just its validity.
+	// putTunnel CLOSES any existing tunnel for agentID, so a bare tokenValid check
+	// let any holder of A valid token hijack ANOTHER machine's editor tunnel. The
+	// master token (trusted root) may register any agentID; a per-machine token may
+	// register ONLY the agentID it enrolled as. Reject (403) otherwise — distinct
+	// from a 401 invalid token so the failure mode is legible in logs.
+	if !h.tokenValid(token) {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	if !h.tokenMayActForAgent(token, agentID) {
+		http.Error(w, "token not authorized for this agent", http.StatusForbidden)
 		return
 	}
 

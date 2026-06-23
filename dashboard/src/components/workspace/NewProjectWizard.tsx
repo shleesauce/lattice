@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createProject } from '../../api'
+import { parseHubError } from '../../lib/hubError'
 import type { CreateProjectEnvVar, CreateProjectResult, Project } from '../../types'
 
 interface Props {
@@ -13,6 +14,20 @@ type Step = (typeof STEPS)[number]
 
 const FOLDER_RE = /^[a-z0-9][a-z0-9-]*$/
 const CONNECTOR_SUGGESTIONS = ['Airtable', 'Supabase', 'Slack', 'Vercel', 'Gmail', 'Calendar', 'ClickUp']
+// Curated starting points for Step 2. Multi-select — real stacks combine (e.g.
+// React/Vite + Tailwind + Supabase). Anything not here goes in "Other".
+const STACK_PRESETS = [
+  'React/Vite',
+  'Next.js',
+  'Electron',
+  'Node',
+  'Go',
+  'Python',
+  'Tailwind',
+  'Supabase',
+  'Vite',
+  'Astro',
+]
 
 function kebab(s: string): string {
   return s
@@ -22,30 +37,16 @@ function kebab(s: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
-// Pull a hub {error} body out of the thrown `${status}: ${json}` message.
-function parseError(e: unknown): string {
-  const raw = e instanceof Error ? e.message : 'failed to create project'
-  const idx = raw.indexOf('{')
-  if (idx !== -1) {
-    try {
-      const parsed = JSON.parse(raw.slice(idx)) as { error?: string }
-      if (parsed.error) return parsed.error
-    } catch {
-      /* fall through */
-    }
-  }
-  return raw
-}
-
 // Guided onboarding for a brand-new project. Four steps, hub scaffolds + (opt)
-// registers in AI-Hub and returns a Session that opens like any other.
+// registers in the project registry and returns a Session that opens like any other.
 export function NewProjectWizard({ projects, onClose, onCreated }: Props) {
   const [step, setStep] = useState<Step>('identity')
   const [officialName, setOfficialName] = useState('')
   const [folderName, setFolderName] = useState('')
   const [folderTouched, setFolderTouched] = useState(false)
   const [description, setDescription] = useState('')
-  const [stack, setStack] = useState('')
+  const [stackPresets, setStackPresets] = useState<string[]>([])
+  const [stackOther, setStackOther] = useState('')
   const [port, setPort] = useState('')
   const [connectors, setConnectors] = useState<string[]>([])
   const [agents, setAgents] = useState<string[]>([])
@@ -69,6 +70,13 @@ export function NewProjectWizard({ projects, onClose, onCreated }: Props) {
     if (projects.some((p) => p.name.toLowerCase() === v.toLowerCase())) return 'already exists'
     return null
   }, [folderName, projects])
+
+  // The stack is built from the chosen presets plus an optional free-text "Other"
+  // (versions/anything goes there) — joined into the single string the hub stores.
+  const stack = useMemo(
+    () => [...stackPresets, stackOther.trim()].filter(Boolean).join(', '),
+    [stackPresets, stackOther],
+  )
 
   const identityValid =
     officialName.trim().length > 0 && folderName.trim().length > 0 && !folderError && description.trim().length > 0
@@ -120,7 +128,7 @@ export function NewProjectWizard({ projects, onClose, onCreated }: Props) {
       // Hand off to the workspace: refresh projects + open the session if any.
       onCreated(res)
     } catch (e) {
-      setError(parseError(e))
+      setError(parseHubError(e, 'failed to create project'))
       setCreating(false)
     }
   }
@@ -158,7 +166,14 @@ export function NewProjectWizard({ projects, onClose, onCreated }: Props) {
               setDescription={setDescription}
             />
           ) : step === 'shape' ? (
-            <ShapeStep stack={stack} setStack={setStack} port={port} setPort={setPort} />
+            <ShapeStep
+              stackPresets={stackPresets}
+              setStackPresets={setStackPresets}
+              stackOther={stackOther}
+              setStackOther={setStackOther}
+              port={port}
+              setPort={setPort}
+            />
           ) : step === 'links' ? (
             <LinksStep
               connectors={connectors}
@@ -259,19 +274,19 @@ function IdentityStep({
   return (
     <div className="space-y-4">
       <Field label="official name">
-        <TextInput value={officialName} onChange={setOfficialName} placeholder="e.g. ParkView Finances" autoFocus />
+        <TextInput value={officialName} onChange={setOfficialName} placeholder="e.g. My Project" autoFocus />
       </Field>
       <Field label="local / folder name">
         <TextInput
           value={folderName}
           onChange={onFolderChange}
-          placeholder="parkview-finances"
+          placeholder="my-project"
           invalid={!!folderError}
         />
         {folderError ? (
           <p className="mt-1.5 font-mono text-[10px] text-red-400">{folderError}</p>
         ) : (
-          folderName && <p className="mt-1.5 font-mono text-[10px] text-zinc-600">~/AI-Hub/projects/{folderName}</p>
+          folderName && <p className="mt-1.5 font-mono text-[10px] text-zinc-600">{folderName} in the projects directory</p>
         )}
       </Field>
       <Field label="description">
@@ -282,26 +297,58 @@ function IdentityStep({
 }
 
 function ShapeStep({
-  stack,
-  setStack,
+  stackPresets,
+  setStackPresets,
+  stackOther,
+  setStackOther,
   port,
   setPort,
 }: {
-  stack: string
-  setStack: (v: string) => void
+  stackPresets: string[]
+  setStackPresets: (v: string[]) => void
+  stackOther: string
+  setStackOther: (v: string) => void
   port: string
   setPort: (v: string) => void
 }) {
+  const toggle = (p: string) =>
+    setStackPresets(stackPresets.includes(p) ? stackPresets.filter((x) => x !== p) : [...stackPresets, p])
   return (
     <div className="space-y-4">
       <Field label="stack (optional)">
-        <TextInput value={stack} onChange={setStack} placeholder="React/Vite/Tailwind/Supabase" autoFocus />
+        <div className="flex flex-wrap gap-1.5">
+          {STACK_PRESETS.map((p) => {
+            const on = stackPresets.includes(p)
+            return (
+              <button
+                key={p}
+                type="button"
+                onClick={() => toggle(p)}
+                aria-pressed={on}
+                className={`rounded-md border px-2.5 py-1 font-mono text-[11px] transition-colors ${
+                  on
+                    ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                    : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                }`}
+              >
+                {p}
+              </button>
+            )
+          })}
+        </div>
+        <div className="mt-2">
+          <TextInput
+            value={stackOther}
+            onChange={setStackOther}
+            placeholder="other — anything else (versions ok, e.g. Rust 1.79)"
+          />
+        </div>
       </Field>
       <Field label="port (optional)">
         <TextInput
           value={port}
           onChange={(v) => setPort(v.replace(/[^0-9]/g, ''))}
-          placeholder="5200"
+          placeholder="3000"
           inputMode="numeric"
         />
       </Field>
@@ -332,7 +379,16 @@ function LinksStep({
 }) {
   return (
     <div className="space-y-4">
-      <Field label="connectors / mcps">
+      <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-[11px] leading-relaxed text-zinc-400">
+        <span className="text-zinc-300">Captured as intent, not auto-wired.</span> Everything below is
+        written into the new project&apos;s docs for the auto-launched Claude session to set up — Lattice
+        scaffolds files but never touches your connected accounts. Hover each{' '}
+        <span className="font-mono text-zinc-500">i</span> for what it does.
+      </div>
+      <Field
+        label="connectors / mcps"
+        info="Captured as intent, not wired. Listed in docs/ONBOARDING.md + CLAUDE.md as setup tasks for the auto-launched Claude session — the hub never touches your already-connected Airtable / Supabase / Slack / GWS accounts."
+      >
         <ChipInput
           values={connectors}
           onChange={setConnectors}
@@ -340,10 +396,16 @@ function LinksStep({
           suggestions={CONNECTOR_SUGGESTIONS}
         />
       </Field>
-      <Field label="agents (intent)">
+      <Field
+        label="agents (intent)"
+        info="Captured as intent. Written to the onboarding brief as agents for Claude to add or reference from ~/.claude/agents — nothing is installed or copied automatically."
+      >
         <ChipInput values={agents} onChange={setAgents} placeholder="type an agent + Enter" />
       </Field>
-      <Field label="related projects">
+      <Field
+        label="related projects"
+        info="Context only. Cross-linked in the new project's CLAUDE.md + onboarding brief so Claude knows about them — it changes nothing in those projects."
+      >
         {projects.length === 0 ? (
           <p className="font-mono text-[11px] text-zinc-600">// no existing projects to link</p>
         ) : (
@@ -370,7 +432,10 @@ function LinksStep({
           </div>
         )}
       </Field>
-      <Field label="env vars">
+      <Field
+        label="env vars"
+        info="Written only to the new project's local .env + .env.example (.env stays git-ignored). Not added to any global or shared config. Keys follow the TOKEN_NAME convention."
+      >
         <EnvVarRows envVars={envVars} setEnvVars={setEnvVars} />
       </Field>
     </div>
@@ -413,7 +478,7 @@ function ReviewStep({
     <div className="space-y-4">
       <dl className="overflow-hidden rounded-md border border-zinc-800">
         <SummaryRow label="name" value={officialName} />
-        <SummaryRow label="folder" value={`~/AI-Hub/projects/${folderName}`} mono />
+        <SummaryRow label="folder" value={folderName} mono />
         <SummaryRow label="description" value={description} />
         {stack && <SummaryRow label="stack" value={stack} />}
         {port && <SummaryRow label="port" value={port} mono />}
@@ -428,8 +493,8 @@ function ReviewStep({
       <Toggle
         checked={register}
         onChange={setRegister}
-        label="Register in AI-Hub"
-        hint="Project Registry + index + KB stub"
+        label="Register project"
+        hint="adds the project to the configured registry"
       />
       <Toggle
         checked={launchClaude}
@@ -505,12 +570,40 @@ function Stepper({ current, done }: { current: number; done: boolean }) {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, info, children }: { label: string; info?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">{label}</label>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <label className="block font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">{label}</label>
+        {info && <InfoDot text={info} />}
+      </div>
       {children}
     </div>
+  )
+}
+
+// InfoDot — a small "i" badge that reveals an honest explanation on hover/focus.
+// Used in the wizard's links step to make clear each section is captured as INTENT
+// for the auto-launched Claude session, not auto-wired by the hub (F9).
+function InfoDot({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        tabIndex={0}
+        aria-label={text}
+        className="grid h-3.5 w-3.5 cursor-help place-items-center rounded-full border border-zinc-600 font-mono text-[8px] font-bold leading-none text-zinc-500 transition-colors hover:border-emerald-500/60 hover:text-emerald-300"
+        onClick={(e) => e.preventDefault()}
+      >
+        i
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-0 top-5 z-10 w-60 rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-[11px] normal-case leading-relaxed tracking-normal text-zinc-300 opacity-0 shadow-[0_8px_24px_-8px_rgba(0,0,0,0.9)] transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
   )
 }
 
@@ -614,6 +707,17 @@ function ChipInput({
   )
 }
 
+// sanitizeEnvKey enforces the TOKEN_NAME convention as the user types: uppercase,
+// spaces (and other separators) collapse to `_`, and anything outside [A-Z0-9_] is
+// dropped — so a key like "my api key" becomes "MY_API_KEY", never an invalid env
+// var. Digits stay (versions/indices are valid in keys).
+function sanitizeEnvKey(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^A-Z0-9_]/g, '')
+}
+
 function EnvVarRows({
   envVars,
   setEnvVars,
@@ -629,8 +733,10 @@ function EnvVarRows({
         <div key={i} className="flex items-center gap-1.5">
           <input
             value={row.key}
-            onChange={(e) => update(i, { key: e.target.value })}
+            onChange={(e) => update(i, { key: sanitizeEnvKey(e.target.value) })}
             placeholder="KEY"
+            spellCheck={false}
+            autoCapitalize="characters"
             className="w-2/5 rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 font-mono text-[11px] uppercase text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-500/60 focus:outline-none"
           />
           <input

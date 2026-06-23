@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { previewPlacement } from '../../api'
-import type { Agent, PlacementCandidate, PlacementResult, Session } from '../../types'
+import { canHostClaude, type Agent, type Session } from '../../types'
 
 interface Props {
   session: Session
   agents: Agent[]
-  onPin: (agentId: string) => void
+  // reconnect an orphaned session on its OWN machine (resume, keeps context)
+  onReconnect: (agentId: string) => void
+  // switch a fresh session to a different machine (restarts it there)
+  onPickMachine: (agentId: string) => void
 }
 
 function agentLabel(agents: Agent[], id: string): string {
@@ -13,12 +15,11 @@ function agentLabel(agents: Agent[], id: string): string {
   return a?.name || a?.hostname || id.slice(0, 8)
 }
 
-// The machine chip: shows where a session is placed + a tiny score, and opens a
-// dropdown that previews the ranked candidates (POST /api/placement) so the user
-// can pin/override (D19). Orphaned sessions surface a "Resume here" action.
-export function MachineChip({ session, agents, onPin }: Props) {
-  // Device sessions are pinned to one machine by definition — pinning elsewhere
-  // is meaningless, so render a static chip with no placement dropdown.
+// The machine chip. A session never moves on its own (D32) — but you can pick
+// which machine it runs on BEFORE you start a conversation. For a claude session
+// the list is the machines that actually have claude installed and are online.
+export function MachineChip({ session, agents, onReconnect, onPickMachine }: Props) {
+  // Device sessions are bound to one machine by definition — static, no picker.
   if (session.scope === 'device') {
     return (
       <span
@@ -32,13 +33,11 @@ export function MachineChip({ session, agents, onPin }: Props) {
     )
   }
 
-  return <ProjectMachineChip session={session} agents={agents} onPin={onPin} />
+  return <ProjectMachineChip session={session} agents={agents} onReconnect={onReconnect} onPickMachine={onPickMachine} />
 }
 
-function ProjectMachineChip({ session, agents, onPin }: Props) {
+function ProjectMachineChip({ session, agents, onReconnect, onPickMachine }: Props) {
   const [open, setOpen] = useState(false)
-  const [result, setResult] = useState<PlacementResult | null>(null)
-  const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle')
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -50,144 +49,82 @@ function ProjectMachineChip({ session, agents, onPin }: Props) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [open])
 
-  const load = async () => {
-    setState('loading')
-    try {
-      const r = await previewPlacement({ kind: session.kind, projectPath: session.projectPath })
-      setResult(r)
-      setState('idle')
-    } catch {
-      setState('error')
-    }
-  }
+  const orphaned = session.status === 'orphaned'
 
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (next && !result) void load()
-  }
-
-  const chosenScore = result?.candidates.find((c) => c.agentId === session.agentId)?.score
+  // Eligible targets: online + (for claude) can actually host claude — installed
+  // AND authable, so the switcher never offers a box that yields a blank tab (F14).
+  const eligible = agents.filter((a) => {
+    if (!a.online) return false
+    if (session.kind === 'claude') return canHostClaude(a)
+    return true
+  })
 
   return (
     <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={toggle}
+        onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-300 transition-colors hover:border-emerald-500/50 hover:text-emerald-300"
-        title="placement"
+        title="which machine this session runs on"
       >
-        {session.pinned && <PinIcon />}
+        <PinIcon />
         <ChipIcon />
         <span className="max-w-[10rem] truncate">{agentLabel(agents, session.agentId)}</span>
-        {typeof chosenScore === 'number' && (
-          <span className="text-emerald-400/80">{chosenScore.toFixed(0)}</span>
-        )}
         <Chevron open={open} />
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-80 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)]">
+        <div className="absolute right-0 z-30 mt-2 w-64 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.7)]">
           <div className="border-b border-zinc-800 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">
-            placement candidates
+            run on
           </div>
-          {session.status === 'orphaned' && (
+          {orphaned && (
             <button
               type="button"
               onClick={() => {
-                onPin(session.agentId)
+                onReconnect(session.agentId)
                 setOpen(false)
               }}
               className="flex w-full items-center gap-2 border-b border-zinc-800 bg-orange-500/[0.06] px-3 py-2 text-left font-display text-[12px] font-semibold text-orange-300 hover:bg-orange-500/10"
             >
-              <ResumeIcon /> Resume on best machine
+              <ResumeIcon /> reconnect on {agentLabel(agents, session.agentId)}
             </button>
           )}
-          <div className="term-scroll max-h-72 overflow-y-auto">
-            {state === 'loading' && <p className="px-3 py-6 text-center font-mono text-[11px] text-zinc-600">scoring…</p>}
-            {state === 'error' && (
-              <div className="px-3 py-5 text-center">
-                <p className="font-mono text-[11px] text-red-400">placement preview unavailable</p>
-                <button type="button" onClick={load} className="mt-2 font-mono text-[11px] text-zinc-400 underline">
-                  retry
-                </button>
-              </div>
+          <div className="max-h-72 overflow-y-auto py-1">
+            {eligible.length === 0 && (
+              <p className="px-3 py-4 text-center font-mono text-[11px] text-zinc-600">no machines available</p>
             )}
-            {state === 'idle' && result && result.candidates.length === 0 && (
-              <p className="px-3 py-6 text-center font-mono text-[11px] text-zinc-600">no candidates</p>
-            )}
-            {state === 'idle' &&
-              result?.candidates.map((c) => (
-                <CandidateRow
-                  key={c.agentId}
-                  candidate={c}
-                  label={agentLabel(agents, c.agentId)}
-                  current={c.agentId === session.agentId}
-                  onPin={() => {
-                    if (c.eligible) {
-                      onPin(c.agentId)
+            {eligible.map((a) => {
+              const current = a.id === session.agentId
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={current}
+                  onClick={() => {
+                    if (!current) {
+                      onPickMachine(a.id)
                       setOpen(false)
                     }
                   }}
-                />
-              ))}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[12px] ${
+                    current ? 'cursor-default text-emerald-300' : 'text-zinc-200 hover:bg-zinc-800'
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.online ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                  <span className="min-w-0 flex-1 truncate">{a.name || a.hostname || a.id}</span>
+                  {current ? (
+                    <span className="font-mono text-[10px] text-emerald-400/70">current</span>
+                  ) : (
+                    <span className="font-mono text-[10px] text-zinc-500">switch →</span>
+                  )}
+                </button>
+              )
+            })}
           </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CandidateRow({
-  candidate,
-  label,
-  current,
-  onPin,
-}: {
-  candidate: PlacementCandidate
-  label: string
-  current: boolean
-  onPin: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const reasons = Object.entries(candidate.reasons ?? {})
-  return (
-    <div className={`border-b border-zinc-800/70 ${current ? 'bg-emerald-500/[0.05]' : ''}`}>
-      <div className="flex items-center gap-2 px-3 py-2">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${candidate.eligible ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-200">{label}</span>
-        {candidate.eligible ? (
-          <span className="font-mono text-[12px] tabular-nums text-emerald-400">{candidate.score.toFixed(1)}</span>
-        ) : (
-          <span className="font-mono text-[10px] uppercase tracking-wide text-orange-400/80">excluded</span>
-        )}
-        {reasons.length > 0 && (
-          <button type="button" onClick={() => setExpanded((e) => !e)} className="text-zinc-600 hover:text-zinc-400">
-            <Chevron open={expanded} />
-          </button>
-        )}
-        {!current && candidate.eligible && (
-          <button
-            type="button"
-            onClick={onPin}
-            className="rounded border border-zinc-700 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300 hover:border-emerald-500/50 hover:text-emerald-300"
-          >
-            pin
-          </button>
-        )}
-        {current && <span className="font-mono text-[10px] text-emerald-400/70">current</span>}
-      </div>
-      {expanded && (
-        <div className="space-y-0.5 px-3 pb-2 pl-7">
-          {candidate.excluded && (
-            <p className="font-mono text-[10px] text-orange-400/90">{candidate.excluded}</p>
-          )}
-          {reasons.map(([k, v]) => (
-            <div key={k} className="flex justify-between font-mono text-[10px]">
-              <span className="text-zinc-600">{k}</span>
-              <span className="text-zinc-400">{String(v)}</span>
-            </div>
-          ))}
+          <div className="border-t border-zinc-800 px-3 py-1.5 font-mono text-[10px] text-zinc-600">
+            // switching restarts the session on that machine
+          </div>
         </div>
       )}
     </div>

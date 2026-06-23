@@ -3,18 +3,17 @@ package agent
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/url"
-	"runtime"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 
-	"github.com/dylanstoryyy/lattice/internal/tunnel"
+	"github.com/shleesauce/lattice/internal/tunnel"
 )
 
 // editorDialTimeout bounds the agent's connect to its own loopback code-server
@@ -27,35 +26,28 @@ const editorDialTimeout = 5 * time.Second
 // each, reads the sessionId handshake, and splices it to the right local
 // code-server. It has its own reconnect/backoff (independent of the main
 // /ws/agent link) and is rooted at the process ctx so it survives hub blips.
-func runTunnel(ctx context.Context, agentWSURL string, cfg config, state *agentState) {
-	tunnelURL, err := tunnelURLFrom(agentWSURL, cfg.token, computeAgentID(cfg.name))
-	if err != nil {
-		log.Printf("agent tunnel: bad url: %v", err)
-		return
-	}
-
-	backoff := time.Second
-	for {
-		if ctx.Err() != nil {
-			return
+func runTunnel(ctx context.Context, agentWSURL string, cfg config, state *agentState, ident *identity) {
+	// Shares the agent's reconnect skeleton + jitter (M1/FIX 5). The tunnel has no
+	// non-retryable rejection, so stop is always false.
+	//
+	// The tunnel must register under the SAME id the main link uses, so it reads it
+	// from the shared identity holder on EACH attempt. On a fresh box that id is ""
+	// until the main /ws/agent register completes and adopt()s the hub-assigned id;
+	// until then the tunnel simply backs off and retries (no editor session can
+	// exist yet, so there's nothing to carry). Once the id is known the URL is built
+	// with it and the tunnel connects.
+	reconnectLoop(ctx, "agent tunnel", func() (stop, connected bool) {
+		id := ident.get()
+		if id == "" {
+			return false, false // id not assigned yet — back off and retry
 		}
-		connected := serveTunnel(ctx, tunnelURL, state)
-		if ctx.Err() != nil {
-			return
+		tunnelURL, err := tunnelURLFrom(agentWSURL, cfg.token, id)
+		if err != nil {
+			log.Printf("agent tunnel: bad url: %v", err)
+			return false, false
 		}
-		if connected {
-			backoff = time.Second // a healthy session resets backoff
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
+		return false, serveTunnel(ctx, tunnelURL, state)
+	})
 }
 
 // serveTunnel runs one tunnel connection lifecycle. Returns connected=true if the
@@ -84,31 +76,43 @@ func serveTunnel(ctx context.Context, tunnelURL string, state *agentState) (conn
 			}
 			return true
 		}
-		go handleEditorStream(stream, state)
+		go handleTunnelStream(stream, state)
 	}
 }
 
-// handleEditorStream splices one accepted tunnel stream to the loopback
-// code-server named by its sessionId handshake. After the header the stream is a
-// transparent pipe carrying the browser's HTTP/WebSocket bytes.
-func handleEditorStream(stream net.Conn, state *agentState) {
+// handleTunnelStream splices one accepted tunnel stream to its loopback backend,
+// chosen by the handshake: an editor session's code-server (resolved by
+// sessionId) or an arbitrary dev-server port (preview). After the header the
+// stream is a transparent pipe carrying the browser's HTTP/WebSocket bytes.
+func handleTunnelStream(stream net.Conn, state *agentState) {
 	defer stream.Close()
 
 	br := bufio.NewReader(stream)
-	sessionID, err := tunnel.ReadStreamHeader(br)
+	target, err := tunnel.ReadStreamHeader(br)
 	if err != nil {
 		log.Printf("agent tunnel: read stream header: %v", err)
 		return
 	}
-	addr, ok := state.editors.addrFor(sessionID)
-	if !ok {
-		log.Printf("agent tunnel: no editor for session %s", sessionID)
-		return
+
+	var addr string
+	switch target.Kind {
+	case tunnel.KindPreview:
+		// Preview dials any loopback dev server on this machine. Terminal/editor
+		// access already imply this reach, so it's no new privilege — and binding
+		// to 127.0.0.1 keeps nothing exposed on the agent's external interface (D2).
+		addr = fmt.Sprintf("127.0.0.1:%d", target.Port)
+	default:
+		a, ok := state.editors.addrFor(target.SessionID)
+		if !ok {
+			log.Printf("agent tunnel: no editor for session %s", target.SessionID)
+			return
+		}
+		addr = a
 	}
 
 	backend, err := net.DialTimeout("tcp", addr, editorDialTimeout)
 	if err != nil {
-		log.Printf("agent tunnel: dial code-server %s: %v", addr, err)
+		log.Printf("agent tunnel: dial backend %s: %v", addr, err)
 		return
 	}
 	defer backend.Close()
@@ -116,13 +120,18 @@ func handleEditorStream(stream net.Conn, state *agentState) {
 	done := make(chan struct{}, 2)
 	// br carries any bytes bufio buffered past the header plus the rest of the
 	// stream, so the backend sees the full request.
-	go func() { io.Copy(backend, br); done <- struct{}{} }()
-	go func() { io.Copy(stream, backend); done <- struct{}{} }()
+	// Copy errors are the normal end-of-stream signal for a hijacked relay; the
+	// deferred closes unblock the other direction, so they're intentionally ignored.
+	go func() { _, _ = io.Copy(backend, br); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(stream, backend); done <- struct{}{} }()
 	<-done
 }
 
 // tunnelURLFrom derives the /ws/tunnel URL (with token + agent query) from the
 // already-resolved agent /ws/agent URL, so both connections target the same hub.
+// agentID is the agent's persistent id (v0.2.0), matching the id the hub keyed its
+// registry on, so the editor proxy finds this agent's tunnel by the session's
+// agentId.
 func tunnelURLFrom(agentWSURL, token, agentID string) (string, error) {
 	u, err := url.Parse(agentWSURL)
 	if err != nil {
@@ -134,20 +143,4 @@ func tunnelURLFrom(agentWSURL, token, agentID string) (string, error) {
 	q.Set("agent", agentID)
 	u.RawQuery = q.Encode()
 	return u.String(), nil
-}
-
-// computeAgentID mirrors the hub's agentID() derivation EXACTLY so the editor
-// proxy finds this agent's tunnel by the session's agentId. Note the hub builds
-// it from reg.OS (runtime.GOOS); we pass that in via osID().
-func computeAgentID(hostname string) string {
-	h := strings.ToLower(strings.TrimSpace(hostname))
-	if h == "" {
-		h = "unknown"
-	}
-	return h + "-" + osID()
-}
-
-// osID is runtime.GOOS lowercased/trimmed, matching the hub's agentID() os term.
-func osID() string {
-	return strings.ToLower(strings.TrimSpace(runtime.GOOS))
 }

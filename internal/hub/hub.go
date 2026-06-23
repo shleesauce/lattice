@@ -6,14 +6,21 @@ package hub
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,8 +28,9 @@ import (
 
 // Registration errors.
 var (
-	errFirstFrame = errors.New("hub: first frame must be register")
-	errBadToken   = errors.New("hub: invalid token")
+	errFirstFrame   = errors.New("hub: first frame must be register")
+	errBadToken     = errors.New("hub: invalid token")
+	errDuelRejected = errors.New("hub: duplicate agent instance (duel-banished)")
 )
 
 // offlineAfter is how long without a heartbeat before an agent is considered
@@ -37,10 +45,39 @@ const sweepInterval = 5 * time.Second
 const trashTTL = 30 * 24 * time.Hour
 const trashSweepInterval = 1 * time.Hour
 
+// reapGrace is how long an exited session may sit in the Active view before the
+// reaper auto-archives it (F18). The grace lets you resume a just-exited claude;
+// past it, dead sessions stop cluttering Active. reapInterval is the sweep cadence.
+const reapGrace = 10 * time.Minute
+const reapInterval = 2 * time.Minute
+
+// cmdHistoryKeep caps the unbounded command_history table to its most recent N
+// rows, reaped on the same cadence as the session reaper (reapLoop).
+const cmdHistoryKeep = 1000
+
+// auditLogKeep caps the unbounded audit_log table to its most recent N rows,
+// reaped on the same cadence as command_history. Audit rows accrue per session
+// tool-use and are otherwise only purged on hard session delete.
+const auditLogKeep = 50000
+
+// revokedTokenTTL is how long a revoked per-machine enroll token row is retained
+// before the reaper drops it. The row is dead the moment it's revoked
+// (EnrollTokenValid rejects it); the grace just keeps it visible in the token
+// list for a while so an operator can still see a recent revocation.
+const revokedTokenTTL = 30 * 24 * time.Hour
+
 // agentReadTimeout bounds how long the hub waits for the next frame from an
 // agent. Agents heartbeat every 5s, so a healthy link refreshes this on every
 // read; a half-open socket (sleeping laptop, network partition) trips it and
 // the read loop unwinds instead of leaking the goroutine + connection.
+//
+// It is deliberately LONGER than offlineAfter (15s): the sweep flips an agent to
+// offline (so the UI stops showing it live and dispatch is refused) one heartbeat
+// window before the socket itself is torn down. That ordering is intentional —
+// "registered but not live" is a brief, well-defined grace, not a bug — and the
+// v0.2.0 duel detector only treats an incumbent as a real rival while it is still
+// isLive(offlineAfter), so a stale-but-not-yet-reaped socket never blocks a
+// legitimate reconnect.
 const agentReadTimeout = 20 * time.Second
 
 // agentWriteTimeout bounds a hub→agent write so a dead/slow agent socket cannot
@@ -51,14 +88,41 @@ const agentWriteTimeout = 10 * time.Second
 // socket cannot block the agentws read loop forwarding PTY output.
 const terminalWriteTimeout = 10 * time.Second
 
-// terminalReadTimeout bounds how long the hub waits for the next frame from a
-// browser terminal. An idle interactive shell still pings via gorilla control
-// frames; a dead browser trips this and the bridge unwinds.
+// terminalReadTimeout bounds how long the hub waits for the next frame (or pong)
+// from a browser terminal/session. Each pong refreshes it (see terminalPingInterval),
+// so a HEALTHY idle shell is never dropped; a dead browser trips it and the bridge
+// unwinds.
 const terminalReadTimeout = 5 * time.Minute
+
+// terminalPingInterval is how often the hub pings the browser on a terminal/session
+// WS. Without it an idle mobile socket gets silently dropped by NAT/proxy idle
+// timeouts (often ~60s) long before terminalReadTimeout — the cause of the "greys out
+// every couple minutes, refresh fixes it" symptom. The ping keeps the mapping warm,
+// each pong refreshes the read deadline, and a FAILED ping closes the conn so a dead
+// socket is detected in seconds instead of lingering to the 5m timeout.
+const terminalPingInterval = 30 * time.Second
 
 // pendingTimeout bounds a file/wake round-trip to the agent before the hub
 // gives up and returns an error to the HTTP caller.
 const pendingTimeout = 10 * time.Second
+
+// dashboardReadTimeout bounds how long the hub waits for the next frame (or pong)
+// from a browser dashboard before tearing the connection down. The dashboard is
+// read-mostly — the server pushes, the browser rarely sends — so without a
+// deadline a half-open/silent socket (closed laptop lid, dropped Wi-Fi) leaks the
+// read goroutine + conn forever. dashboardPingInterval is how often the hub sends
+// a keepalive ping; each pong refreshes the read deadline, so a HEALTHY idle
+// dashboard is never disconnected. Ping interval is comfortably under the timeout
+// so two missed pongs are tolerated before the link is declared dead.
+const dashboardReadTimeout = 60 * time.Second
+const dashboardPingInterval = 25 * time.Second
+
+// fleetBroadcastInterval is the max cadence at which per-heartbeat fleet churn is
+// flushed to dashboards. Heartbeats arrive every 5s per agent, each triggering a
+// full ListAgents + JSON marshal to every client (O(agents²) per tick); coalescing
+// to at most one broadcast/sec collapses that without making the UI feel laggy.
+// Membership changes (register/disconnect) still broadcast immediately.
+const fleetBroadcastInterval = 1 * time.Second
 
 // Hub holds the shared runtime state for a running controller.
 type Hub struct {
@@ -68,22 +132,111 @@ type Hub struct {
 	projectsRoot string
 	store        *Store
 	registry     *Registry
+
+	// Config-driven, de-personalized settings (LoadConfig → defaults).
+	excludedDevices     []string
+	projectRegistry     bool
+	projectRegistryPath string
+	previewPortMin      int
+	previewPortMax      int
+	// hubURL is the operator-configured canonical base URL (no trailing slash).
+	// Empty ⇒ derive from the request Host (legacy behavior). Used by the OPEN
+	// installer endpoints to avoid trusting a spoofed Host. See Config.HubURL.
+	hubURL string
+
+	// cfgMu guards the mutable config the first-run wizard can rewrite at runtime
+	// (Phase 2): meshName, projectsRoot, adminPasswordHash, setupComplete. Read
+	// these via the accessor methods (ProjectsRoot, needsSetup, …), never directly.
+	cfgMu             sync.RWMutex
+	meshName          string
+	adminPasswordHash string
+	setupComplete     bool
+
+	// Auth (Phase 3): live login sessions + per-IP login rate limiter. Enforced
+	// only when adminPasswordHash != "" (see auth.go).
+	sessions     *sessionStore
+	loginLimiter *loginLimiter
+
+	// capLimiter throttles the two UNGATED capability endpoints (/api/hooks/state,
+	// /api/approvals/{nonce}) per client IP. Their nonces/tokens are unguessable
+	// (144-bit), so this is DoS/abuse protection, not brute-force defense; the cap is
+	// generous enough that a busy multi-session agent's hooks never trip it. Loopback
+	// (the co-located agent) is exempt at the call site.
+	capLimiter *rateLimiter
+
+	// approvals holds in-memory phone approve/deny capabilities (fire-and-forget,
+	// v0.1.5): armed when a session goes idle, consumed by the ntfy action link.
+	approvals *approvalStore
+
+	// hooks maps a live claude session to its per-session Claude Code hook token
+	// (C, v0.1.5): the credential the ungated /api/hooks/state endpoint validates so
+	// CC hooks can report precise turn-done / awaiting-approval / end edges.
+	hooks *hookStore
+
+	// releases memoizes the GitHub release list (release-notes panel + update check).
+	releases *releaseCache
+
+	// updating guards the one-click fleet update (handleUpdate). A second POST
+	// /api/update while a cascade is in flight is rejected (409) so overlapping
+	// cascades can't double-restart agents (v0.1.8).
+	updating atomic.Bool
+
+	// duel adjudicates two rival agent processes claiming one id (v0.2.0). It holds
+	// the short-lived banish set the register path consults; see identity.go.
+	duel *duelGuard
+
+	// autoNamer derives a short title from a fresh session's first user message
+	// (I — session naming, v0.1.5). Tracks which sessions are user-named (a manual
+	// rename always wins) and which are already being titled (de-dupe concurrent
+	// idle edges). FREE heuristic — never an LLM call (D35 billing).
+	autoNamer *autoNamer
+
+	// fleetDirty is set when a heartbeat changed fleet metrics; the coalescing
+	// flushFleetLoop broadcasts at most once per fleetBroadcastInterval when set.
+	fleetMu    sync.Mutex
+	fleetDirty bool
 }
 
 // Run parses flags, opens the store, and serves until ctx is cancelled.
 func Run(ctx context.Context, args []string, version string) error {
+	// Config file (~/.lattice/config.json) supplies the de-personalized defaults;
+	// an explicitly-passed flag still overrides because cfg values are the flag
+	// defaults.
+	cfg := LoadConfig()
+
 	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
-	addr := fs.String("addr", ":7400", "listen address")
-	dbPath := fs.String("db", "lattice.db", "sqlite database path")
-	token := fs.String("token", "", "enrollment token (random 8-char if empty)")
+	addr := fs.String("addr", cfg.Addr, "listen address")
+	// Default the db into the ~/.lattice data dir (alongside config.json + the
+	// token), NOT a bare relative "lattice.db". The persistent services run
+	// `lattice hub` with no --db and an unpredictable cwd (launchd → /, systemd
+	// --user → $HOME, nohup → wherever curl|sh ran), so a relative default lands
+	// the db in the wrong place or fails to open at the fs root. pm2 (live hub)
+	// passes --db explicitly, so it overrides this and is unaffected.
+	dbPath := fs.String("db", filepath.Join(configDir(), "lattice.db"), "sqlite database path")
+	token := fs.String("token", "", "enrollment token (random 128-bit if empty)")
 	distDir := fs.String("dist", "dist", "directory of cross-compiled agent binaries served at /dl/")
-	projectsRoot := fs.String("projects-root", defaultProjectsRoot(), "directory scanned by /api/projects for workspace projects")
+	projectsRoot := fs.String("projects-root", cfg.ProjectsRoot, "directory scanned by /api/projects for workspace projects")
+	insecure := fs.Bool("insecure-no-auth", false, "allow listening on a public address with no admin password (trusted-network opt-in)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	// Token resolution (only the EMPTY-flag path changes, so pm2's explicit
+	// --token is untouched): flag → LATTICE_TOKEN env → persisted token file →
+	// freshly generated (and persisted best-effort).
 	if *token == "" {
-		*token = randomToken()
+		if env := os.Getenv("LATTICE_TOKEN"); env != "" {
+			*token = env
+		} else if persisted := LoadPersistedToken(); persisted != "" {
+			*token = persisted
+		} else {
+			// randomToken panics if crypto/rand is unavailable — refuse to start
+			// rather than mint a guessable master credential.
+			*token = randomToken()
+			if err := PersistToken(*token); err != nil {
+				log.Printf("token: could not persist generated token: %v (continuing)", err)
+			}
+		}
 	}
 
 	store, err := OpenStore(*dbPath)
@@ -93,26 +246,76 @@ func Run(ctx context.Context, args []string, version string) error {
 	defer store.Close()
 
 	h := &Hub{
-		version:      version,
-		token:        *token,
-		distDir:      *distDir,
-		projectsRoot: *projectsRoot,
-		store:        store,
-		registry:     NewRegistry(),
+		version:             version,
+		token:               *token,
+		distDir:             *distDir,
+		projectsRoot:        *projectsRoot,
+		store:               store,
+		registry:            NewRegistry(),
+		meshName:            cfg.MeshName,
+		excludedDevices:     cfg.ExcludedDevices,
+		projectRegistry:     cfg.ProjectRegistry,
+		projectRegistryPath: cfg.ProjectRegistryPath,
+		previewPortMin:      cfg.PreviewPortMin,
+		previewPortMax:      cfg.PreviewPortMax,
+		hubURL:              strings.TrimRight(cfg.HubURL, "/"),
+		adminPasswordHash:   cfg.AdminPasswordHash,
+		// setupComplete is true unless the config EXPLICITLY says otherwise
+		// (legacy/hand-written configs with no field are already-configured).
+		setupComplete: !NeedsSetup(cfg),
+		sessions:      newSessionStore(),
+		loginLimiter:  newLoginLimiter(),
+		capLimiter:    newRateLimiter(capLimitMax, capLimitWindow),
+		approvals:     newApprovalStore(),
+		hooks:         newHookStore(),
+		releases:      newReleaseCache(),
+		autoNamer:     newAutoNamer(),
+		duel:          newDuelGuard(),
+	}
+
+	// Secure-by-default: a fully-configured hub (setup done) with NO admin password
+	// must not listen on a public interface unless the operator explicitly opts in.
+	// On a passwordless hub requireAuth is a pass-through, so a public bind would
+	// expose every admin route — including session-create (RCE on agents) and the
+	// editor/preview proxies — to anyone who can reach the port. The first-run
+	// window (setup not yet complete) is exempt so the wizard is reachable over the
+	// network to set the password in the first place. LATTICE_INSECURE_NO_AUTH=1 is
+	// an env-equivalent of --insecure-no-auth for service managers.
+	insecureOptIn := *insecure || os.Getenv("LATTICE_INSECURE_NO_AUTH") == "1"
+	if !h.authEnabled() && h.setupComplete && isPubliclyBound(*addr) && !insecureOptIn {
+		return fmt.Errorf("refusing to listen on public address %q without an admin password: "+
+			"set one with `lattice hub set-password`, or pass --insecure-no-auth "+
+			"(or LATTICE_INSECURE_NO_AUTH=1) to run open on a trusted network", *addr)
 	}
 
 	mux := h.routes()
-	srv := &http.Server{Addr: *addr, Handler: mux}
+	// Only bound the header read — NOT ReadTimeout/WriteTimeout/IdleTimeout, which
+	// would sever the long-lived WebSockets (/ws/agent, /ws/session, /ws/tunnel,
+	// /ws/dashboard) and the editor/preview proxies. ReadHeaderTimeout mitigates
+	// slow-header (Slowloris) without touching established connections.
+	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 15 * time.Second}
 
-	go h.sweepLoop(ctx)
-	go h.trashSweepLoop(ctx)
+	// Supervised: a panic in any of these long-lived loops is recovered + the loop
+	// restarted, instead of crashing the whole controller (which would drop every
+	// agent + tunnel at once and trigger a fleet-wide reconnect wave). See D-resilience.
+	h.superviseLoop(ctx, "sweepLoop", func() { h.sweepLoop(ctx) })
+	h.superviseLoop(ctx, "trashSweepLoop", func() { h.trashSweepLoop(ctx) })
+	h.superviseLoop(ctx, "reapLoop", func() { h.reapLoop(ctx) })
+	h.superviseLoop(ctx, "flushFleetLoop", func() { h.flushFleetLoop(ctx) })
+	h.superviseLoop(ctx, "sessionCleanupLoop", func() { h.sessionCleanupLoop(ctx) })
 
 	log.Printf("lattice hub %s starting", version)
+	log.Printf("  mesh:   %s   (config: %s)", cfg.MeshName, configSource())
 	log.Printf("  listen: %s", *addr)
 	log.Printf("  db:     %s", *dbPath)
 	log.Printf("  dist:   %s   (binaries served at /dl/)", *distDir)
 	log.Printf("  projects: %s   (scanned by /api/projects)", *projectsRoot)
-	log.Printf("  token:  %s   (enroll agents with --token %s)", *token, *token)
+	log.Printf("  token:  %s   (full token in %s)", tokenHint(*token), func() string {
+		if p := tokenFilePath(); p != "" {
+			return p
+		}
+		return "~/.lattice/.lattice-token"
+	}())
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -132,6 +335,69 @@ func Run(ctx context.Context, args []string, version string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// superviseLoop runs a long-lived hub loop, recovering and RESTARTING it on panic
+// rather than letting one panic crash the whole controller (which would drop every
+// agent + tunnel at once and trigger a fleet-wide reconnect wave). fn must return
+// only when ctx is cancelled; a panic is logged with a stack and the loop restarts
+// after a 1s backoff so a hot panic can't spin. (v0.2.0 resilience.)
+func (h *Hub) superviseLoop(ctx context.Context, name string, fn func()) {
+	go func() {
+		for ctx.Err() == nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("hub: PANIC in %s (restarting): %v\n%s", name, r, debug.Stack())
+					}
+				}()
+				fn()
+			}()
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+}
+
+// goSafe runs a one-shot detached goroutine, recovering any panic so a bug in a
+// background task (transcript-derived PR detection / auto-naming, an ntfy push)
+// can't crash the whole hub. Use for fire-and-forget work spawned off a handler.
+func goSafe(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("hub: PANIC in %s: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
+}
+
+// isPubliclyBound reports whether addr listens on anything other than loopback.
+// A wildcard host (":7400", "0.0.0.0", "::") binds every interface; a specific
+// non-loopback IP or a hostname (e.g. a tailnet name) is routable. Only the
+// loopback addresses (127.0.0.1, ::1, localhost) count as private.
+func isPubliclyBound(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
 }
 
 // sweepLoop periodically marks stale agents offline and broadcasts on change.
@@ -177,12 +443,96 @@ func (h *Hub) trashSweepLoop(ctx context.Context) {
 	}
 }
 
-// broadcastFleet sends a full fleet snapshot to every dashboard client.
+// reapLoop auto-archives exited sessions older than reapGrace (F18), so dead
+// sessions don't linger in Active forever. Runs once at startup, then every
+// reapInterval. Broadcasts only when something was reaped.
+func (h *Hub) reapLoop(ctx context.Context) {
+	reap := func() {
+		n, err := h.store.ArchiveExitedBefore(time.Now().Add(-reapGrace))
+		if err != nil {
+			log.Printf("reap sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("reap sweep: archived %d exited session(s)", n)
+			h.broadcastSessions()
+		}
+		// Bound the command_history table on the same cadence (no session
+		// broadcast: it's not part of the workspace view).
+		if c, err := h.store.ReapCommandHistory(cmdHistoryKeep); err != nil {
+			log.Printf("reap sweep: command history: %v", err)
+		} else if c > 0 {
+			log.Printf("reap sweep: pruned %d old command-history row(s)", c)
+		}
+		// Bound the audit_log table (row-count cap) and drop long-revoked
+		// per-machine enroll tokens (age cutoff). Neither affects the workspace
+		// view, so no broadcast.
+		if c, err := h.store.ReapAuditLog(auditLogKeep); err != nil {
+			log.Printf("reap sweep: audit log: %v", err)
+		} else if c > 0 {
+			log.Printf("reap sweep: pruned %d old audit-log row(s)", c)
+		}
+		if c, err := h.store.ReapRevokedEnrollTokens(time.Now().Add(-revokedTokenTTL)); err != nil {
+			log.Printf("reap sweep: revoked enroll tokens: %v", err)
+		} else if c > 0 {
+			log.Printf("reap sweep: pruned %d long-revoked enroll token(s)", c)
+		}
+		// Drop expired fire-and-forget approval nonces + stale expected-exit markers.
+		h.approvals.sweep(time.Now())
+		// Drop hook tokens for sessions that never sent a clean SessionEnd.
+		h.hooks.sweep(time.Now())
+	}
+	reap()
+	ticker := time.NewTicker(reapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reap()
+		}
+	}
+}
+
+// broadcastFleet sends a full fleet snapshot to every dashboard client. Used for
+// membership changes (register/disconnect) and sweep transitions where the UI
+// should update instantly. Per-heartbeat metric churn goes through markFleetDirty
+// instead, which the flush loop coalesces to ≤1 broadcast/sec.
 func (h *Hub) broadcastFleet() {
 	h.registry.broadcast(map[string]any{
 		"type":   "fleet",
 		"agents": h.fleet(),
 	})
+}
+
+// markFleetDirty records that fleet metrics changed (a heartbeat) without
+// broadcasting synchronously. flushFleetLoop fans the snapshot out on its next
+// tick. This collapses N agents × every-5s heartbeats from O(agents²) marshals
+// per tick down to one snapshot per fleetBroadcastInterval.
+func (h *Hub) markFleetDirty() {
+	h.fleetMu.Lock()
+	h.fleetDirty = true
+	h.fleetMu.Unlock()
+}
+
+// flushFleetLoop broadcasts a coalesced fleet snapshot at most once per
+// fleetBroadcastInterval, but only when a heartbeat marked the fleet dirty.
+func (h *Hub) flushFleetLoop(ctx context.Context) {
+	ticker := time.NewTicker(fleetBroadcastInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.fleetMu.Lock()
+			dirty := h.fleetDirty
+			h.fleetDirty = false
+			h.fleetMu.Unlock()
+			if dirty {
+				h.broadcastFleet()
+			}
+		}
+	}
 }
 
 // broadcastSessions pushes a fresh session snapshot to every dashboard client
@@ -195,7 +545,7 @@ func (h *Hub) broadcastSessions() {
 	}
 	out := make([]sessionView, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, toSessionView(rec))
+		out = append(out, h.sessionViewLive(rec))
 	}
 	h.registry.broadcast(map[string]any{
 		"type":     "sessions",
@@ -228,6 +578,19 @@ func (h *Hub) fleet() []Agent {
 		}
 	}
 
+	// Overlay operator-set display-name labels (Phase 4 rename). Loaded once here
+	// so a rename survives the agent's re-register (which UPSERTs Name=hostname).
+	if labels, err := h.store.AgentLabels(); err != nil {
+		log.Printf("fleet: load agent labels failed: %v", err)
+	} else if len(labels) > 0 {
+		for id, a := range byID {
+			if label, ok := labels[id]; ok && label != "" {
+				a.Name = label
+				byID[id] = a
+			}
+		}
+	}
+
 	out := make([]Agent, 0, len(byID))
 	for _, a := range byID {
 		out = append(out, a)
@@ -257,14 +620,88 @@ func agentFromRecord(rec AgentRecord) Agent {
 		LoadAvg1:     rec.Metrics.LoadAvg1,
 		CPUCount:     rec.Metrics.CPUCount,
 		MACs:         copyMACs(rec.Metrics.MACs),
+		LANIPs:       copyMACs(rec.Metrics.LANIPs),
 	}
 }
 
-// randomToken returns an 8-char hex enrollment token.
+// matchesMasterToken is the single constant-time comparison of a presented secret
+// against the master token (h.token). Every master-token check — agent/tunnel
+// enrollment, the admin API Bearer, and isMasterToken — routes through here so the
+// comparison and its locking are defined in exactly one place. No lock is taken:
+// h.token is set once in Run() and never mutated at runtime (unlike
+// adminPasswordHash, which set-password/setup rewrite under cfgMu), so a read is
+// race-free. An empty presented value never matches (the master token is always
+// non-empty), which keeps the auth fallback from treating a missing header as the
+// master credential.
+func (h *Hub) matchesMasterToken(presented string) bool {
+	if presented == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(h.token)) == 1
+}
+
+// tokenValid reports whether a presented enrollment token is acceptable. The
+// MASTER token (h.token) is ALWAYS valid and never revocable — the whole live
+// fleet enrolls with it (baked into every service's launchd/systemd/schtask
+// args), so rejecting it would drop every agent on reconnect. A per-machine
+// token (Phase 4) is valid only while it exists and is not revoked. Constant-time
+// compare on the master path avoids a token-length/value timing oracle.
+func (h *Hub) tokenValid(presented string) bool {
+	if h.matchesMasterToken(presented) {
+		return true
+	}
+	ok, err := h.store.EnrollTokenValid(presented)
+	if err != nil {
+		log.Printf("token: enroll-token lookup failed: %v", err)
+		return false
+	}
+	return ok
+}
+
+// isMasterToken reports whether a presented token IS the master token (so the
+// caller can skip per-machine bookkeeping like BindEnrollToken for master enrolls).
+func (h *Hub) isMasterToken(presented string) bool {
+	return h.matchesMasterToken(presented)
+}
+
+// tokenMayActForAgent reports whether a presented enrollment token is allowed to
+// register/act as agentID. This binds an action to the token's IDENTITY, not just
+// its validity, so a holder of one machine's per-machine token cannot impersonate
+// another machine (FIX 2: /ws/tunnel hijack). The rules mirror enrollment:
+//   - the MASTER token is the trusted root and may act for ANY agentID;
+//   - a per-machine token may act ONLY for the agentID it is bound to (the box that
+//     enrolled with it via /ws/agent, recorded by BindEnrollToken);
+//   - anything else (unknown/revoked/unbound token, or a mismatched agentID) is
+//     rejected.
+//
+// A per-machine token is "unbound" until its agent's first /ws/agent register
+// stamps agent_id; until then it cannot open a tunnel, which is correct — the
+// agent's normal startup registers before it dials the tunnel.
+func (h *Hub) tokenMayActForAgent(presented, agentID string) bool {
+	if h.matchesMasterToken(presented) {
+		return true
+	}
+	bound, ok, err := h.store.EnrollTokenAgentID(presented)
+	if err != nil {
+		log.Printf("token: enroll-token agent lookup failed: %v", err)
+		return false
+	}
+	return ok && bound == agentID
+}
+
+// randomToken returns a 32-char hex enrollment token (16 bytes / 128 bits). This
+// is the hub's long-lived master credential — it's both the agent-enrollment
+// token and the admin API Bearer (D37) — so it gets full 128-bit entropy rather
+// than a short code. It PANICS if crypto/rand is unavailable rather than emitting
+// a predictable secret: a guessable master token (the old literal fallback) is far
+// worse than refusing to start, and rand.Read never fails on supported platforms.
+// Both call sites are startup mint paths (hub Run / hub init), so a panic is a
+// loud refusal-to-start, and keeping the string signature avoids rippling into the
+// init.go caller.
 func randomToken() string {
-	b := make([]byte, 4)
+	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "lattice0"
+		panic(fmt.Sprintf("hub: crypto/rand unavailable generating master token: %v", err))
 	}
 	return hex.EncodeToString(b)
 }
@@ -290,20 +727,27 @@ func newSessionID() string {
 	return uuid.NewString()
 }
 
-// defaultProjectsRoot is $HOME/AI-Hub/projects — the Syncthing-synced workspace.
+// defaultProjectsRoot is $HOME/projects — the generic workspace root a stock hub
+// scans. Operators who keep their projects elsewhere (e.g. a file-synced folder)
+// set projectsRoot explicitly in config.json.
 func defaultProjectsRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "projects"
 	}
-	return filepath.Join(home, "AI-Hub", "projects")
+	return filepath.Join(home, "projects")
 }
 
-// randomID returns a random 16-char hex id with a fallback prefix.
+// randomID returns a random 16-char hex id. It is used for cmd/term/req
+// correlation ids whose unguessability gates which browser/agent can resolve a
+// pending round-trip, so a predictable timestamp fallback was a (small) hijack
+// surface. It now PANICS if crypto/rand is unavailable rather than emitting a
+// guessable id — rand.Read never fails on supported platforms, and a hub with no
+// entropy is unsafe to keep serving. The prefix is retained only as panic context.
 func randomID(prefix string) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return prefix + time.Now().Format("150405.000")
+		panic(fmt.Sprintf("hub: crypto/rand unavailable generating %s id: %v", prefix, err))
 	}
 	return hex.EncodeToString(b)
 }

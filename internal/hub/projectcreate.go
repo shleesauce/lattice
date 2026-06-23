@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,19 +12,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // folderNameRe constrains a project folder to a lowercase, hyphen-safe slug so
-// it is a valid directory name AND a clean Project Registry / wiki key.
+// it is a valid directory name AND a clean project-registry key.
 var folderNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // gitTimeout bounds the best-effort git init/commit so a slow or hung git can't
 // stall the create request.
 const gitTimeout = 15 * time.Second
-
-// indexScriptTimeout bounds the PROJECT_INDEX regeneration.
-const indexScriptTimeout = 30 * time.Second
 
 // envVar is one scaffolded environment variable.
 type envVar struct {
@@ -50,9 +46,10 @@ type createProjectBody struct {
 	LaunchClaude    *bool    `json:"launchClaude"`
 }
 
-// handleCreateProject scaffolds a brand-new AI-Hub project on the hub host,
-// optionally registers it into the AI-Hub, and optionally auto-launches a Claude
-// session seeded with the onboarding brief to finish the AI-specific wiring.
+// handleCreateProject scaffolds a brand-new project on the hub host, optionally
+// registers it into the configured project registry, and optionally auto-launches
+// a Claude session seeded with the onboarding brief to finish the AI-specific
+// wiring.
 //
 // The scaffold + brief are written deterministically by the hub (so they exist
 // the moment the call returns and propagate to every machine via Syncthing); the
@@ -85,8 +82,8 @@ func (h *Hub) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projDir := filepath.Join(h.projectsRoot, folder)
-	aiHubRoot := filepath.Dir(h.projectsRoot)
+	root := h.ProjectsRoot()
+	projDir := filepath.Join(root, folder)
 
 	if _, err := os.Stat(projDir); err == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -98,7 +95,11 @@ func (h *Hub) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	register := body.Register == nil || *body.Register
+	// Registration appends a row to the configured project-registry markdown file.
+	// It only runs when the hub has the registry enabled AND a registry path set;
+	// a stock hub skips it regardless of the request flag.
+	registryEnabled := h.projectRegistry && h.projectRegistryPath != ""
+	register := (body.Register == nil || *body.Register) && registryEnabled
 	launchClaude := body.LaunchClaude == nil || *body.LaunchClaude
 
 	now := time.Now()
@@ -130,7 +131,9 @@ func (h *Hub) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if register {
-		warnings = append(warnings, h.registerProject(aiHubRoot, spec)...)
+		warnings = append(warnings, h.registerProject(spec)...)
+	} else if (body.Register == nil || *body.Register) && !registryEnabled {
+		warnings = append(warnings, "registration skipped: project registry is disabled on this hub")
 	}
 
 	var sessionV *sessionView
@@ -165,7 +168,7 @@ type projectSpec struct {
 	created    time.Time
 }
 
-// scaffoldProject writes the standard AI-Hub skeleton + the onboarding brief.
+// scaffoldProject writes the standard project skeleton + the onboarding brief.
 func scaffoldProject(projDir string, s projectSpec) error {
 	for _, dir := range []string{projDir, filepath.Join(projDir, "docs"), filepath.Join(projDir, ".claude")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -227,7 +230,6 @@ func claudeMD(s projectSpec) string {
 	b.WriteString(bulletList(s.agents, "_none yet_"))
 	b.WriteString("\n")
 
-	b.WriteString("Follow the global ~/AI-Hub/CLAUDE.md rules; project lives in the synced ~/AI-Hub/projects.\n")
 	return b.String()
 }
 
@@ -376,41 +378,23 @@ func (h *Hub) launchOnboardingSession(projDir string, s projectSpec) (*sessionVi
 		warnings = append(warnings, "launched on a remote agent; the project files may need to sync (Syncthing) before Claude can read them")
 	}
 
-	rec, err := h.createOnAgent(proto.SessionClaude, "project", projDir, s.official, agentID, "")
+	// D35: the Claude session is an interactive PTY, so the onboarding brief is
+	// SEEDED into it (passed in the create payload). The agent types it in once the
+	// TUI has settled — a readiness check, not a blind delay — so the brief isn't
+	// dropped on a slow/cold/remote box.
+	rec, err := h.createOnAgent(proto.SessionClaude, "project", projDir, s.official, agentID, "", onboardingSeedPrompt, "", false, "", false)
 	if err != nil {
 		warnings = append(warnings, "project created; Claude session launch failed: "+err.Error())
 		return nil, warnings
-	}
-
-	if _, online := h.registry.getAgent(agentID); online {
-		// D35: the Claude session is an interactive PTY now, so the onboarding brief
-		// is typed in as keystrokes (the same client→agent input path the terminal
-		// uses) — the prompt text followed by a carriage return to submit the turn.
-		// A short delay lets the claude TUI finish booting before it receives input,
-		// otherwise the first keystrokes land before the prompt is ready.
-		go func(agentID, sessionID string) {
-			time.Sleep(onboardingSeedDelay)
-			cur, online := h.registry.getAgent(agentID)
-			if !online {
-				return
-			}
-			data := base64.StdEncoding.EncodeToString([]byte(onboardingSeedPrompt + "\r"))
-			_ = cur.send(proto.TypeTermInput, proto.TermDataPayload{TermID: sessionID, Data: data})
-		}(agentID, rec.ID)
-	} else {
-		warnings = append(warnings, "session created but the agent went offline before seeding the onboarding prompt")
 	}
 
 	view := toSessionView(rec)
 	return &view, warnings
 }
 
-// onboardingSeedDelay gives the interactive claude TUI time to boot before the
-// onboarding brief is typed in, so the keystrokes aren't dropped pre-prompt (D35).
-const onboardingSeedDelay = 3 * time.Second
-
 // onboardingSeedPrompt is the single user turn injected into the new Claude
-// session so it picks up the brief and finishes setup autonomously.
+// session so it picks up the brief and finishes setup autonomously. It is seeded
+// via SessionCreatePayload.SeedInput; the agent types it in once the TUI settles.
 const onboardingSeedPrompt = "You've just been launched inside a freshly scaffolded project. " +
 	"Read docs/ONBOARDING.md and complete the Setup tasks listed there — wire the intended " +
 	"connectors/MCPs/agents, confirm env vars, set up the project structure for the stack, " +

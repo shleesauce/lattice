@@ -2,6 +2,8 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // handleProjects routes /api/projects: GET lists the workspace projects,
@@ -26,10 +28,10 @@ func (h *Hub) handleProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListProjects answers GET /api/projects with the directories under the
-// configured projects root (the Syncthing-synced ~/AI-Hub/projects). Dotfiles
-// and plain files are skipped.
+// configured projects root. Dotfiles and plain files are skipped.
 func (h *Hub) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	entries, err := os.ReadDir(h.projectsRoot)
+	root := h.ProjectsRoot()
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		// An absent root is not an error to the caller — just no projects yet.
 		writeJSON(w, http.StatusOK, map[string]any{"projects": []any{}})
@@ -44,7 +46,7 @@ func (h *Hub) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		out = append(out, project{Name: e.Name(), Path: filepath.Join(h.projectsRoot, e.Name())})
+		out = append(out, project{Name: e.Name(), Path: filepath.Join(root, e.Name())})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
@@ -77,6 +79,10 @@ func (h *Hub) handleSessions(w http.ResponseWriter, r *http.Request) {
 			h.handleUpdateSession(w, r, id)
 		case action == "resume" && r.Method == http.MethodPost:
 			h.handleResumeSession(w, r, id)
+		case action == "transcript" && r.Method == http.MethodGet:
+			h.handleTranscript(w, r, id)
+		case action == "telemetry" && r.Method == http.MethodGet:
+			h.handleSessionTelemetry(w, r, id)
 		default:
 			http.NotFound(w, r)
 		}
@@ -91,7 +97,7 @@ func (h *Hub) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]sessionView, 0, len(recs))
 	for _, rec := range recs {
-		out = append(out, toSessionView(rec))
+		out = append(out, h.sessionViewLive(rec))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
@@ -100,13 +106,31 @@ func (h *Hub) handleListSessions(w http.ResponseWriter, r *http.Request) {
 // (default — a synced project, auto-placeable) or "device" (machine-local work
 // pinned to PinAgentId, cwd = that device's home).
 type createSessionBody struct {
-	Kind        string `json:"kind"`
-	Scope       string `json:"scope"`
-	ProjectPath string `json:"projectPath"`
-	Title       string `json:"title"`
-	UserAgentID string `json:"userAgentId"`
-	PinAgentID  string `json:"pinAgentId"`
+	Kind           string `json:"kind"`
+	Scope          string `json:"scope"`
+	ProjectPath    string `json:"projectPath"`
+	Title          string `json:"title"`
+	UserAgentID    string `json:"userAgentId"`
+	PinAgentID     string `json:"pinAgentId"`
+	PermissionMode string `json:"permissionMode"` // claude only; agent validates + defaults
+	NotifyOnIdle   bool   `json:"notifyOnIdle"`   // claude only; ping my phone when it waits or finishes
+	Model          string `json:"model"`          // claude only; full model id (agent validates against allow-list)
+	FastMode       bool   `json:"fastMode"`       // claude only; low-effort "fast" launch (--effort low)
+	// WakeOnPlace turns a manual two-step (wake in Fleet, then place) into ONE
+	// action: if the pinned device is asleep but otherwise eligible, the hub wakes
+	// it via a same-subnet relay, waits for the agent to rejoin, THEN starts the
+	// session. Only meaningful with an explicit PinAgentID. (v0.1.5 Phase F.)
+	WakeOnPlace bool `json:"wakeOnPlace"`
 }
+
+// agentWakeRejoinTimeout bounds how long handleCreateSession waits for a woken
+// machine's agent to heartbeat back in before giving up. A cold boot + agent
+// reconnect typically lands well under this; past it we report a clear timeout
+// rather than hanging the request.
+const agentWakeRejoinTimeout = 90 * time.Second
+
+// agentWakePollInterval is how often the wake-then-place wait re-checks liveness.
+const agentWakePollInterval = 2 * time.Second
 
 func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body createSessionBody
@@ -147,6 +171,18 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if scope == "project" && pin == "" {
 		pin = h.defaultPin()
 	}
+
+	// Wake-then-place: if the pinned target is asleep, wake it via a same-subnet
+	// relay and wait for its agent to rejoin BEFORE scoring placement — so the
+	// machine is online and eligible by the time we choose a host. One action
+	// instead of "wake in Fleet, wait, then place".
+	if body.WakeOnPlace && body.PinAgentID != "" {
+		if err := h.wakeAndWait(body.PinAgentID); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+
 	req := PlacementRequest{
 		Kind:        kind,
 		ProjectPath: projectPath,
@@ -171,7 +207,18 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "")
+	// Only a claude session can go idle/finish in a way worth a phone ping; ignore
+	// the flag for terminal/editor so a stray toggle can't arm a never-firing notify.
+	notifyOnIdle := body.NotifyOnIdle && req.Kind == proto.SessionClaude
+	// Model + fast mode only apply to a claude session; ignore stray values on
+	// terminal/editor so a leftover toggle can't alter their launch.
+	model := ""
+	fastMode := false
+	if req.Kind == proto.SessionClaude {
+		model = strings.TrimSpace(body.Model)
+		fastMode = body.FastMode
+	}
+	rec, err := h.createOnAgent(req.Kind, scope, projectPath, body.Title, placement.Chosen, "", "", body.PermissionMode, notifyOnIdle, model, fastMode)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -180,6 +227,62 @@ func (h *Hub) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session":   toSessionView(rec),
 		"placement": placement,
 	})
+}
+
+// wakeAndWait wakes a pinned (possibly sleeping) target via a same-subnet relay
+// and blocks until its agent rejoins the fleet (heartbeat live) or
+// agentWakeRejoinTimeout elapses. A no-op fast path returns immediately when the
+// target is already live, so wake-then-place is free when the box is already up.
+func (h *Hub) wakeAndWait(targetID string) error {
+	if _, live := h.registry.liveAgent(targetID); live {
+		return nil // already up — nothing to wake
+	}
+
+	fleet := h.fleet()
+	var target *Agent
+	for i := range fleet {
+		if fleet[i].ID == targetID {
+			target = &fleet[i]
+			break
+		}
+	}
+	if target == nil {
+		return errors.New("unknown machine: " + targetID)
+	}
+	if len(target.MACs) == 0 {
+		return errors.New("no known MAC for this machine — can't wake it")
+	}
+
+	choice := selectWakeRelay(wakeTargetForAgent(*target), fleet)
+	if choice.RelayID == "" {
+		return errors.New(choice.Reason)
+	}
+
+	reqID := newReqID()
+	env, err := h.roundTrip(choice.RelayID, reqID, proto.TypeWake, proto.WakePayload{ReqID: reqID, MAC: choice.MAC})
+	if err != nil {
+		return fmt.Errorf("wake relay failed: %w", err)
+	}
+	var res proto.WakeResultPayload
+	if err := proto.As(env, &res); err != nil || !res.OK {
+		if res.Error != "" {
+			return errors.New("wake failed: " + res.Error)
+		}
+		return errors.New("wake failed on relay " + choice.RelayID)
+	}
+
+	// Poll for the agent to rejoin. The agent reconnects + heartbeats on boot;
+	// liveAgent gates on a fresh heartbeat within offlineAfter.
+	deadline := time.Now().Add(agentWakeRejoinTimeout)
+	for {
+		if _, live := h.registry.liveAgent(targetID); live {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("woke the machine but its agent didn't rejoin in time")
+		}
+		time.Sleep(agentWakePollInterval)
+	}
 }
 
 // deviceExcludeReason pulls the placement exclusion reason for a pinned device so
@@ -200,7 +303,7 @@ func deviceExcludeReason(p PlacementResult, agentID string) string {
 // chosen agent, and flips the row to live on ack. resumeID is non-empty only for
 // a resume onto a (possibly different) agent. The session row id is reused on
 // resume so the logical conversation keeps one identity (D20).
-func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID string) (SessionRecord, error) {
+func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, agentID, resumeID, seedInput, permissionMode string, notifyOnIdle bool, model string, fastMode bool) (SessionRecord, error) {
 	now := time.Now()
 	sessionID := resumeID
 	isResume := resumeID != ""
@@ -222,6 +325,8 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 		// frozen at creation and resume always returns here (see handleResumeSession).
 		Pinned:       true,
 		Scope:        scope,
+		NotifyOnIdle: notifyOnIdle,
+		Model:        model,
 		CreatedAt:    now,
 		LastActiveAt: now,
 	}
@@ -234,13 +339,27 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 
 	reqID := newReqID()
 	create := proto.SessionCreatePayload{
-		ReqID:     reqID,
-		SessionID: sessionID,
-		Kind:      kind,
-		Cwd:       projectPath,
+		ReqID:          reqID,
+		SessionID:      sessionID,
+		Kind:           kind,
+		Cwd:            projectPath,
+		SeedInput:      seedInput,
+		PermissionMode: permissionMode,
+		Model:          model,
+		FastMode:       fastMode,
 	}
 	if isResume {
 		create.ResumeID = resumeID
+	}
+	// C (v0.1.5): wire Lattice-managed Claude Code hooks for precise state. Only
+	// when (a) it's a claude session and (b) the hub has a canonical URL the
+	// on-agent hook script can curl back to. Mint a per-session capability token and
+	// ship it + the hub URL so the agent adds `--settings <hooks file>` and injects
+	// them into the claude child env. Without a hub URL the agent skips --settings
+	// and the hub keeps the PTY-quiet idle heuristic.
+	if kind == proto.SessionClaude && h.hooksEnabled() {
+		create.HubURL = h.hubURL
+		create.HookToken = h.mintHookToken(sessionID, now)
 	}
 
 	env, err := h.roundTrip(agentID, reqID, proto.TypeSessionCreate, create)
@@ -268,6 +387,19 @@ func (h *Hub) createOnAgent(kind proto.SessionKind, scope, projectPath, title, a
 	return out, nil
 }
 
+// endHostProcess tells the owning agent to terminate a session's live process
+// (claude/PTY) and marks it exited, so an archived / trashed / deleted session
+// stops eating host RAM+CPU. No-op if the agent is offline (nothing is running).
+func (h *Hub) endHostProcess(agentID, sessionID string) {
+	// Mark this as a hub-initiated close so the resulting session_exit doesn't fire
+	// a "finished" phone ping (the operator closed it on purpose).
+	h.approvals.expectExit(sessionID, time.Now())
+	if ac, online := h.registry.getAgent(agentID); online {
+		_ = ac.send(proto.TypeSessionClose, proto.SessionControlPayload{SessionID: sessionID})
+	}
+	_ = h.store.UpdateSessionStatus(sessionID, proto.SessionExited, time.Now())
+}
+
 func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id string) {
 	rec, ok, err := h.store.GetSession(id)
 	if err != nil {
@@ -278,13 +410,7 @@ func (h *Hub) handleDeleteSession(w http.ResponseWriter, r *http.Request, id str
 		http.NotFound(w, r)
 		return
 	}
-	if ac, online := h.registry.getAgent(rec.AgentID); online {
-		_ = ac.send(proto.TypeSessionClose, proto.SessionControlPayload{SessionID: id})
-	}
-	if err := h.store.UpdateSessionStatus(id, proto.SessionExited, time.Now()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
+	h.endHostProcess(rec.AgentID, id)
 	if r.URL.Query().Get("purge") == "1" {
 		// Permanent delete (used by "Delete forever" in Trash): drop the row.
 		if err := h.store.DeleteSessionRow(id); err != nil {
@@ -316,12 +442,14 @@ func (h *Hub) handleEmptyTrash(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "purged": n})
 }
 
-// handleUpdateSession patches mutable session fields: {archived} hides/restores
-// from the active tree, {deleted} trashes/restores from Trash.
+// handleUpdateSession patches mutable session fields: {title} renames the session
+// (I — session naming, v0.1.5), {archived} hides/restores from the active tree,
+// {deleted} trashes/restores from Trash.
 func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Archived *bool `json:"archived"`
-		Deleted  *bool `json:"deleted"`
+		Title    *string `json:"title"`
+		Archived *bool   `json:"archived"`
+		Deleted  *bool   `json:"deleted"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
@@ -336,7 +464,28 @@ func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id str
 		http.NotFound(w, r)
 		return
 	}
+	if body.Title != nil {
+		// A manual rename is sticky and ALWAYS wins over the auto-namer (which only
+		// fills a still-blank title). Clip to a sane length; an empty/blanked title
+		// is allowed (clears back to the kind-derived fallback the UI shows).
+		title := clampTitle(*body.Title)
+		if err := h.store.SetSessionTitle(id, title, time.Now()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		// Mark the session user-named so the auto-namer never clobbers it, even if
+		// the row is later re-derived/empty (e.g. blanked on purpose).
+		h.markTitleLocked(id)
+		rec.Title = title
+	}
 	if body.Archived != nil {
+		// Archiving hides AND frees the machine: end the live process so a stale
+		// session stops eating host resources. (A claude session can be resumed
+		// later; restoring just un-hides the row.)
+		if *body.Archived {
+			h.endHostProcess(rec.AgentID, id)
+			rec.Status = proto.SessionExited
+		}
 		if err := h.store.SetSessionArchived(id, *body.Archived, time.Now()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -344,6 +493,10 @@ func (h *Hub) handleUpdateSession(w http.ResponseWriter, r *http.Request, id str
 		rec.Archived = *body.Archived
 	}
 	if body.Deleted != nil {
+		if *body.Deleted {
+			h.endHostProcess(rec.AgentID, id)
+			rec.Status = proto.SessionExited
+		}
 		if err := h.store.SetSessionDeleted(id, *body.Deleted, time.Now()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -409,7 +562,7 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 	if resumeID == "" {
 		resumeID = rec.ID
 	}
-	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID)
+	out, err := h.createOnAgent(proto.SessionClaude, rec.Scope, rec.ProjectPath, rec.Title, rec.AgentID, resumeID, "", "", rec.NotifyOnIdle, rec.Model, false)
 	if err != nil {
 		writeJSON(w, statusForRoundTrip(err), map[string]any{"error": err.Error(), "placement": placement})
 		return
@@ -420,6 +573,10 @@ func (h *Hub) handleResumeSession(w http.ResponseWriter, r *http.Request, id str
 // handlePlacement answers POST /api/placement with a placement preview (no side
 // effects) so the UI can show the ranked machines before committing.
 func (h *Hub) handlePlacement(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
 	var body createSessionBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
@@ -447,24 +604,6 @@ func (h *Hub) handlePlacement(w http.ResponseWriter, r *http.Request) {
 		PinAgentID:  pin,
 	}, h.fleet(), time.Now())
 	writeJSON(w, http.StatusOK, result)
-}
-
-// handleAudit answers GET /api/audit?session=<id> with the session's audit trail.
-func (h *Hub) handleAudit(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session")
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session is required"})
-		return
-	}
-	entries, err := h.store.ListAudit(sessionID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if entries == nil {
-		entries = []AuditEntry{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"audit": entries})
 }
 
 // handleSettings reads (GET) or writes (POST) hub settings. POST body:

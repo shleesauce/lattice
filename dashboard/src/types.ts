@@ -1,3 +1,26 @@
+// These interfaces hand-mirror the Go wire structs (internal/proto + internal/hub).
+// There's no compiler linking them, so a drift guard — internal/hub/wirecontract_test.go,
+// run by `go test ./...` in CI — fails the build if the field names here and on the
+// Go side diverge. When it flags a mismatch, update BOTH sides.
+
+// Mirrors proto.Capabilities — what an agent can run (drives placement + fleet UI).
+export interface Capabilities {
+  claudeInstalled: boolean
+  claudeVersion?: string
+  // Installed AND able to sign in here (F14). False on a background-service agent
+  // (pm2/nohup, e.g. the hub host) that has the binary but no GUI login keychain
+  // for claude's OAuth — placing a claude session there yields a dead blank tab.
+  claudeAuthable?: boolean
+  nodeInstalled: boolean
+  nodeVersion?: string
+  codeServerInstalled?: boolean
+  codeServerVersion?: string
+  wslAvailable?: boolean
+  // Mesh-sync tooling, reported by the agent for the Integrations panel (Phase 4).
+  syncthingInstalled?: boolean
+  syncthingRunning?: boolean
+}
+
 // Mirrors the locked hub Agent JSON contract exactly.
 export interface Agent {
   id: string
@@ -19,15 +42,20 @@ export interface Agent {
   loadAvg1: number
   cpuCount: number
   macs?: string[]
-  capabilities?: {
-    claudeInstalled: boolean
-    claudeVersion?: string
-    nodeInstalled: boolean
-    nodeVersion?: string
-    codeServerInstalled: boolean
-    codeServerVersion?: string
-    wslAvailable?: boolean
-  }
+  lanIPs?: string[]
+  capabilities?: Capabilities
+}
+
+// canHostClaude reports whether an agent can actually RUN a Claude session — the
+// binary is installed AND claude can sign in there (F14). Use this everywhere a
+// claude session could be placed/switched, never a bare claudeInstalled check, so
+// a non-authable box (the hub host under pm2) is never offered and never yields a
+// blank tab. Callers that care about reachability still AND their own `online`
+// check. The optional chaining keeps an older agent that predates the field
+// (claudeAuthable === undefined) excluded — safe, since such a box can't be proven
+// authable.
+export function canHostClaude(agent?: { capabilities?: Capabilities } | null): boolean {
+  return !!(agent?.capabilities?.claudeInstalled && agent?.capabilities?.claudeAuthable)
 }
 
 // Unified fleet device (mirrors hub Device — /api/devices). The superset of
@@ -61,7 +89,8 @@ export interface Device {
   cpuCount?: number
   lastSeen?: string
   macs?: string[]
-  capabilities?: Agent['capabilities']
+  lanIPs?: string[]
+  capabilities?: Capabilities
   tailscaleIP?: string
   sshAlias?: string
   sshUser?: string
@@ -88,6 +117,10 @@ export interface FileListResult {
 export interface WakeResult {
   ok: boolean
   error?: string
+  relay?: string // agent id the hub routed the magic packet through
+  subnet?: string // the matched subnet (when routed on-subnet)
+  onSubnet?: boolean // true when the relay shares the target's broadcast domain
+  action?: string // power: the action that was issued (sleep | shutdown)
 }
 
 export interface Health {
@@ -96,35 +129,10 @@ export interface Health {
   agents: number
 }
 
-// Enrollment payload (mirrors hub /api/enroll).
-export interface Enroll {
-  hubUrl: string
-  token: string
-  unix: string
-  windows: string
-}
-
 // Dashboard-WS events (hub -> browser).
 export type DashboardEvent =
   | { type: 'fleet'; agents: Agent[] }
-  | { type: 'output'; agentId: string; cmdId: string; stream: 'stdout' | 'stderr'; data: string }
-  | { type: 'exit'; agentId: string; cmdId: string; exitCode: number; error: string }
-
-export interface OutputLine {
-  stream: 'stdout' | 'stderr'
-  data: string
-}
-
-export interface CommandRun {
-  cmdId: string
-  agentId: string
-  command: string
-  lines: OutputLine[]
-  finished: boolean
-  exitCode: number | null
-  error: string
-  startedAt: number
-}
+  | { type: 'sessions'; sessions: Session[] }
 
 // ───────────────────────────── Workspace (Phase 3) ─────────────────────────────
 
@@ -134,6 +142,38 @@ export interface Project {
 }
 
 export type SessionKind = 'terminal' | 'claude' | 'editor'
+
+// Claude models offered in the New Session dialog. `id` is the exact string passed
+// to `claude --model` (the agent re-validates it against an allow-list). The 1M
+// variants use the literal `[1m]` suffix form (verified on claude 2.1.137). Order
+// here is the order shown in the picker; DEFAULT_CLAUDE_MODEL is pre-selected.
+export interface ClaudeModelOption {
+  id: string
+  label: string
+  legacy?: boolean
+}
+
+export const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-8[1m]'
+
+export const CLAUDE_MODELS: ClaudeModelOption[] = [
+  { id: 'claude-fable-5', label: 'Fable 5' },
+  { id: 'claude-fable-5[1m]', label: 'Fable 5 (1M)' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M)' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', legacy: true },
+  { id: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M)', legacy: true },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', legacy: true },
+]
+
+// modelLabel maps a full model id back to its friendly label for session cards;
+// falls back to the raw id (or a short form) when unknown.
+export function modelLabel(id?: string): string {
+  if (!id) return ''
+  const m = CLAUDE_MODELS.find((x) => x.id === id)
+  return m ? m.label : id
+}
 export type SessionStatus = 'starting' | 'live' | 'detached' | 'orphaned' | 'exited'
 export type SessionScope = 'project' | 'device'
 
@@ -151,6 +191,10 @@ export interface Session {
   pinned: boolean
   archived?: boolean
   deletedAt?: string // RFC3339 when trashed; absent/empty otherwise
+  notifyOnIdle?: boolean // claude: ping my phone when it waits/finishes (fire-and-forget)
+  waiting?: boolean // live, derived: blocked on a permission/decision right now → red status dot
+  model?: string // claude: full model id this session launched with (e.g. claude-opus-4-8[1m])
+  prUrl?: string // claude: detected GitHub PR URL for this session (D)
   createdAt: string // RFC3339
   lastActiveAt: string // RFC3339
 }
@@ -181,11 +225,104 @@ export interface CreateSessionRequest {
   title?: string
   userAgentId?: string
   pinAgentId?: string
+  permissionMode?: string
+  notifyOnIdle?: boolean
+  model?: string // claude: full model id; omitted ⇒ claude's own default
+  fastMode?: boolean // claude: low-effort "fast" launch (--effort low)
 }
 
 export interface SessionWithPlacement {
   session: Session
   placement: PlacementResult
+}
+
+// Workflow templates (E, v0.1.5): a pasted GitHub issue/PR URL spins up a scoped,
+// pre-briefed Claude session in a dedicated worktree, auto-placed.
+export interface CreateWorkflowRequest {
+  url: string
+  projectPath: string
+  userAgentId?: string
+  pinAgentId?: string
+  permissionMode?: string
+  model?: string
+  notifyOnIdle?: boolean
+}
+
+export interface WorkflowInfo {
+  kind: 'implement_issue' | 'review_pr'
+  url: string
+  worktree: string
+}
+
+export interface WorkflowResult {
+  session: Session
+  placement: PlacementResult
+  workflow: WorkflowInfo
+}
+
+// Rich session telemetry (C, v0.1.5): derived hub-side from the synced transcript
+// (model / context% / $cost the hook stdin can't provide). GET
+// /api/sessions/{id}/telemetry. found=false ⇒ no transcript yet, render nothing.
+export interface SessionTelemetry {
+  sessionId: string
+  found: boolean
+  model?: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreateTokens: number
+  messageCount: number
+  contextPct: number // 0..100
+  costUsd: number
+  lastAt?: string
+  prUrl?: string // detected GitHub PR for this session (D)
+}
+
+export interface ReleaseInfo {
+  version: string // tag, e.g. "v0.1.5"
+  name: string
+  body: string // markdown release notes
+  publishedAt: string
+  prerelease: boolean
+  url: string
+  current: boolean // == the running build
+  newer: boolean // strictly newer than the running build
+}
+
+export interface ReleasesResponse {
+  current: string
+  latest: string
+  updateAvailable: boolean
+  releases: ReleaseInfo[]
+}
+
+// One agent's outcome in a fleet update (mirrors hub agentUpdateOutcome).
+export interface AgentUpdateOutcome {
+  agentId: string
+  name: string
+  // 'updated' = new binary live; 'pending' = no ack yet / dropped mid-cascade, applies
+  // on restart (non-fatal); 'failed' = agent reported an error, still on old binary.
+  status?: 'updated' | 'pending' | 'failed'
+  ok: boolean
+  restarted?: string
+  detail?: string
+  error?: string
+}
+
+// Response from POST /api/update (mirrors the hub handleUpdate summary). The hub
+// has already swapped its own binary and is restarting in the background when this
+// returns, so the dashboard shows the progress view then reconnects to the new build.
+export interface UpdateResult {
+  ok: boolean
+  updating: boolean
+  from: string
+  to: string
+  agents: AgentUpdateOutcome[]
+  // restartRequired is true when the hub swapped its binary but runs under a service
+  // Lattice doesn't manage (pm2, a bare process), so it can't self-restart — it's
+  // still on the OLD code until the operator restarts it manually with restartHint.
+  restartRequired?: boolean
+  restartHint?: string
 }
 
 export interface PlacementRequest {
@@ -222,33 +359,110 @@ export interface CreateProjectResult {
   warnings: string[]
 }
 
-export interface AuditEntry {
-  id: string
-  sessionId: string
-  agentId: string
-  eventType: string
-  toolName?: string
-  detail?: string
-  at: string // RFC3339
+// ───────────────────────── Enrollment tokens (Phase 4 / M3) ─────────────────
+// A shared join token minted to enroll a new machine into the mesh. The hub
+// returns ready-to-paste install one-liners (unix/windows) carrying the token.
+export interface EnrollToken {
+  token: string
+  label: string
+  createdAt: string // RFC3339
+  revokedAt?: string // RFC3339; empty/absent when still active
+  lastUsedAt?: string // RFC3339; empty/absent until first use
+  agentId?: string // the agent that enrolled with this token, once one does
+}
+
+export interface CreateEnrollTokenResult {
+  token: string
+  label: string
+  unix: string // ready-to-paste macOS/Linux install one-liner
+  windows: string // ready-to-paste Windows install one-liner
+  tailscaleUnix: string // install Tailscale + tailscale up (macOS/Linux)
+  tailscaleWindows: string // install Tailscale + tailscale up (Windows)
 }
 
 export interface Settings {
-  globalApproval?: boolean
-  perMachineApproval?: Record<string, boolean>
   // primaryAgent (D32) is the default coding machine — the device picker for a
   // new project session pre-selects it (when eligible) so the common case is one click.
   primaryAgent?: string
 }
 
-// ───────── /ws/session wire frames (hub → browser) ─────────
-// Since D35 a claude session is an interactive PTY, so it speaks the same
-// terminal frames as a terminal session (replay/output/exit).
-export type SessionInbound =
-  | { type: 'replay'; kind: 'terminal'; data: string } // base64 scrollback
-  | { type: 'output'; data: string } // base64 terminal frame
-  | { type: 'exit' }
+// ───────────────────────── First-run setup (Phase 2 / M3) ─────────────────
+// The hub reports whether it has been configured yet. When needsSetup, the
+// dashboard is gated behind the FirstRunWizard until POST /api/setup succeeds.
+export interface SetupStatus {
+  needsSetup: boolean
+  meshName?: string
+  projectsRoot?: string
+  hostname?: string
+  suggestedRoot?: string
+  // tokenRequired: this (remote) browser must supply the hub token to finish setup.
+  // False for a loopback connection (operator on the hub box). See setupAllowed.
+  tokenRequired?: boolean
+}
 
-// ───────── /ws/session wire frames (browser → hub) ─────────
-export type SessionOutbound =
-  | { type: 'input'; data: string } // base64 keystrokes
-  | { type: 'resize'; cols: number; rows: number }
+// Live validation of the projects-root path (POST /api/setup/check-root).
+// Returns a typed body even on a bad path: ok:false carries the error to show
+// inline, ok:true resolves the absolute path and notes whether it must be made.
+export interface RootCheck {
+  ok: boolean
+  resolved?: string
+  exists?: boolean
+  willCreate?: boolean
+  error?: string
+}
+
+export interface SetupSubmit {
+  adminPassword: string
+  meshName: string
+  projectsRoot: string
+}
+
+// ───────────────────────── Auth (Phase 3 / M3) ─────────────────
+// The hub reports whether login is required and whether this browser's session
+// cookie is currently authenticated. When authRequired && !authenticated the
+// dashboard is gated behind the Login screen until POST /api/auth/login succeeds.
+export interface AuthStatus {
+  authRequired: boolean
+  authenticated: boolean
+}
+
+// ───────────────────────── Session transcript (F16 / fixes F15) ─────────────────
+// The saved conversation read from Claude Code's on-disk .jsonl, shown for a
+// claude session that is no longer a live PTY (exited/archived/trashed/orphaned).
+// One assistant message fans out into several blocks (thinking / text / tool_use),
+// each independently collapsible — so a long tool run never buries the prose.
+export type TranscriptKind = 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image'
+
+export interface TranscriptBlock {
+  seq: number
+  role: 'user' | 'assistant'
+  kind: TranscriptKind
+  text?: string
+  toolName?: string
+  toolInput?: unknown // raw tool_use input object
+  toolUseId?: string // links tool_use ⇄ tool_result
+  isError?: boolean
+  truncated?: boolean
+  sidechain?: boolean // sub-agent (Task) turn
+  timestamp?: string
+}
+
+export interface TranscriptMeta {
+  model?: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  messageCount: number
+  firstAt?: string
+  lastAt?: string
+}
+
+export interface Transcript {
+  sessionId: string
+  found: boolean
+  reason?: string
+  path?: string
+  meta: TranscriptMeta
+  blocks: TranscriptBlock[]
+}

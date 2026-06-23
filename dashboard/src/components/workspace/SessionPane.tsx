@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
-import type { Agent, Session, SessionKind } from '../../types'
+import type { Agent, Session } from '../../types'
 import { SessionTerminal } from './SessionTerminal'
 import { SessionClaude } from './SessionClaude'
 import { SessionEditor } from './SessionEditor'
+import { SessionTranscript } from './SessionTranscript'
 import { MachineChip } from './MachineChip'
+import { showsTranscript } from './sessionMeta'
 
 interface Props {
   session: Session
   agents: Agent[]
   onClose: () => void
-  onPin: (agentId: string) => void
+  onReconnect: (agentId: string) => void
+  onPickMachine: (agentId: string) => void
   // Editor-only (D29): the project's paired Claude session shown beside the
   // editor, and whether the editor's machine even has claude installed.
   pairedClaudeId?: string | null
@@ -29,7 +32,7 @@ export function SessionPane(props: Props) {
 // draggable divider. Split open by default (D29); the AI pane can be collapsed.
 // Both panes stay mounted across collapse so the iframe never reloads and the
 // Claude socket isn't dropped.
-function EditorPane({ session, agents, onClose, onPin, pairedClaudeId, editorAgentHasClaude }: Props) {
+function EditorPane({ session, agents, onClose, onReconnect, onPickMachine, pairedClaudeId, editorAgentHasClaude }: Props) {
   const [aiOpen, setAiOpen] = useState(true)
   const [ratio, setRatio] = useState(0.62) // editor's share of the width
   const [dragging, setDragging] = useState(false)
@@ -77,7 +80,7 @@ function EditorPane({ session, agents, onClose, onPin, pairedClaudeId, editorAge
               <SparkIcon /> ai
             </button>
           )}
-          <MachineChip session={session} agents={agents} onPin={onPin} />
+          <MachineChip session={session} agents={agents} onReconnect={onReconnect} onPickMachine={onPickMachine} />
           <button
             type="button"
             onClick={onClose}
@@ -147,50 +150,24 @@ function NoClaudeNote({ machine }: { machine: string }) {
   )
 }
 
-// ───────────────────────── tabbed pane: terminal / claude ───────────────────
-type Tab = Exclude<SessionKind, 'editor'>
-
-const TAB_ORDER: Record<Tab, Tab[]> = {
-  claude: ['claude', 'terminal'],
-  terminal: ['terminal', 'claude'],
-}
-
-// One terminal/claude session: a tab bar + machine chip. Panels stay mounted
-// once opened so switching doesn't drop the live socket/scrollback.
-function TabbedPane({ session, agents, onClose, onPin }: Props) {
-  const initial: Tab = session.kind === 'claude' ? 'claude' : 'terminal'
-  const [tab, setTab] = useState<Tab>(initial)
-  const [mounted, setMounted] = useState<Record<Tab, boolean>>({
-    terminal: session.kind === 'terminal',
-    claude: session.kind === 'claude',
-  })
-
-  useEffect(() => {
-    setMounted((m) => (m[tab] ? m : { ...m, [tab]: true }))
-  }, [tab])
-
-  const tabs = TAB_ORDER[initial]
-
+// ───────────────────────── single-view pane: terminal OR claude ─────────────
+// A session is exactly one live process (D35): a claude session is just Claude, a
+// terminal session is just a shell. No tab pair — that only duplicated the same
+// socket and stole the keystrokes.
+function TabbedPane({ session, agents, onClose, onReconnect, onPickMachine }: Props) {
+  const isClaude = session.kind === 'claude'
+  // A claude session that's no longer a live PTY (exited/archived/trashed/orphaned)
+  // renders its SAVED transcript instead of a blank xterm (F16 / fixes F15).
+  const transcript = showsTranscript(session)
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/50 px-3 py-2">
-        <div className="inline-flex rounded-md border border-zinc-800 bg-zinc-950 p-0.5">
-          {tabs.map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={`rounded px-3 py-1 font-display text-xs font-semibold uppercase tracking-wider transition-colors ${
-                tab === t ? 'bg-emerald-500/15 text-emerald-300' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
+        <span className="rounded bg-emerald-500/15 px-3 py-1 font-display text-xs font-semibold uppercase tracking-wider text-emerald-300">
+          {session.kind}
+        </span>
+        {session.title && <span className="truncate font-mono text-[11px] text-zinc-500">{session.title}</span>}
         <div className="ml-auto flex items-center gap-2">
-          <MachineChip session={session} agents={agents} onPin={onPin} />
+          <MachineChip session={session} agents={agents} onReconnect={onReconnect} onPickMachine={onPickMachine} />
           <button
             type="button"
             onClick={onClose}
@@ -203,15 +180,12 @@ function TabbedPane({ session, agents, onClose, onPin }: Props) {
       </div>
 
       <div className="relative min-h-0 flex-1">
-        {mounted.terminal && (
-          <div className={`absolute inset-0 ${tab === 'terminal' ? '' : 'hidden'}`}>
-            <SessionTerminal sessionId={session.id} />
-          </div>
-        )}
-        {mounted.claude && (
-          <div className={`absolute inset-0 ${tab === 'claude' ? '' : 'hidden'}`}>
-            <SessionClaude sessionId={session.id} />
-          </div>
+        {transcript ? (
+          <SessionTranscript sessionId={session.id} />
+        ) : isClaude ? (
+          <SessionClaude sessionId={session.id} />
+        ) : (
+          <SessionTerminal sessionId={session.id} />
         )}
       </div>
     </div>

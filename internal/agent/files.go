@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // listFiles lists a directory and pushes a file_list_result. An empty path
@@ -21,7 +21,7 @@ func listFiles(ctx context.Context, p proto.FileReqPayload, outbound chan<- []by
 	dir, err := resolveListPath(p.Path)
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileListResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileListResult, result)
 		return
 	}
 	result.Path = dir
@@ -30,7 +30,7 @@ func listFiles(ctx context.Context, p proto.FileReqPayload, outbound chan<- []by
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileListResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileListResult, result)
 		return
 	}
 
@@ -59,7 +59,7 @@ func listFiles(ctx context.Context, p proto.FileReqPayload, outbound chan<- []by
 	})
 	result.Entries = out
 
-	sendFileFrame(ctx, outbound, proto.TypeFileListResult, result)
+	sendFrame(ctx, outbound, proto.TypeFileListResult, result)
 }
 
 // getFile reads a file (size-capped) and pushes a file_get_result.
@@ -68,14 +68,17 @@ func getFile(ctx context.Context, p proto.FileReqPayload, outbound chan<- []byte
 
 	if p.Path == "" {
 		result.Error = "path is required"
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 
-	abs, err := filepath.Abs(p.Path)
+	// Rebase a synced under-home path (".../<home>/<rest>") onto THIS machine's
+	// home (D23) so a download link built from the hub-side path still resolves on
+	// a remote agent — same rule the session cwd + file listing use.
+	abs, err := filepath.Abs(resolveCwd(p.Path))
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 	result.Path = abs
@@ -84,12 +87,12 @@ func getFile(ctx context.Context, p proto.FileReqPayload, outbound chan<- []byte
 	info, err := os.Stat(abs)
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 	if info.IsDir() {
 		result.Error = "path is a directory"
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 	result.Size = info.Size()
@@ -97,7 +100,7 @@ func getFile(ctx context.Context, p proto.FileReqPayload, outbound chan<- []byte
 	f, err := os.Open(abs)
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 	defer f.Close()
@@ -108,7 +111,7 @@ func getFile(ctx context.Context, p proto.FileReqPayload, outbound chan<- []byte
 	data, err := io.ReadAll(limited)
 	if err != nil {
 		result.Error = err.Error()
-		sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+		sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 		return
 	}
 	if info.Size() > proto.FileGetMaxBytes {
@@ -116,23 +119,23 @@ func getFile(ctx context.Context, p proto.FileReqPayload, outbound chan<- []byte
 	}
 	result.Content = base64.StdEncoding.EncodeToString(data)
 
-	sendFileFrame(ctx, outbound, proto.TypeFileGetResult, result)
+	sendFrame(ctx, outbound, proto.TypeFileGetResult, result)
 }
 
-// resolveListPath turns a request path into an absolute directory. Empty ⇒ home.
+// resolveListPath turns a request path into an absolute directory valid on THIS
+// machine. Empty ⇒ home, and a synced under-home path (".../<home>/<rest>") is
+// re-rooted at the local $HOME (D23) — so the dock file browser works for a
+// session placed on any machine, not just the hub (the hub-side absolute path is
+// wrong on a remote agent whose home differs). Reuses the session cwd resolver.
 func resolveListPath(path string) (string, error) {
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return home, nil
-	}
-	return filepath.Abs(path)
+	return filepath.Abs(resolveCwd(path))
 }
 
-// sendFileFrame encodes a file result and pushes it through the outbound writer.
-func sendFileFrame(ctx context.Context, outbound chan<- []byte, t proto.MessageType, payload any) {
+// sendFrame encodes a frame and pushes it through the outbound writer, dropping
+// it if ctx is cancelled before the single-writer goroutine accepts it. This is
+// the one place the agent's "encode → log → select{outbound; ctx.Done}" pattern
+// lives; callers across the package route through it.
+func sendFrame(ctx context.Context, outbound chan<- []byte, t proto.MessageType, payload any) {
 	frame, err := proto.Encode(t, payload)
 	if err != nil {
 		log.Printf("agent: encode %s: %v", t, err)

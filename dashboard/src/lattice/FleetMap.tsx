@@ -1,9 +1,25 @@
 /* FleetMap — the control-room map. Cool wireframe lattice; live nodes bloom green and
    breathe; waking nodes pull soft-yellow light along the mesh; warm travel toward active. */
 import { useCallback, useEffect, useRef } from 'react'
-import { Dot } from './primitives'
-import { STATUS_LABEL } from './adapt'
+import { STATUS_LABEL, isWoven } from './adapt'
 import type { Machine } from './adapt'
+
+// Mesh node palette — the single source of truth shared by the canvas AND the
+// legend, so the two never drift. Six clearly-separated states:
+//   alive    live session running          → vivid green
+//   idle     agent live, at rest           → cyan  (clearly cooler than alive)
+//   detached agent live, sessions detached → azure (pulled toward blue/indigo)
+//   reachable host up but NO live agent    → amber, drawn as a HOLLOW ring
+//   waking   spinning up                   → yellow
+//   offline  powered off / gone            → grey
+export const NODE_COLORS = {
+  alive: '#2FD98A',
+  idle: '#22C1D8',
+  detached: '#4C8DFF',
+  reachable: '#F2994A',
+  waking: '#FFD37A',
+  offline: '#4A5560',
+} as const
 
 interface Node {
   m: Machine
@@ -75,11 +91,20 @@ export function FleetMap({
     S.edges = edges
   }, [])
 
+  // One-shot static redraw, callable from outside the mount-once effect (used by
+  // reduced-motion mode and on selection change when the loop isn't running).
+  // Assigned by the main effect once the canvas + draw closure exist.
+  const renderStaticRef = useRef<() => void>(() => {})
+
   useEffect(() => {
     const cvs = canvasRef.current!
     const wrap = wrapRef.current!
     const ctx = cvs.getContext('2d')!
     let raf = 0
+    // The continuous loop and the static frame share one body — the loop passes
+    // the live clock, the static frame pins a fixed `t` so nothing pulses/travels.
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const STATIC_T = 0
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const w = wrap.clientWidth
@@ -92,27 +117,41 @@ export function FleetMap({
       layout(w, h)
     }
     resize()
-    const ro = new ResizeObserver(resize)
+    // Repaint after a resize when the rAF loop ISN'T running (reduced motion or a
+    // hidden tab): resize() reassigns cvs.width/height, which clears the canvas
+    // bitmap, and only the loop repaints — so without this the map blanks on every
+    // resize and even on the ResizeObserver's guaranteed initial post-mount
+    // notification (which fires after sync()). renderStaticRef is the established
+    // "paint one frame off-loop" seam; raf!==0 means the loop already owns repaint.
+    const ro = new ResizeObserver(() => {
+      resize()
+      if (!raf) renderStaticRef.current()
+    })
     ro.observe(wrap)
 
-    const COOL = '#2DE2C0'
-    const BLUE = '#38BDF8'
-    const GREEN = '#2FD98A'
-    const YELLOW = '#FFD37A'
-    const EXIT = '#4A5560'
+    const { alive: GREEN, idle: IDLE, detached: BLUE, reachable: DOWN, waking: YELLOW, offline: EXIT } = NODE_COLORS
+    const hexA = (hex: string, a: number) => {
+      const n = parseInt(hex.slice(1), 16)
+      return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
+    }
+    // Reachable-only: host answers Tailscale/SSH but no live agent — it has
+    // fallen out of (or never joined) the agent mesh. Drawn distinctly.
+    const isDown = (n: Node) => !n.m.offline && n.m.status === 'reachable'
     const accentOf = (n: Node) => (n.alive ? GREEN : n.starting ? YELLOW : null)
     const colorFor = (n: Node) =>
       n.m.offline
         ? EXIT
         : n.starting
           ? YELLOW
-          : n.m.status === 'detached' || n.m.status === 'reachable'
-            ? BLUE
-            : n.alive
-              ? GREEN
-              : COOL
+          : n.m.status === 'reachable'
+            ? DOWN
+            : n.m.status === 'detached'
+              ? BLUE
+              : n.alive
+                ? GREEN
+                : IDLE
 
-    const draw = (t: number) => {
+    const paint = (t: number) => {
       const S = stateRef.current
       const { w, h } = S
       ctx.clearRect(0, 0, w, h)
@@ -218,7 +257,7 @@ export function FleetMap({
               : 'rgba(47,217,138,0.7)'
             : n.m.offline
               ? 'rgba(110,123,132,0.7)'
-              : 'rgba(56,189,248,0.7)'
+              : hexA(c, 0.8)
           ctx.lineWidth = 1.3
           ctx.beginPath()
           ctx.arc(n.x, n.y, 16, 0, 7)
@@ -229,11 +268,25 @@ export function FleetMap({
           }
         }
         const r = (acc ? 6 : 5) + breath * 1.5
-        ctx.fillStyle = c
         ctx.globalAlpha = n.m.offline ? 0.6 : 1
-        ctx.beginPath()
-        ctx.arc(n.x, n.y, r, 0, 7)
-        ctx.fill()
+        if (isDown(n)) {
+          // Hollow amber ring + tiny core: "powered, but no live agent" — reads
+          // unmistakably apart from a solid healthy node (idle/detached/alive).
+          ctx.lineWidth = 2
+          ctx.strokeStyle = c
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, r + 0.5, 0, 7)
+          ctx.stroke()
+          ctx.fillStyle = c
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, 1.7, 0, 7)
+          ctx.fill()
+        } else {
+          ctx.fillStyle = c
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, r, 0, 7)
+          ctx.fill()
+        }
         ctx.globalAlpha = 1
         ctx.shadowBlur = 0
         if (n.alive) {
@@ -256,28 +309,71 @@ export function FleetMap({
         ctx.fillText(n.m.label, n.x, n.y + 26)
         ctx.font = "10px 'IBM Plex Mono', monospace"
         ctx.fillStyle = n.alive ? '#2FD98A' : n.starting ? '#FFD37A' : '#6E7B84'
-        ctx.fillText(n.alive ? n.m.sessions[0].name : STATUS_LABEL[n.m.status], n.x, n.y + 40)
+        ctx.fillText(
+          n.m.sessions.find((s) => s.status === 'live')?.name ?? STATUS_LABEL[n.m.status],
+          n.x,
+          n.y + 40,
+        )
       })
-
-      raf = requestAnimationFrame(draw)
     }
-    raf = requestAnimationFrame(draw)
+
+    // Self-scheduling loop: paint the live clock, then queue the next frame.
+    const loop = (t: number) => {
+      paint(t)
+      raf = requestAnimationFrame(loop)
+    }
+    // One still frame at a fixed clock — no breathing, no travelling pulse.
+    const renderStatic = () => paint(STATIC_T)
+    renderStaticRef.current = renderStatic
+
+    // The motion controller: run the rAF loop only when motion is allowed AND
+    // the tab is visible; otherwise hold a single static frame. Cancel before
+    // any (re)start so a mode flip can never double-schedule the loop.
+    const stop = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = 0
+    }
+    const sync = () => {
+      stop()
+      if (reduceMotion.matches || document.hidden) {
+        renderStatic()
+      } else {
+        raf = requestAnimationFrame(loop)
+      }
+    }
+    sync()
+
+    const onVisibility = () => sync()
+    document.addEventListener('visibilitychange', onVisibility)
+    reduceMotion.addEventListener('change', sync)
+
     return () => {
-      cancelAnimationFrame(raf)
+      stop()
       ro.disconnect()
+      document.removeEventListener('visibilitychange', onVisibility)
+      reduceMotion.removeEventListener('change', sync)
+      renderStaticRef.current = () => {}
     }
     // Mount ONCE: the draw loop reads fleetRef/selRef live, so it never needs to
     // tear down on data updates. Re-laying-out on every poll (below) would
     // otherwise blank the canvas each tick — that was the visible flashing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout])
 
   // Re-derive node/edge positions when the fleet changes, reusing the existing
-  // canvas size — no teardown, no blank frame.
+  // canvas size — no teardown, no blank frame. In reduced-motion / tab-hidden
+  // mode the loop isn't running, so push a fresh static frame too.
   useEffect(() => {
     const S = stateRef.current
     if (S.w && S.h) layout(S.w, S.h)
+    renderStaticRef.current()
   }, [fleet, layout])
+
+  // Selection is normally reflected by the running loop reading selRef. When the
+  // loop is paused (reduced motion / hidden tab), redraw a static frame so the
+  // selected node's highlight ring still updates.
+  useEffect(() => {
+    renderStaticRef.current()
+  }, [selected])
 
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const S = stateRef.current
@@ -296,41 +392,76 @@ export function FleetMap({
     if (hit) onSelect((hit as Node).m.id)
   }
 
+  // Keyboard nav (progressive enhancement; the rail is the primary AT path).
+  // Arrow keys cycle selection by node order; Enter/Space re-confirms current.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (fleet.length === 0) return
+    const i = Math.max(0, fleet.findIndex((m) => m.id === selected))
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      onSelect(fleet[(i + 1) % fleet.length].id)
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      onSelect(fleet[(i - 1 + fleet.length) % fleet.length].id)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onSelect(fleet[i].id)
+    }
+  }
+
+  const selLabel = fleet.find((m) => m.id === selected)?.label
+  const mapLabel = `Fleet map, ${fleet.length} machine${fleet.length === 1 ? '' : 's'}${selLabel ? `, ${selLabel} selected` : ''}`
+
   const live = fleet.reduce((n, m) => n + m.sessions.filter((s) => s.status === 'live').length, 0)
-  const woven = fleet.filter((m) => !m.offline).length
-  const waking = fleet.some((m) => m.status === 'starting')
+  const woven = fleet.filter(isWoven).length
+  const waking = fleet.filter((m) => m.status === 'starting').length
 
   return (
     <div className="cr-map" ref={wrapRef}>
-      <canvas ref={canvasRef} onClick={handleClick} style={{ cursor: 'pointer' }} />
+      <canvas
+        ref={canvasRef}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        tabIndex={0}
+        role="application"
+        aria-label={mapLabel}
+        style={{ cursor: 'pointer' }}
+      />
       <div className="cr-overlay">
         <h1>Your mesh</h1>
         <p>
-          {woven} machines woven · {live} session{live === 1 ? '' : 's'} alive{waking ? ' · 1 waking' : ''}
+          {woven} machines woven · {live} session{live === 1 ? '' : 's'} alive
+          {waking > 0 ? ` · ${waking} waking` : ''}
         </p>
       </div>
       <div className="cr-legend">
-        <span>
-          <Dot status="live" />
-          alive
-        </span>
-        <span>
-          <Dot status="idle" />
-          idle
-        </span>
-        <span>
-          <Dot status="detached" />
-          detached
-        </span>
-        <span>
-          <Dot status="starting" />
-          waking
-        </span>
-        <span>
-          <Dot status="exited" />
-          offline
-        </span>
+        <LegendKey color={NODE_COLORS.alive} label="alive" />
+        <LegendKey color={NODE_COLORS.idle} label="idle" />
+        <LegendKey color={NODE_COLORS.detached} label="detached" />
+        <LegendKey color={NODE_COLORS.reachable} label="no live agent" ring />
+        <LegendKey color={NODE_COLORS.waking} label="waking" />
+        <LegendKey color={NODE_COLORS.offline} label="offline" />
       </div>
     </div>
+  )
+}
+
+// Legend swatch — fed from NODE_COLORS so the key always matches the canvas.
+// `ring` renders the hollow treatment used for reachable / no-live-agent nodes.
+function LegendKey({ color, label, ring }: { color: string; label: string; ring?: boolean }) {
+  return (
+    <span>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 999,
+          flex: 'none',
+          boxShadow: `0 0 5px ${color}`,
+          ...(ring ? { border: `1.5px solid ${color}` } : { background: color }),
+        }}
+      />
+      {label}
+    </span>
   )
 }

@@ -6,6 +6,10 @@
 #         LATTICE_TOKEN=CODE  curl -fsSL {{.HubURL}}/install.sh | sh
 set -eu
 
+# USER isn't guaranteed set in headless contexts; under `set -u` a bare $USER
+# expansion (enable_linger + the systemd tip line) would be fatal. Resolve once.
+USER="${USER:-$(id -un 2>/dev/null || echo unknown)}"
+
 HUB_URL="{{.HubURL}}"
 HUB="{{.HubHostPort}}"
 TOKEN="${LATTICE_TOKEN:-}"
@@ -25,6 +29,23 @@ if [ -z "$TOKEN" ]; then
   echo "lattice: missing token. Pass --token CODE or set LATTICE_TOKEN." >&2
   exit 1
 fi
+
+# enable_linger - best-effort enable systemd user linger so the --user service
+# starts at BOOT (not just at interactive login) — the whole point of installing
+# a persistent service on a headless box. Never fatal under `set -eu`: every step
+# is guarded, a missing loginctl or a polkit denial just falls back to a manual tip.
+enable_linger() {
+  command -v loginctl >/dev/null 2>&1 || return 1
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]; then
+    return 0
+  fi
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  if [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ] \
+     && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo -n loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  fi
+  [ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" = "Linger=yes" ]
+}
 [ -n "$NAME" ] || NAME="$(hostname 2>/dev/null || echo lattice-node)"
 
 # --- detect platform ---
@@ -80,9 +101,12 @@ if [ "$os" = "darwin" ]; then
     <string>$BIN</string>
     <string>agent</string>
     <string>--hub</string><string>$HUB</string>
-    <string>--token</string><string>$TOKEN</string>
     <string>--name</string><string>$NAME</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LATTICE_TOKEN</key><string>$TOKEN</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG_DIR/agent.out.log</string>
@@ -90,6 +114,7 @@ if [ "$os" = "darwin" ]; then
 </dict>
 </plist>
 PLIST_EOF
+  chmod 600 "$PLIST"  # the plist embeds LATTICE_TOKEN - keep it owner-only
 
   GUI="gui/$(id -u)"
   # Idempotent: tear down any existing instance, then bootstrap fresh.
@@ -115,24 +140,32 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$BIN agent --hub $HUB --token $TOKEN --name $NAME
+# Token via Environment (not the ExecStart command line) so it isn't visible in
+# `ps`/`systemctl show`. The unit file itself holds it; keep it user-readable only.
+Environment=LATTICE_TOKEN=$TOKEN
+ExecStart=$BIN agent --hub $HUB --name $NAME
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 UNIT_EOF
+    chmod 600 "$UNIT"  # the unit embeds LATTICE_TOKEN - keep it owner-only
     systemctl --user daemon-reload
     systemctl --user enable --now lattice-agent.service
     # Ensure a config change is picked up on re-run.
     systemctl --user restart lattice-agent.service
     echo "lattice: systemd --user service 'lattice-agent' installed and started"
-    echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    if enable_linger; then
+      echo "lattice: reboot-survival enabled (user linger on — the agent starts at boot, no login needed)"
+    else
+      echo "lattice: tip - run 'sudo loginctl enable-linger $USER' so it runs without an active login"
+    fi
   else
     PIDFILE="$PREFIX/agent.pid"
     LOG="$PREFIX/agent.log"
     if [ -f "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" >/dev/null 2>&1 || true; fi
-    nohup "$BIN" agent --hub "$HUB" --token "$TOKEN" --name "$NAME" >"$LOG" 2>&1 &
+    LATTICE_TOKEN="$TOKEN" nohup "$BIN" agent --hub "$HUB" --name "$NAME" >"$LOG" 2>&1 &
     echo $! > "$PIDFILE"
     echo "lattice: started agent via nohup (no systemd); logs at $LOG"
     echo "lattice: note - nohup does not survive reboot; install systemd --user for persistence"

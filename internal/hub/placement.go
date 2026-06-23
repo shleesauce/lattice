@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // Placement weights (D19). Free-RAM dominates so a session lands where it has
@@ -44,7 +44,8 @@ type PlacementResult struct {
 }
 
 // ScorePlacement is the pure placement scorer (D19). It hard-filters offline
-// agents (and, for claude, agents without the claude binary), scores the rest by
+// agents (and, for claude, agents without the claude binary OR that can't sign in
+// to claude here — F14), scores the rest by
 // free RAM + inverse load + cores + a locality boost, honours a manual pin when
 // eligible, and returns the full breakdown sorted by score desc (stable).
 func ScorePlacement(req PlacementRequest, agents []Agent, now time.Time) PlacementResult {
@@ -58,6 +59,12 @@ func ScorePlacement(req PlacementRequest, agents []Agent, now time.Time) Placeme
 			c.Excluded = "offline"
 		case req.Kind == proto.SessionClaude && !a.Capabilities.ClaudeInstalled:
 			c.Excluded = "claude not installed"
+		case req.Kind == proto.SessionClaude && !a.Capabilities.ClaudeAuthable:
+			// Installed but can't sign in here (F14): a background-service agent
+			// (pm2/nohup, e.g. the hub host) has no GUI login keychain for claude's
+			// OAuth, so a session placed here would be a dead blank tab. Terminal /
+			// editor sessions are unaffected — they don't auth claude.
+			c.Excluded = "can't sign in to claude here (needs a desktop login session)"
 		case req.Kind == proto.SessionEditor && !a.Capabilities.CodeServerInstalled:
 			c.Excluded = "code-server not installed"
 		default:

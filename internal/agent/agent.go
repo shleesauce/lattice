@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 const (
@@ -58,42 +59,67 @@ func Run(ctx context.Context, args []string, version string) error {
 	// the process-lifetime ctx so sessions are NOT killed on a hub reconnect.
 	state := newAgentState(ctx)
 
+	// Identity (v0.2.0): the persistent agent id (~/.lattice/agent-id) + this
+	// process's instance nonce. Shared by the main link and the editor tunnel so
+	// both register under the SAME id; on a fresh box the id is "" until the hub
+	// assigns one on first register, then persisted here.
+	ident := newIdentity()
+	if id := ident.get(); id != "" {
+		log.Printf("agent: persistent id %s (instance %s)", id, ident.instance)
+	} else {
+		log.Printf("agent: no persistent id yet — hub will assign one (instance %s)", ident.instance)
+	}
+
 	// Second dial-out (D27): the editor tunnel. Its own persistent connection +
 	// reconnect loop, independent of the main /ws/agent link, so code-server
 	// traffic is multiplexed over yamux without a new inbound listener (D2).
-	go runTunnel(ctx, wsURL, cfg, state)
+	go runTunnel(ctx, wsURL, cfg, state, ident)
 
-	backoff := time.Second
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		stop, connected, err := session(ctx, wsURL, cfg, version, state)
-		if stop {
-			// Bad token (or another non-retryable rejection): give up cleanly.
-			return nil
-		}
+	reconnectLoop(ctx, "agent", func() (stop, connected bool) {
+		s, c, err := session(ctx, wsURL, cfg, version, state, ident)
 		if err != nil {
 			log.Printf("agent: session ended: %v", err)
 		}
+		return s, c
+	})
+	return nil
+}
 
+// reconnectLoop drives a reconnecting outbound connection. It calls dial in a
+// loop, sleeping an exponentially-backed-off interval between attempts. A dial
+// that reports connected=true resets the backoff to 1s (so a long-lived link
+// recovers fast after a hub blip instead of being stuck at the ceiling); a dial
+// that reports stop=true is a non-retryable rejection (e.g. bad token) and ends
+// the loop. Used by BOTH the main /ws/agent link and the editor tunnel, so the
+// reconnect skeleton — and its jitter — lives in exactly one place (M1).
+//
+// Each sleep carries ±20% random jitter so that on a hub restart the whole fleet
+// does NOT reconnect in synchronised waves (thundering herd, FIX 5). math/rand
+// is fine here: this is load-spreading, not security-sensitive.
+func reconnectLoop(ctx context.Context, label string, dial func() (stop, connected bool)) {
+	backoff := time.Second
+	for {
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
 
-		// A session that actually registered resets the backoff, so a long-lived
-		// agent recovers in 1s after a hub blip instead of being stuck at the
-		// ceiling for the rest of its life.
+		stop, connected := dial()
+		if stop {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
 		if connected {
 			backoff = time.Second
 		}
 
-		log.Printf("agent: reconnecting in %s", backoff)
+		sleep := jitter(backoff)
+		log.Printf("%s: reconnecting in %s", label, sleep.Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-time.After(backoff):
+			return
+		case <-time.After(sleep):
 		}
 		backoff *= 2
 		if backoff > maxBackoff {
@@ -102,22 +128,37 @@ func Run(ctx context.Context, args []string, version string) error {
 	}
 }
 
+// jitter applies ±20% random spread to d so synchronised reconnects fan out
+// instead of stampeding the hub all at once (FIX 5).
+func jitter(d time.Duration) time.Duration {
+	delta := (rand.Float64()*2 - 1) * 0.2 // [-0.2, +0.2)
+	return time.Duration(float64(d) * (1 + delta))
+}
+
 // parseFlags reads the agent flag set off args.
 func parseFlags(args []string) (config, error) {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	var cfg config
-	fs.StringVar(&cfg.hub, "hub", "", "hub address HOST:PORT (required), e.g. mini-ops.tail3c8bee.ts.net:7400")
+	fs.StringVar(&cfg.hub, "hub", "", "hub address HOST:PORT (required), e.g. myhub.your-tailnet.ts.net:7400")
 	fs.StringVar(&cfg.token, "token", "", "enrollment token (required)")
 	fs.StringVar(&cfg.name, "name", "", "agent display name (default: hostname)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
 
+	// Token precedence mirrors the hub: an explicit --token wins, otherwise fall
+	// back to LATTICE_TOKEN. This lets deploy scripts/pm2/launchd hand the
+	// credential to the process via the environment so it never lands in argv
+	// (where it would be visible to anyone running `ps`).
+	if cfg.token == "" {
+		cfg.token = os.Getenv("LATTICE_TOKEN")
+	}
+
 	if cfg.hub == "" {
 		return config{}, errors.New("agent: --hub is required (HOST:PORT)")
 	}
 	if cfg.token == "" {
-		return config{}, errors.New("agent: --token is required")
+		return config{}, errors.New("agent: --token is required (pass --token or set LATTICE_TOKEN)")
 	}
 	if cfg.name == "" {
 		host, err := os.Hostname()
@@ -161,7 +202,7 @@ func resolveURL(hub string) (string, error) {
 // non-retryable rejection (e.g. bad token); otherwise the caller reconnects.
 // The process-global state is shared across reconnects; this connection only
 // swaps the output sink and drives the read loop.
-func session(ctx context.Context, wsURL string, cfg config, version string, state *agentState) (stop bool, connected bool, err error) {
+func session(ctx context.Context, wsURL string, cfg config, version string, state *agentState, ident *identity) (stop bool, connected bool, err error) {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return false, false, fmt.Errorf("dial %s: %w", wsURL, err)
@@ -191,6 +232,10 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 		AgentVersion: version,
 		Protocol:     proto.ProtocolVersion,
 		Capabilities: detectCapabilities(sessCtx),
+		// Identity (v0.2.0): persistent id ("" on a fresh box ⇒ hub assigns one) +
+		// this process's instance nonce (for the hub's duel detector).
+		AgentUUID:  ident.get(),
+		InstanceID: ident.instance,
 	})
 	if err != nil {
 		return false, false, err
@@ -222,8 +267,13 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 	}
 	if !reg.OK {
 		log.Printf("agent: registration rejected: %s", reg.Error)
-		return true, false, nil // non-retryable
+		return true, false, nil // non-retryable (bad token, or duel-banished instance)
 	}
+	// Adopt the id the hub resolved. On a fresh box this is the first time we learn
+	// our persistent id (the hub minted it, or reused a legacy record); adopt()
+	// persists it to ~/.lattice/agent-id and unblocks the editor tunnel. A no-op
+	// once we already had one.
+	ident.adopt(reg.AgentID)
 	log.Printf("agent: registered as %s", reg.AgentID)
 
 	// Point every pump at THIS connection's outbound channel. On disconnect the
@@ -253,18 +303,10 @@ func session(ctx context.Context, wsURL string, cfg config, version string, stat
 // when answering a session_list request.
 func sendSessionList(ctx context.Context, outbound chan<- []byte, state *agentState, reqID string) {
 	descs := append(state.terms.descriptors(), state.editors.descriptors()...)
-	frame, err := proto.Encode(proto.TypeSessionListResult, proto.SessionListResultPayload{
+	sendFrame(ctx, outbound, proto.TypeSessionListResult, proto.SessionListResultPayload{
 		ReqID:    reqID,
 		Sessions: descs,
 	})
-	if err != nil {
-		log.Printf("agent: encode session_list_result: %v", err)
-		return
-	}
-	select {
-	case outbound <- frame:
-	case <-ctx.Done():
-	}
 }
 
 // writer is the sole goroutine permitted to write to conn. It drains outbound
@@ -275,7 +317,7 @@ func writer(ctx context.Context, conn *websocket.Conn, outbound <-chan []byte) {
 		case <-ctx.Done():
 			// Best-effort close handshake.
 			conn.SetWriteDeadline(time.Now().Add(time.Second))
-			conn.WriteMessage(websocket.CloseMessage,
+			_ = conn.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			return
 		case b, ok := <-outbound:
@@ -294,16 +336,7 @@ func writer(ctx context.Context, conn *websocket.Conn, outbound <-chan []byte) {
 // heartbeatLoop sends a heartbeat immediately, then every heartbeatInterval.
 func heartbeatLoop(ctx context.Context, outbound chan<- []byte) {
 	send := func() {
-		hb := gatherMetrics(ctx)
-		frame, err := proto.Encode(proto.TypeHeartbeat, hb)
-		if err != nil {
-			log.Printf("agent: encode heartbeat: %v", err)
-			return
-		}
-		select {
-		case outbound <- frame:
-		case <-ctx.Done():
-		}
+		sendFrame(ctx, outbound, proto.TypeHeartbeat, gatherMetrics(ctx))
 	}
 
 	send()
@@ -426,6 +459,14 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 			}
 			go getFile(ctx, p, outbound)
 
+		case proto.TypeTranscriptGet:
+			var p proto.TranscriptReqPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad transcript_get: %v", err)
+				continue
+			}
+			go getTranscript(ctx, p, outbound)
+
 		case proto.TypeWake:
 			var p proto.WakePayload
 			if err := proto.As(env, &p); err != nil {
@@ -433,6 +474,22 @@ func readLoop(ctx context.Context, conn *websocket.Conn, outbound chan<- []byte,
 				continue
 			}
 			go wake(ctx, p, outbound)
+
+		case proto.TypePowerControl:
+			var p proto.PowerControlPayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad power_control: %v", err)
+				continue
+			}
+			go powerControl(ctx, p, outbound)
+
+		case proto.TypeUpdate:
+			var p proto.UpdatePayload
+			if err := proto.As(env, &p); err != nil {
+				log.Printf("agent: bad update: %v", err)
+				continue
+			}
+			go handleUpdate(ctx, p, outbound)
 
 		default:
 			log.Printf("agent: ignoring unexpected frame %q", env.Type)
@@ -447,7 +504,7 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 
 	// Resolve the working directory locally. A device session sends an empty (or
 	// "~") cwd meaning "this machine's home" — the hub can't know the home path
-	// because it differs per box (/Users/mini-ops vs /Users/dylanstory vs C:\Users\…).
+	// because it differs per box (/Users/alice vs /Users/bob vs C:\Users\…).
 	p.Cwd = resolveCwd(p.Cwd)
 
 	switch p.Kind {
@@ -470,35 +527,28 @@ func handleSessionCreate(ctx context.Context, outbound chan<- []byte, state *age
 		}
 	}
 
-	frame, err := proto.Encode(proto.TypeSessionCreated, ack)
-	if err != nil {
-		log.Printf("agent: encode session_created: %v", err)
-		return
-	}
-	select {
-	case outbound <- frame:
-	case <-ctx.Done():
-	}
+	sendFrame(ctx, outbound, proto.TypeSessionCreated, ack)
 }
 
 // resolveCwd maps a session's working directory to a path valid on THIS machine.
 //
 //   - Empty / "~" / "~/sub" → the agent's home dir (device sessions).
-//   - A synced project path (".../AI-Hub/projects/<rest>") → re-rooted at this
-//     machine's $HOME (D23). Projects are Syncthing-synced under ~/AI-Hub/projects
-//     fleet-wide, but each machine's home differs (/Users/mini-ops vs
-//     /Users/dylanstory vs C:\Users\…), so the hub's absolute path is wrong on a
-//     remote agent. Rebasing makes a project session placed on ANY machine open
-//     the right local copy — for the editor, claude, and terminal alike.
+//   - A path under SOME machine's home (e.g. a folder-synced project) → re-rooted
+//     at this machine's $HOME (D23). A project folder is synced fleet-wide, but
+//     each machine's home differs (/Users/alice vs /home/bob vs C:\Users\…), so
+//     the hub's absolute path is wrong on a remote agent. We detect a leading home
+//     prefix in the incoming path and rebase the remainder onto the local $HOME,
+//     so a project session placed on ANY machine opens the right local copy — for
+//     the editor, claude, and terminal alike. No project name is hardcoded.
 //   - Any other absolute path → untouched.
 //
 // On home-lookup failure it returns the input unchanged so the OS default applies.
 func resolveCwd(cwd string) string {
-	if i := strings.Index(cwd, "/AI-Hub/projects/"); i >= 0 {
+	if rest, ok := stripHomePrefix(cwd); ok {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			// cwd[i+1:] == "AI-Hub/projects/<rest>"; filepath.Join normalises
-			// separators for the local OS (e.g. backslashes inside WSL/Windows).
-			return filepath.Join(home, cwd[i+1:])
+			// filepath.Join normalises separators for the local OS (e.g. backslashes
+			// inside WSL/Windows).
+			return filepath.Join(home, rest)
 		}
 	}
 	if cwd != "" && cwd != "~" && !strings.HasPrefix(cwd, "~/") {
@@ -508,12 +558,58 @@ func resolveCwd(cwd string) string {
 	if err != nil {
 		return cwd
 	}
-	switch {
-	case cwd == "" || cwd == "~":
+	if cwd == "" || cwd == "~" {
 		return home
-	default: // "~/sub/dir"
-		return filepath.Join(home, cwd[2:])
 	}
+	return filepath.Join(home, cwd[2:]) // "~/sub/dir"
+}
+
+// stripHomePrefix detects a leading per-user home prefix in an absolute path and
+// returns the path remainder relative to that home (slash-normalised), so the
+// caller can rebase it onto the LOCAL machine's $HOME. It recognises the common
+// shapes that a synced folder's absolute path takes across machines:
+//
+//	/Users/<name>/<rest>   (macOS)
+//	/home/<name>/<rest>    (Linux)
+//	/root/<rest>           (Linux root)
+//	C:\Users\<name>\<rest> (Windows; any drive letter, '/' or '\' separators)
+//
+// It returns ("", false) when no home prefix is present (the path is left alone).
+func stripHomePrefix(path string) (string, bool) {
+	// Windows: <drive>:\Users\<name>\<rest> (also tolerate forward slashes).
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		norm := strings.ReplaceAll(path, "\\", "/")
+		if rest, ok := afterSegments(norm[2:], "Users"); ok {
+			return rest, true
+		}
+		return "", false
+	}
+	if rest, ok := afterSegments(path, "Users"); ok { // /Users/<name>/<rest>
+		return rest, true
+	}
+	if rest, ok := afterSegments(path, "home"); ok { // /home/<name>/<rest>
+		return rest, true
+	}
+	if strings.HasPrefix(path, "/root/") { // /root/<rest>
+		return path[len("/root/"):], true
+	}
+	return "", false
+}
+
+// afterSegments matches "/<dir>/<name>/<rest>" on a slash-separated path and
+// returns "<rest>". It requires a non-empty <name> segment and a non-empty
+// remainder so a bare "/Users/alice" (no project under it) isn't rebased.
+func afterSegments(path, dir string) (string, bool) {
+	prefix := "/" + dir + "/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	tail := path[len(prefix):] // "<name>/<rest>"
+	slash := strings.IndexByte(tail, '/')
+	if slash <= 0 || slash == len(tail)-1 {
+		return "", false
+	}
+	return tail[slash+1:], true
 }
 
 // handleSessionAttach replies with a session_replay for the attached session.
@@ -528,15 +624,7 @@ func handleSessionAttach(ctx context.Context, outbound chan<- []byte, state *age
 	if !ok {
 		return
 	}
-	frame, err := proto.Encode(proto.TypeSessionReplay, replay)
-	if err != nil {
-		log.Printf("agent: encode session_replay: %v", err)
-		return
-	}
-	select {
-	case outbound <- frame:
-	case <-ctx.Done():
-	}
+	sendFrame(ctx, outbound, proto.TypeSessionReplay, replay)
 }
 
 // closeSession terminates a session of either kind and emits one session_exit.

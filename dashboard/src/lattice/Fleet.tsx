@@ -12,20 +12,27 @@ export function Fleet({
   recentProjects,
   connLabel,
   canWake,
+  onManageMesh,
   onSelect,
   onWake,
   onNewSession,
   onOpenWorkspace,
+  onOpenProject,
+  onOpenSession,
 }: {
   machines: Machine[]
   selected: string
   recentProjects: string[]
   connLabel: string
   canWake: boolean
+  onManageMesh: () => void
   onSelect: (id: string) => void
   onWake: (m: Machine) => void
   onNewSession: (m: Machine) => void
   onOpenWorkspace: () => void
+  // Jump straight into a specific project / session in the Workspace.
+  onOpenProject: (name: string) => void
+  onOpenSession: (id: string) => void
 }) {
   const m = machines.find((x) => x.id === selected) || machines[0]
 
@@ -39,6 +46,16 @@ export function Fleet({
             <Dot status="live" />
             {connLabel}
           </span>
+          <button
+            type="button"
+            className="iconbtn"
+            title="Manage mesh"
+            aria-label="Manage mesh"
+            onClick={onManageMesh}
+            style={{ marginLeft: 'auto' }}
+          >
+            <Icon name="settings" size={15} />
+          </button>
         </div>
         <div className="rail-scroll">
           <div className="rail-sec">
@@ -51,7 +68,21 @@ export function Fleet({
               <div
                 key={mc.id}
                 className={`mrow ${selected === mc.id ? 'sel' : ''} ${mc.offline ? 'off' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selected === mc.id}
+                aria-label={`${mc.label} — ${STATUS_LABEL[mc.status]}`}
                 onClick={() => onSelect(mc.id)}
+                onKeyDown={(e) => {
+                  // Don't hijack keys from a nested control (the wake button): its
+                  // Enter/Space bubbles here and this preventDefault() would cancel
+                  // the button's native activation, making wake mouse-only.
+                  if (e.target !== e.currentTarget) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelect(mc.id)
+                  }
+                }}
               >
                 <Dot status={mc.status} />
                 <Icon name={mc.kind} size={14} color="var(--fg-3)" />
@@ -84,11 +115,26 @@ export function Fleet({
                 Recent
               </div>
               {recentProjects.map((p) => (
-                <div className="mrow" key={p} onClick={onOpenWorkspace}>
+                <div
+                  className="mrow"
+                  key={p}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`open ${p}`}
+                  onClick={() => onOpenProject(p)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onOpenProject(p)
+                    }
+                  }}
+                  title={`open ${p}`}
+                >
                   <Icon name="folder" size={14} color="var(--fg-3)" />
                   <span className="name" style={{ fontWeight: 400, color: 'var(--fg-2)' }}>
                     {p}
                   </span>
+                  <Icon name="arrow-right" size={13} color="var(--fg-3)" style={{ marginLeft: 'auto', opacity: 0.5 }} />
                 </div>
               ))}
             </>
@@ -108,7 +154,16 @@ export function Fleet({
 
       <FleetMap fleet={machines} selected={m?.id ?? ''} onSelect={onSelect} />
 
-      {m && <SidePanel m={m} canWake={canWake} onWake={onWake} onNewSession={onNewSession} onOpenWorkspace={onOpenWorkspace} />}
+      {m && (
+        <SidePanel
+          m={m}
+          canWake={canWake}
+          onWake={onWake}
+          onNewSession={onNewSession}
+          onOpenWorkspace={onOpenWorkspace}
+          onOpenSession={onOpenSession}
+        />
+      )}
     </div>
   )
 }
@@ -119,12 +174,14 @@ function SidePanel({
   onWake,
   onNewSession,
   onOpenWorkspace,
+  onOpenSession,
 }: {
   m: Machine
   canWake: boolean
   onWake: (m: Machine) => void
   onNewSession: (m: Machine) => void
   onOpenWorkspace: () => void
+  onOpenSession: (id: string) => void
 }) {
   const alive = m.sessions.some((s) => s.status === 'live')
   const waking = m.status === 'starting'
@@ -254,7 +311,7 @@ function SidePanel({
                 <Dot status={s.status} />
                 <span className="nm">{s.name}</span>
                 <span className="du">{s.dur}</span>
-                <button className="iconbtn" style={{ width: 26, height: 26 }} onClick={onOpenWorkspace} title="open in workspace">
+                <button className="iconbtn" style={{ width: 26, height: 26 }} onClick={() => onOpenSession(s.id)} title="open in workspace">
                   <Icon name="arrow-right" size={15} />
                 </button>
               </div>

@@ -30,8 +30,8 @@ func TestInsertRegistryRow(t *testing.T) {
 		"",
 		"| Project | Purpose | Port | Stack | Supabase | Status |",
 		"|---------|---------|------|-------|----------|--------|",
-		"| productionhub | reads | 5100 | React | abc | Active |",
-		"| brain-dump | pipeline | 5700 | Next.js | — | Active |",
+		"| webapp | reads | 5100 | React | abc | Active |",
+		"| api-service | pipeline | 5700 | Next.js | — | Active |",
 		"",
 		"### Port Map (quick reference)",
 		"trailing content",
@@ -44,23 +44,23 @@ func TestInsertRegistryRow(t *testing.T) {
 	}
 
 	lines := strings.Split(out, "\n")
-	// Row must land immediately after the last existing data row (brain-dump).
-	var rowIdx, brainIdx, blankAfter int
+	// Row must land immediately after the last existing data row (api-service).
+	var rowIdx, lastIdx, blankAfter int
 	for i, ln := range lines {
 		switch {
 		case ln == row:
 			rowIdx = i
-		case strings.HasPrefix(ln, "| brain-dump "):
-			brainIdx = i
-		case ln == "" && i > brainIdx && blankAfter == 0:
+		case strings.HasPrefix(ln, "| api-service "):
+			lastIdx = i
+		case ln == "" && i > lastIdx && blankAfter == 0:
 			blankAfter = i
 		}
 	}
 	if rowIdx == 0 {
 		t.Fatal("inserted row not found in output")
 	}
-	if rowIdx != brainIdx+1 {
-		t.Fatalf("row inserted at %d, expected right after last data row %d", rowIdx, brainIdx)
+	if rowIdx != lastIdx+1 {
+		t.Fatalf("row inserted at %d, expected right after last data row %d", rowIdx, lastIdx)
 	}
 	// The trailing non-table content must be preserved.
 	if !strings.Contains(out, "### Port Map (quick reference)") || !strings.Contains(out, "trailing content") {

@@ -13,9 +13,10 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // editorReadyTimeout bounds how long start() waits for code-server to bind its
@@ -43,9 +44,17 @@ type editorSession struct {
 	closeOnce     sync.Once
 }
 
-// release stops the code-server process. Idempotent.
+// release stops the code-server process AND its descendants. Idempotent.
+//
+// ctx cancel only kills the direct child; code-server forks node worker /
+// extension-host children that survive and leak processes + bound loopback ports
+// across create/close cycles. killProcessGroup signals the whole group (FIX 1).
+// We still cancel the ctx so the Cmd's own waiter unwinds and ProcessState fills.
 func (s *editorSession) release() {
 	s.closeOnce.Do(func() {
+		if s.pid > 0 {
+			killProcessGroup(s.pid)
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -174,6 +183,10 @@ func (e *editorSessions) start(parent context.Context, p proto.SessionCreatePayl
 		cmd.Dir = p.Cwd
 	}
 	cmd.Env = os.Environ()
+	// Own process group so the whole code-server subtree (node workers /
+	// extension hosts) can be torn down together in release() (FIX 1).
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	setProcGroup(cmd.SysProcAttr)
 
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -268,12 +281,25 @@ func codeServerArgs(addr, cwd, udd string) []string {
 // true-black editor, cool structure, WARM caret/active-tab/selection ("where you
 // are working"), green run/progress, calm cool syntax with warm only on literals.
 // It also strips the stock welcome/walkthrough and points fonts at IBM Plex Mono.
+//
+// De-chrome (F12): the editor lives INSIDE Lattice's own pane next to the Lattice
+// Claude split, so code-server's full IDE chrome is redundant — it reads as an
+// "app inside an app." We hide the activity-bar icon rail, the menu bar, the
+// layout-control widget, and keep the built-in chat/agent auxiliary panel closed
+// (Lattice's Claude is the SOLE AI surface). The file tree (Explorer side bar),
+// open/edit/save, git decorations, and the status bar all remain functional —
+// only the redundant navigation chrome is removed. Enum values verified against
+// the bundled code-server 1.112 schema (activityBar.location accepts "hidden";
+// secondarySideBar.defaultVisibility accepts "hidden").
 const editorSettingsJSON = `{
   "workbench.colorTheme": "Default Dark Modern",
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
   "workbench.welcomePage.walkthroughs.openOnInstall": false,
-  "window.menuBarVisibility": "compact",
+  "workbench.activityBar.location": "hidden",
+  "workbench.layoutControl.enabled": false,
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "window.menuBarVisibility": "hidden",
   "window.commandCenter": false,
   "editor.fontFamily": "'IBM Plex Mono', ui-monospace, monospace",
   "editor.fontSize": 13,

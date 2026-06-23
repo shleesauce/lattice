@@ -9,10 +9,58 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
+
+// reachabilityCacheTTL is how long the tailscale peer list and the parsed ssh
+// config are reused. /api/devices otherwise shells out to `tailscale status
+// --json` (up to 4s) and re-reads ~/.ssh/config on EVERY request; a short TTL
+// collapses bursts of dashboard polls into one probe while staying fresh enough
+// for fleet reachability.
+const reachabilityCacheTTL = 10 * time.Second
+
+var (
+	tsCacheMu  sync.Mutex
+	tsCached   []tsPeer
+	tsCachedAt time.Time
+	tsCacheOK  bool
+
+	sshCacheMu  sync.Mutex
+	sshCached   []sshHost
+	sshCachedAt time.Time
+	sshCacheOK  bool
+)
+
+// cachedTailscalePeers wraps tailscalePeers with a reachabilityCacheTTL cache so
+// rapid /api/devices polls don't each spawn `tailscale status --json`.
+func cachedTailscalePeers() []tsPeer {
+	tsCacheMu.Lock()
+	defer tsCacheMu.Unlock()
+	if tsCacheOK && time.Since(tsCachedAt) < reachabilityCacheTTL {
+		return tsCached
+	}
+	tsCached = tailscalePeers()
+	tsCachedAt = time.Now()
+	tsCacheOK = true
+	return tsCached
+}
+
+// cachedSSHHosts wraps sshHosts with a reachabilityCacheTTL cache so rapid
+// /api/devices polls don't each re-read and re-parse ~/.ssh/config.
+func cachedSSHHosts() []sshHost {
+	sshCacheMu.Lock()
+	defer sshCacheMu.Unlock()
+	if sshCacheOK && time.Since(sshCachedAt) < reachabilityCacheTTL {
+		return sshCached
+	}
+	sshCached = sshHosts()
+	sshCachedAt = time.Now()
+	sshCacheOK = true
+	return sshCached
+}
 
 // Device is the unified fleet view: every machine the user knows about, merged
 // from three sources — the lattice agent registry (full telemetry + can run
@@ -21,15 +69,15 @@ import (
 // across sources by name/hostname/DNS tokens (union-find), so one physical
 // machine shows once even if it appears in all three.
 type Device struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Host     string   `json:"host"`
-	OS       string   `json:"os"`   // darwin | windows | android | ios | linux
-	Kind     string   `json:"kind"` // monitor(laptop) | server(desktop) | smartphone
-	Status   string   `json:"status"`
-	Online   bool     `json:"online"` // host reachable (agent live OR tailscale/ssh)
-	Local    bool     `json:"local"`
-	Sources  []string `json:"sources"` // agent | tailscale | ssh
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Host    string   `json:"host"`
+	OS      string   `json:"os"`   // darwin | windows | android | ios | linux
+	Kind    string   `json:"kind"` // monitor(laptop) | server(desktop) | smartphone
+	Status  string   `json:"status"`
+	Online  bool     `json:"online"` // host reachable (agent live OR tailscale/ssh)
+	Local   bool     `json:"local"`
+	Sources []string `json:"sources"` // agent | tailscale | ssh
 
 	// AgentLive is true only when the lattice agent itself is checked in with a
 	// fresh heartbeat — distinct from Online, which also goes true on mere
@@ -39,9 +87,9 @@ type Device struct {
 	AgentLive bool `json:"agentLive"`
 
 	// Agent-backed only — enables sessions + live telemetry.
-	HasAgent     bool               `json:"hasAgent"`
-	AgentID      string             `json:"agentId,omitempty"`
-	Arch         string             `json:"arch,omitempty"`
+	HasAgent     bool                `json:"hasAgent"`
+	AgentID      string              `json:"agentId,omitempty"`
+	Arch         string              `json:"arch,omitempty"`
 	UptimeSec    uint64              `json:"uptimeSec,omitempty"`
 	MemTotal     uint64              `json:"memTotal,omitempty"`
 	MemUsedPct   float64             `json:"memUsedPct,omitempty"`
@@ -50,6 +98,7 @@ type Device struct {
 	CPUCount     int                 `json:"cpuCount,omitempty"`
 	LastSeen     string              `json:"lastSeen,omitempty"`
 	MACs         []string            `json:"macs,omitempty"`
+	LANIPs       []string            `json:"lanIPs,omitempty"`
 	Capabilities *proto.Capabilities `json:"capabilities,omitempty"`
 
 	// Reachability extras.
@@ -63,7 +112,7 @@ var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
 // idTokens reduces a raw name/hostname/DNS name into the match tokens used to
 // dedupe a single machine across sources: its first DNS label and an
-// alphanumeric-collapsed form (so "Dylan's Mac Studio" ↔ "Dylans-Mac-Studio").
+// alphanumeric-collapsed form (so "Alice's Mac Studio" ↔ "Alices-Mac-Studio").
 func idTokens(raw string) []string {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	if s == "" {
@@ -125,8 +174,10 @@ func (h *Hub) devices() []Device {
 	// Sort the map-derived peers by host so fragment order — and thus the merge
 	// — is deterministic across calls.
 	agents := h.fleet()
-	peers := tailscalePeers()
-	hosts := sshHosts()
+	// Copy the cached peer slice before sorting: the cache hands back a shared
+	// backing array, and sorting it in place would race concurrent devices() calls.
+	peers := append([]tsPeer(nil), cachedTailscalePeers()...)
+	hosts := cachedSSHHosts()
 	sort.Slice(peers, func(i, j int) bool {
 		if peers[i].dnsName != peers[j].dnsName {
 			return peers[i].dnsName < peers[j].dnsName
@@ -151,9 +202,9 @@ func (h *Hub) devices() []Device {
 		})
 	}
 	// 3) ssh config hosts. Join on BOTH the alias and the resolved HostName: the
-	// alias is the bridge between a short agent hostname ("mbp", "studio", "pc")
-	// and the machine's long Tailscale/DNS name ("dylans-macbook-pro", …), so an
-	// agent and its tailnet entry fold into one device. (The fleet uses real
+	// alias is the bridge between a short agent hostname ("laptop", "desktop", …)
+	// and the machine's long Tailscale/DNS name ("alices-macbook-pro", …), so an
+	// agent and its tailnet entry fold into one device. (A fleet uses real
 	// hostnames/DNS names, not generic single-letter aliases, so this doesn't
 	// over-merge.)
 	for i := range hosts {
@@ -169,7 +220,7 @@ func (h *Hub) devices() []Device {
 	out := make([]Device, 0, len(groups))
 	for _, g := range groups {
 		d := foldGroup(g)
-		if isExcludedDevice(d) {
+		if h.isExcludedDevice(d) {
 			continue // other people's machines: on the tailnet, but not OUR fleet
 		}
 		out = append(out, d)
@@ -193,7 +244,7 @@ func unionByToken(frags []fragment) [][]fragment {
 	for i := range parent {
 		parent[i] = i
 	}
-	var find func(int) int
+	var find func(int) int //nolint:staticcheck // S1021: split decl is required — the closure is self-referential (recurses via find)
 	find = func(x int) int {
 		for parent[x] != x {
 			parent[x] = parent[parent[x]]
@@ -259,6 +310,7 @@ func foldGroup(g []fragment) Device {
 		d.CPUCount = best.CPUCount
 		d.LastSeen = best.LastSeen
 		d.MACs = best.MACs
+		d.LANIPs = best.LANIPs
 		caps := best.Capabilities
 		d.Capabilities = &caps
 	}
@@ -313,20 +365,20 @@ func betterAgent(a, b *Agent) bool {
 	return a.LastSeen > b.LastSeen // RFC3339 sorts lexicographically
 }
 
-// excludedDevices are machines that live on the tailnet but are NOT part of the
-// Lattice fleet — other people's boxes Dylan occasionally reaches but doesn't
-// manage here. Matched against the device's identity tokens (name + host), so
-// "M"/pc-kinzie and "Kinz's MacBook Air" fold out regardless of which source
-// surfaced them. Lower-cased, alphanumeric-collapsed substrings.
-var excludedDevices = []string{"kinzie", "kinz", "pckinzie"}
-
 // isExcludedDevice reports whether a folded device should be hidden from the
-// fleet. Checks the name and host against the exclude list via idTokens so the
-// match is robust to DNS suffixes and punctuation ("Kinz's MacBook Air" → kinz).
-func isExcludedDevice(d Device) bool {
+// fleet — machines that live on the tailnet but are NOT part of this Lattice
+// fleet (other people's boxes you can reach but don't manage here). The exclude
+// list is config-driven (h.excludedDevices, empty by default). Each entry is a
+// lower-cased, alphanumeric-collapsed substring matched against the device's
+// identity tokens (name + host) via idTokens, so the match is robust to DNS
+// suffixes and punctuation (e.g. "kinz" matches "Kinz's MacBook Air").
+func (h *Hub) isExcludedDevice(d Device) bool {
+	if len(h.excludedDevices) == 0 {
+		return false
+	}
 	toks := append(idTokens(d.Name), idTokens(d.Host)...)
 	for _, t := range toks {
-		for _, ex := range excludedDevices {
+		for _, ex := range h.excludedDevices {
 			if strings.Contains(t, ex) {
 				return true
 			}
@@ -341,9 +393,10 @@ func isExcludedDevice(d Device) bool {
 // including one whose agent process has died but whose host still answers the
 // tailnet — is "reachable", never a false "online". This keeps the dashboard
 // honest: green/teal ⇒ a live agent you can run on; blue ⇒ visible only.
-//   agent checked-in   → "online"   (dashboard upgrades to live/idle/detached)
-//   reachable, no live agent → "reachable"
-//   unreachable        → "exited"
+//
+//	agent checked-in   → "online"   (dashboard upgrades to live/idle/detached)
+//	reachable, no live agent → "reachable"
+//	unreachable        → "exited"
 func deviceStatus(d Device) string {
 	if d.HasAgent && d.AgentLive {
 		return "online"
@@ -392,9 +445,9 @@ func kindFor(name, host, os string) string {
 	switch {
 	case strings.Contains(n, "iphone") || strings.Contains(n, "ipad") ||
 		strings.Contains(n, "phone") || strings.Contains(n, "galaxy") ||
-		strings.Contains(n, "pixel") || strings.Contains(n, "s26"):
+		strings.Contains(n, "pixel"):
 		return "smartphone"
-	case strings.Contains(n, "macbook") || strings.Contains(n, "mbp") ||
+	case strings.Contains(n, "macbook") ||
 		strings.Contains(n, "air") || strings.Contains(n, "laptop") ||
 		strings.Contains(n, "book"):
 		return "monitor"

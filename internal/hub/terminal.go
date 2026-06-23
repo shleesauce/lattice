@@ -7,7 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/gorilla/websocket"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // browserTermMsg is the JSON framing the browser sends to the hub over the
@@ -37,8 +38,8 @@ func (h *Hub) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ac, ok := h.registry.getAgent(agentID)
-	if !ok || !ac.isLive(offlineAfter) {
+	ac, ok := h.registry.liveAgent(agentID)
+	if !ok {
 		http.Error(w, "agent offline", http.StatusNotFound)
 		return
 	}
@@ -78,36 +79,7 @@ func (h *Hub) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("terminal close: agent=%s term=%s", agentID, termID)
 	}()
 
-	conn.SetReadLimit(1 << 20)
-	for {
-		conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-
-		var msg browserTermMsg
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			continue
-		}
-
-		switch msg.Type {
-		case "input":
-			if err := ac.send(proto.TypeTermInput, proto.TermDataPayload{
-				TermID: termID, Data: msg.Data,
-			}); err != nil {
-				return
-			}
-		case "resize":
-			if err := ac.send(proto.TypeTermResize, proto.TermResizePayload{
-				TermID: termID, Cols: msg.Cols, Rows: msg.Rows,
-			}); err != nil {
-				return
-			}
-		default:
-			// Ignore unknown browser frame types.
-		}
-	}
+	relayBrowserInput(conn, ac, termID)
 }
 
 // handleSessionWS bridges a browser to a long-lived session (terminal OR claude)
@@ -137,8 +109,8 @@ func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ac, online := h.registry.getAgent(rec.AgentID)
-	if !online || !ac.isLive(offlineAfter) {
+	ac, online := h.registry.liveAgent(rec.AgentID)
+	if !online {
 		http.Error(w, "session agent offline", http.StatusNotFound)
 		return
 	}
@@ -183,7 +155,40 @@ func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("session detach: session=%s agent=%s", sessionID, rec.AgentID)
 	}()
 
+	relayBrowserInput(conn, ac, sessionID)
+}
+
+// relayBrowserInput pumps browser→agent input/resize frames until the browser
+// closes or a send fails. termKey is the termId (ephemeral /ws/terminal) or the
+// sessionId (attached /ws/session) the agent uses to route the PTY — the loop is
+// otherwise identical for both, so both handlers share it.
+func relayBrowserInput(conn *websocket.Conn, ac *agentConn, termKey string) {
 	conn.SetReadLimit(1 << 20)
+	conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
+	// Keepalive (mirrors dashboardws): every pong refreshes the read deadline so a
+	// quiet terminal stays attached, and the periodic ping keeps mobile NAT/proxy
+	// mappings warm so the socket isn't silently dropped mid-session. gorilla allows
+	// WriteControl concurrently with the output pump's writes, so no extra lock.
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(terminalPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteTimeout)); err != nil {
+					conn.Close() // unblocks ReadMessage below → deferred cleanup runs
+					return
+				}
+			}
+		}
+	}()
 	for {
 		conn.SetReadDeadline(time.Now().Add(terminalReadTimeout))
 		_, raw, err := conn.ReadMessage()
@@ -199,13 +204,13 @@ func (h *Hub) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 		case "input":
 			if err := ac.send(proto.TypeTermInput, proto.TermDataPayload{
-				TermID: sessionID, Data: msg.Data,
+				TermID: termKey, Data: msg.Data,
 			}); err != nil {
 				return
 			}
 		case "resize":
 			if err := ac.send(proto.TypeTermResize, proto.TermResizePayload{
-				TermID: sessionID, Cols: msg.Cols, Rows: msg.Rows,
+				TermID: termKey, Cols: msg.Cols, Rows: msg.Rows,
 			}); err != nil {
 				return
 			}

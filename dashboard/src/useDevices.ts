@@ -1,54 +1,46 @@
-import { useEffect, useState } from 'react'
-import { dashboardWsUrl, fetchDevices } from './api'
-import type { Device } from './types'
+import { useCallback, useRef, useState } from 'react'
+import { fetchDevices } from './api'
+import { useLiveResource } from './useLiveResource'
+import type { DashboardEvent, Device } from './types'
 
 // Polls /api/devices (the unified fleet: agents + Tailscale + SSH) and refreshes
-// immediately whenever the dashboard WS announces a fleet change, so agent
+// immediately whenever the shared dashboard WS announces a fleet change, so agent
 // online/offline transitions reflect fast. Tailscale/SSH presence is poll-only
 // (the hub re-derives it per request), so a steady poll keeps phones/PCs current.
 const POLL_MS = 6000
 
-export function useDevices(): { devices: Device[]; loading: boolean } {
+export function useDevices(): { devices: Device[]; loading: boolean; refetch: () => Promise<void> } {
   const [devices, setDevices] = useState<Device[]>([])
   const [loading, setLoading] = useState(true)
+  const aliveRef = useRef(true)
 
-  useEffect(() => {
-    let alive = true
-    const refresh = () =>
-      fetchDevices()
-        .then((d) => {
-          if (alive) setDevices(d)
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (alive) setLoading(false)
-        })
-
-    refresh()
-    const t = setInterval(refresh, POLL_MS)
-
-    // Piggyback on the dashboard fleet WS as an instant refresh trigger.
-    let ws: WebSocket | null = null
-    try {
-      ws = new WebSocket(dashboardWsUrl())
-      ws.onmessage = (ev) => {
-        try {
-          const m = JSON.parse(ev.data as string)
-          if (m.type === 'fleet') refresh()
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch {
-      /* WS optional; polling covers it */
-    }
-
-    return () => {
-      alive = false
-      clearInterval(t)
-      ws?.close()
-    }
+  const refresh = useCallback(() => {
+    return fetchDevices()
+      .then((d) => {
+        if (aliveRef.current) setDevices(d)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (aliveRef.current) setLoading(false)
+      })
   }, [])
 
-  return { devices, loading }
+  // Piggyback on the shared fleet WS as an instant refresh trigger (the frame
+  // doesn't carry device data — the hub re-derives presence per request).
+  const onMessage = useCallback(
+    (m: DashboardEvent) => {
+      if (m.type === 'fleet') void refresh()
+    },
+    [refresh],
+  )
+
+  useLiveResource({
+    aliveRef,
+    onMount: refresh,
+    onReconnect: refresh,
+    onEvent: onMessage,
+    poll: { ms: POLL_MS, fn: refresh },
+  })
+
+  return { devices, loading, refetch: refresh }
 }

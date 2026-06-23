@@ -3,7 +3,7 @@
 ## Design north star
 Everything bends toward **packageable**: single artifact per platform, zero-config install,
 no per-OS manual steps exposed to the user. If a design choice makes the build easier on
-Dylan's fleet but harder for a stranger to install, it's the wrong choice.
+the maintainer's own fleet but harder for a stranger to install, it's the wrong choice.
 
 ## Components
 
@@ -12,7 +12,7 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
   executable — role chosen by flag/subcommand. This keeps distribution to ONE artifact
   per (OS, arch).
 - Cross-compiles to darwin/windows/linux × amd64/arm64 with `GOOS`/`GOARCH`. **Build all
-  targets from one machine** (mini-ops) — never require a per-machine Go toolchain. This
+  targets from one machine** (the hub host) — never require a per-machine Go toolchain. This
   is itself a packageability win and sidesteps Windows/Termux toolchain pain.
 - Responsibilities (leaf): register with hub, heartbeat (hostname, OS, arch, uptime, disk,
   load, online), execute commands the hub sends, stream stdout/stderr back, host a PTY for
@@ -20,14 +20,14 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
   LAN peers.
 
 ### 2. The hub (same binary, role=hub)
-- Runs on an always-on machine (Dylan's fleet: **mini-ops**, failover **studio**).
+- Runs on an always-on machine (one primary hub host, with another box as failover).
 - Serves: REST API + WebSocket endpoint for agents + WebSocket/SSE for the dashboard +
   the static dashboard bundle + (phase 3) a reverse proxy to code-server.
 - Stores fleet registry + history in **embedded SQLite** (zero external dependency).
-- Default port **7400** on Dylan's fleet (free; avoid 3001/4000/5173/5678/5679/8222/8384/22000).
+- Default port **7400** (commonly free; avoid 3001/4000/5173/5678/5679/8222/8384/22000).
 
 ### 3. The dashboard (React + TS + Vite + Tailwind, dark-first)
-- Matches Dylan's house stack. Built to static assets, embedded into / served by the hub.
+- Dark-first web stack. Built to static assets, embedded into / served by the hub.
 - Talks to the hub via REST (fleet list, actions) + WebSocket (live status, terminal,
   command output streaming). Terminal UI = xterm.js.
 
@@ -42,7 +42,7 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
   auth — only enrolled devices on the user's tailnet can reach the hub at all.
 
 ### 5. Tailscale integration — phased
-- **Phase 1 (move fast):** piggyback on the system Tailscale already installed on Dylan's
+- **Phase 1 (move fast):** piggyback on the system Tailscale already installed across the
   fleet. Hub reachable at its `*.ts.net` MagicDNS name; agents connect there.
 - **Product (later):** embed Tailscale via **`tsnet`** so the agent brings its own tailnet
   identity and the user doesn't separately install/login Tailscale. Note the migration as a
@@ -56,7 +56,7 @@ Dylan's fleet but harder for a stranger to install, it's the wrong choice.
 
 ### 7. Workspace (phase 3) — DONE
 The Phase-3 workspace shipped as a Claude-Code/VS-Code-style mesh workspace (NOT a code-server
-proxy — see D16): a Projects→Sessions + Devices sidebar over the synced `~/AI-Hub/projects/*`; per
+proxy — see D16): a Projects→Sessions + Devices sidebar over the synced projects directory; per
 session a **Terminal** tab (PTY) and an already-live **Claude** tab (an interactive local `claude`
 in a PTY on the Max subscription, D35 — formerly headless stream-json, D17); long-lived sessions that survive browser
 detach AND hub restart (first-class Session entity, agent owns the process + scrollback ring, D18);
@@ -81,18 +81,18 @@ the browser) as a new on-demand **`editor`** session kind — NOT forking VS Cod
   packaging step. The embedded VS Code replaces the read-only Monaco file rail (D31).
 
 ## End-to-end flow (Phase 1 proof)
-1. `lattice hub` starts on mini-ops, listens on tailnet :7400, opens SQLite, serves dashboard.
-2. `lattice agent --hub mini-ops.<tailnet>.ts.net:7400 --token <code>` on studio/mbp/pc.
+1. `lattice hub` starts on the hub host, listens on tailnet :7400, opens SQLite, serves dashboard.
+2. `lattice agent --hub host-a.<tailnet>.ts.net:7400 --token <code>` on each leaf machine.
 3. Agent opens WS to hub, registers, heartbeats every Ns.
-4. Dashboard (browser → hub) shows 4 live machines with OS/disk/uptime/online.
+4. Dashboard (browser → hub) shows each live machine with OS/disk/uptime/online.
 5. User clicks a machine, types `uname -a` (or `ver` on Windows), hits run → hub relays over
    the agent's WS → agent executes → streams output back → dashboard renders it live.
 
-## Cross-platform landmines (already learned the hard way — see global memory)
+## Cross-platform landmines (learned the hard way)
 - Windows over SSH: `cmd` vs PowerShell; `&`-chaining silently no-ops; `findstr` mishandles
   `/`. **The Go agent exists precisely to delete this class of problem** — but the *installer*
   bootstrap still touches it, so mind it there.
-- Build Windows/Linux/ARM binaries by cross-compiling from mini-ops, not on each box.
+- Build Windows/Linux/ARM binaries by cross-compiling from the hub host, not on each box.
 - Termux/phone is a weak target — schedule last; never block a phase on it.
 - macOS service = launchd; Linux = systemd; Windows = service via `golang.org/x/sys/windows/svc`;
   Termux = termux-services. The installer abstracts these.

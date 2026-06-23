@@ -1,27 +1,52 @@
 import type {
   Agent,
+  AuthStatus,
+  CreateEnrollTokenResult,
   Device,
-  AuditEntry,
+  EnrollToken,
   CreateProjectRequest,
   CreateProjectResult,
   CreateSessionRequest,
-  Enroll,
+  CreateWorkflowRequest,
+  WorkflowResult,
   FileListResult,
   Health,
   PlacementRequest,
   PlacementResult,
   Project,
+  ReleasesResponse,
+  RootCheck,
   Session,
+  SessionTelemetry,
   SessionWithPlacement,
   Settings,
+  SetupStatus,
+  SetupSubmit,
+  Transcript,
+  UpdateResult,
   WakeResult,
 } from './types'
+
+// A failed hub request, carrying the structured pieces so callers don't have to
+// re-parse `.message`. parseHubError() prefers `.body` but still understands the
+// legacy `${status}: ${body}` message shape for plain Errors thrown elsewhere.
+// `.message` keeps that same shape for backwards compatibility.
+export class HubError extends Error {
+  readonly status: number
+  readonly body: string
+  constructor(status: number, statusText: string, body: string) {
+    super(body ? `${status}: ${body}` : `${status} ${statusText}`)
+    this.name = 'HubError'
+    this.status = status
+    this.body = body
+  }
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // Surface a parsed error message when the hub returns one.
     const body = await res.text().catch(() => '')
-    throw new Error(body ? `${res.status}: ${body}` : `${res.status} ${res.statusText}`)
+    throw new HubError(res.status, res.statusText, body)
   }
   return res.json() as Promise<T>
 }
@@ -40,18 +65,12 @@ export async function fetchHealth(): Promise<Health> {
   return json<Health>(await fetch('/api/health'))
 }
 
-export async function fetchEnroll(): Promise<Enroll> {
-  return json<Enroll>(await fetch('/api/enroll'))
+export async function fetchReleases(): Promise<ReleasesResponse> {
+  return json<ReleasesResponse>(await fetch('/api/releases'))
 }
 
-export async function execCommand(agentId: string, command: string): Promise<string> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/exec`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command }),
-  })
-  const data = await json<{ cmdId: string }>(res)
-  return data.cmdId
+export async function startUpdate(): Promise<UpdateResult> {
+  return json<UpdateResult>(await fetch('/api/update', { method: 'POST' }))
 }
 
 export async function fetchFiles(agentId: string, path: string): Promise<FileListResult> {
@@ -65,11 +84,29 @@ export function downloadUrl(agentId: string, path: string): string {
   return `/api/agents/${encodeURIComponent(agentId)}/download?${qs}`
 }
 
-export async function wakeAgent(senderId: string, mac: string): Promise<WakeResult> {
-  const res = await fetch(`/api/agents/${encodeURIComponent(senderId)}/wake`, {
+// fetchFileText streams a file's bytes from the agent (via the same privilege-gated
+// /download route the file list links) and returns them as text for the in-panel
+// viewer (BUG-008). Same-origin, so the session cookie authorizes it like every other
+// dashboard call. On a non-2xx it throws the hub's error body (or the status line).
+export async function fetchFileText(agentId: string, path: string): Promise<string> {
+  const res = await fetch(downloadUrl(agentId, path))
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(body.trim() || `${res.status} ${res.statusText}`)
+  }
+  return res.text()
+}
+
+// wakeAgent wakes a sleeping machine. Relay-aware: the hub picks a LIVE agent on
+// the target's own subnet to emit the magic packet (so the broadcast actually
+// reaches it) and surfaces "no relay reachable on that subnet" instead of failing
+// silently. targetId is the OFFLINE machine to wake; the hub resolves its MAC and
+// the relay from last-known state, so the browser sends an empty body.
+export async function wakeAgent(targetId: string): Promise<WakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(targetId)}/wake`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mac }),
+    body: '{}',
   })
   // Wake always returns a typed {ok,error} body, even on 4xx/5xx.
   const data = (await res.json().catch(() => ({}))) as WakeResult
@@ -77,16 +114,33 @@ export async function wakeAgent(senderId: string, mac: string): Promise<WakeResu
   return data
 }
 
-// In dev (vite :5173) the WS still targets location.host because vite proxies /ws to the hub.
-export function dashboardWsUrl(): string {
+// powerAgent sleeps or shuts down a machine via its own agent — the close of the
+// unattended loop (wake → work → sleep).
+export async function powerAgent(agentId: string, action: 'sleep' | 'shutdown'): Promise<WakeResult> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/power`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  const data = (await res.json().catch(() => ({}))) as WakeResult
+  if (typeof data.ok !== 'boolean') throw new Error(`${res.status} ${res.statusText}`)
+  return data
+}
+
+// Build a same-origin WebSocket URL. In dev (vite :5173) it still targets
+// location.host because vite proxies /ws to the hub.
+function wsUrl(path: string, params?: Record<string, string>): string {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${location.host}/ws/dashboard`
+  const qs = params ? `?${new URLSearchParams(params)}` : ''
+  return `${proto}://${location.host}${path}${qs}`
+}
+
+export function dashboardWsUrl(): string {
+  return wsUrl('/ws/dashboard')
 }
 
 export function terminalWsUrl(agentId: string, cols: number, rows: number): string {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const qs = new URLSearchParams({ agent: agentId, cols: String(cols), rows: String(rows) })
-  return `${proto}://${location.host}/ws/terminal?${qs}`
+  return wsUrl('/ws/terminal', { agent: agentId, cols: String(cols), rows: String(rows) })
 }
 
 // ───────────────────────────── Workspace (Phase 3) ─────────────────────────────
@@ -98,7 +152,7 @@ export async function fetchProjects(): Promise<Project[]> {
 }
 
 // Onboard a brand-new project. The hub scaffolds the folder, optionally
-// registers it in AI-Hub, and (when launchClaude) returns a ready Session.
+// registers it in the project registry, and (when launchClaude) returns a ready Session.
 // On a 400 the hub returns a typed {error} body — json() throws it as
 // `${status}: ${body}` so callers can parse the message inline.
 export async function createProject(req: CreateProjectRequest): Promise<CreateProjectResult> {
@@ -116,6 +170,31 @@ export async function fetchSessions(): Promise<Session[]> {
   return data.sessions ?? []
 }
 
+// Fetch a session's saved transcript (F16). Returns {found:false} (not an error)
+// when no .jsonl is on disk yet — terminal/editor sessions, or a claude session
+// whose transcript hasn't synced from its machine.
+export async function fetchTranscript(id: string): Promise<Transcript> {
+  return json<Transcript>(await fetch(`/api/sessions/${encodeURIComponent(id)}/transcript`))
+}
+
+// Fetch a session's rich telemetry (C, v0.1.5): model / context% / $cost derived
+// hub-side from the synced transcript. Returns {found:false} (not an error) for a
+// session with no transcript on disk yet, or a terminal/editor session.
+export async function fetchSessionTelemetry(id: string): Promise<SessionTelemetry> {
+  return json<SessionTelemetry>(await fetch(`/api/sessions/${encodeURIComponent(id)}/telemetry`))
+}
+
+// Start a workflow session (E, v0.1.5): a GitHub issue/PR URL → a scoped, pre-briefed
+// Claude session in a dedicated worktree, auto-placed.
+export async function createWorkflow(req: CreateWorkflowRequest): Promise<WorkflowResult> {
+  const res = await fetch('/api/workflows', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  return json<WorkflowResult>(res)
+}
+
 export async function createSession(req: CreateSessionRequest): Promise<SessionWithPlacement> {
   // Device sessions carry no project path — the agent resolves its home dir.
   // Strip an empty/undefined projectPath so the hub treats it as device-local.
@@ -125,6 +204,10 @@ export async function createSession(req: CreateSessionRequest): Promise<SessionW
   if (req.title) body.title = req.title
   if (req.userAgentId) body.userAgentId = req.userAgentId
   if (req.pinAgentId) body.pinAgentId = req.pinAgentId
+  if (req.permissionMode) body.permissionMode = req.permissionMode
+  if (req.notifyOnIdle) body.notifyOnIdle = req.notifyOnIdle
+  if (req.model) body.model = req.model
+  if (req.fastMode) body.fastMode = req.fastMode
   const res = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -160,6 +243,18 @@ export async function emptyTrash(): Promise<number> {
 }
 
 // Archive (hide, keep) or restore a session via PATCH. The row survives.
+// Rename a session (I — session naming, v0.1.5). A manual rename is sticky and
+// always wins over the auto-namer. An empty string clears back to the kind-derived
+// fallback the sidebar shows.
+export async function renameSession(id: string, title: string): Promise<Session> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  return json<Session>(res)
+}
+
 export async function setSessionArchived(id: string, archived: boolean): Promise<Session> {
   const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -201,30 +296,128 @@ export async function previewPlacement(req: PlacementRequest): Promise<Placement
   return json<PlacementResult>(res)
 }
 
-export async function fetchAudit(sessionId: string): Promise<AuditEntry[]> {
-  const qs = new URLSearchParams({ session: sessionId })
-  const data = await json<{ entries: AuditEntry[] | null } | AuditEntry[]>(
-    await fetch(`/api/audit?${qs}`),
-  )
-  if (Array.isArray(data)) return data
-  return data.entries ?? []
-}
-
 export async function fetchSettings(): Promise<Settings> {
   return json<Settings>(await fetch('/api/settings'))
 }
 
-export async function saveSettings(s: Settings): Promise<Settings> {
+// The hub settings endpoint writes one whitelisted key at a time ({key,value}).
+// Set the primary coding machine (D32); pass "" to clear it.
+export async function setPrimaryAgent(agentId: string): Promise<void> {
   const res = await fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(s),
+    body: JSON.stringify({ key: 'primary_agent', value: agentId }),
   })
-  return json<Settings>(res)
+  await json<{ ok: boolean }>(res)
+}
+
+// ───────────────────────── Manage mesh (Phase 4 / M3) ─────────────────
+
+// Rename an agent-backed machine. Same-origin so the auth cookie rides along.
+export async function renameAgent(id: string, name: string): Promise<{ ok: boolean; name: string }> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(id)}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  return json<{ ok: boolean; id: string; name: string }>(res)
+}
+
+// Remove an agent from the mesh. A box that still holds the shared join token can
+// re-enroll and reappear — the UI warns about this.
+export async function removeAgent(id: string): Promise<void> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(id)}/remove`, { method: 'POST' })
+  await json<{ ok: boolean }>(res)
+}
+
+export async function listEnrollTokens(): Promise<EnrollToken[]> {
+  const data = await json<{ tokens: EnrollToken[] | null }>(await fetch('/api/enroll/tokens'))
+  return data.tokens ?? []
+}
+
+// Mint a join token + the per-OS install one-liners that carry it.
+export async function createEnrollToken(label: string): Promise<CreateEnrollTokenResult> {
+  const res = await fetch('/api/enroll/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  })
+  return json<CreateEnrollTokenResult>(res)
+}
+
+export async function revokeEnrollToken(token: string): Promise<void> {
+  const res = await fetch(`/api/enroll/tokens/${encodeURIComponent(token)}/revoke`, { method: 'POST' })
+  await json<{ ok: boolean }>(res)
+}
+
+// ───────────────────────── First-run setup (Phase 2 / M3) ─────────────────
+
+// Is the hub configured yet? Drives the dashboard's setup gate. When the hub
+// already has a config this returns {needsSetup:false}; the App fails OPEN on a
+// network error (treats the hub as configured) so a blip never locks the user out.
+export async function getSetupStatus(): Promise<SetupStatus> {
+  return json<SetupStatus>(await fetch('/api/setup/status'))
+}
+
+// Validate a projects-root path as the user types. Like wakeAgent, this returns a
+// typed {ok,error} body even on a non-2xx response — so a rejected path surfaces
+// {ok:false,error} inline rather than throwing and breaking the debounce.
+export async function checkSetupRoot(path: string): Promise<RootCheck> {
+  const res = await fetch('/api/setup/check-root', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  const data = (await res.json().catch(() => ({}))) as RootCheck
+  if (typeof data.ok !== 'boolean') throw new Error(`${res.status} ${res.statusText}`)
+  return data
+}
+
+// Commit the first-run configuration. On a 400 the hub returns a typed {error}
+// body — json() throws it as `${status}: ${body}` so the wizard can parse and show it.
+export async function submitSetup(
+  body: SetupSubmit,
+  token?: string,
+): Promise<{ ok: boolean; meshName: string; projectsRoot: string }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Remote browsers must authorize setup with the hub token (loopback is exempt
+  // server-side). Sent as Bearer so the existing master-token check accepts it.
+  if (token) headers.Authorization = `Bearer ${token.trim()}`
+  const res = await fetch('/api/setup', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  return json<{ ok: boolean; meshName: string; projectsRoot: string }>(res)
+}
+
+// ───────────────────────── Auth (Phase 3 / M3) ─────────────────
+
+// Does the hub require login, and is this browser's session cookie authenticated?
+// Drives the dashboard's auth gate. Same-origin so the session cookie rides along
+// automatically. The App fails OPEN on a network error (treats auth as not
+// required) so a transient blip can't lock the user out.
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return json<AuthStatus>(await fetch('/api/auth/status'))
+}
+
+// Exchange the admin password for a session cookie (set HttpOnly by the hub).
+// On 401/429/400 the hub returns a typed {error} body — json() throws it as
+// `${status}: ${body}` so the Login page can parse and show the message inline.
+export async function login(password: string): Promise<{ ok: boolean }> {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+  return json<{ ok: boolean }>(res)
+}
+
+// Clear the session cookie. Harmless when auth is off.
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
 }
 
 export function sessionWsUrl(sessionId: string, cols: number, rows: number): string {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const qs = new URLSearchParams({ session: sessionId, cols: String(cols), rows: String(rows) })
-  return `${proto}://${location.host}/ws/session?${qs}`
+  return wsUrl('/ws/session', { session: sessionId, cols: String(cols), rows: String(rows) })
 }

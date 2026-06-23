@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"syscall"
 
-	"github.com/dylanstoryyy/lattice/internal/proto"
+	"github.com/shleesauce/lattice/internal/proto"
 )
 
 // wolPorts are the conventional Wake-on-LAN UDP ports. 9 (discard) is the de
@@ -147,13 +146,5 @@ func directedBroadcasts() []net.IP {
 
 // sendWakeResult encodes and pushes a wake_result frame.
 func sendWakeResult(ctx context.Context, outbound chan<- []byte, result proto.WakeResultPayload) {
-	frame, err := proto.Encode(proto.TypeWakeResult, result)
-	if err != nil {
-		log.Printf("agent: encode wake_result: %v", err)
-		return
-	}
-	select {
-	case outbound <- frame:
-	case <-ctx.Done():
-	}
+	sendFrame(ctx, outbound, proto.TypeWakeResult, result)
 }

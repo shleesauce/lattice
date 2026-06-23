@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Agent, CreateProjectResult, Project, Session, SessionWithPlacement } from '../../types'
-import { useWorkspace } from '../../useWorkspace'
+import { canHostClaude, type Agent, type CreateProjectResult, type Project, type Session, type SessionWithPlacement } from '../../types'
+import type { WorkspaceState } from '../../useWorkspace'
 import {
   createSession,
   deleteSessionForever,
   emptyTrash,
+  renameSession,
   resumeSession,
   setSessionArchived,
   setSessionDeleted,
   trashSession,
 } from '../../api'
+import { usePersisted } from '../../usePersisted'
+import { parseHubError } from '../../lib/hubError'
 import { Sidebar, type SidebarMode } from './Sidebar'
+import { DockPanel, type DockView } from './DockPanel'
+import { Icon } from '../../lattice/Icon'
 import { ConfirmDialog } from './ConfirmDialog'
 import { SessionPane } from './SessionPane'
 import { NewSessionDialog } from './NewSessionDialog'
@@ -18,20 +23,47 @@ import type { NewSessionTarget } from './NewSessionDialog'
 import { NewProjectWizard } from './NewProjectWizard'
 import { statusDotClass, statusPulses } from './sessionMeta'
 
+// Intents pushed from the ⌘K palette in App. Workspace owns the open-tab/active
+// state, so the palette routes through this rather than lifting that state up.
+export type WorkspaceIntent =
+  | { kind: 'open-session'; sessionId: string; nonce: number }
+  | { kind: 'open-project'; projectPath: string; nonce: number }
+  | { kind: 'new-project'; nonce: number }
+
 interface Props {
   agents: Agent[]
+  // Shared server-state (projects / sessions / socket), owned once in App so
+  // Fleet, the command palette, and the new-session dialog see the same list
+  // Workspace mutates — no split-brain between two useWorkspace() instances.
+  ws: WorkspaceState
+  intent?: WorkspaceIntent | null
+  onIntentConsumed?: () => void
+  // Surface failures the user would otherwise never see (placement rejected,
+  // create failed). Falls back to a no-op so the component stays standalone.
+  onNotify?: (text: string, kind?: 'info' | 'error') => void
 }
 
 // The workspace shell: Projects→Sessions rail, open-session tabs, and the active
 // session pane. Sidebar status comes from useWorkspace polling /api/sessions.
-export function Workspace({ agents }: Props) {
-  const ws = useWorkspace()
-  const [openIds, setOpenIds] = useState<string[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState(false)
+export function Workspace({ agents, ws, intent, onIntentConsumed, onNotify }: Props) {
+  // Stable notifier so action callbacks can surface failures without churning
+  // their dependency arrays each render.
+  const notifyRef = useRef(onNotify)
+  notifyRef.current = onNotify
+  const notify = useCallback((text: string, kind: 'info' | 'error' = 'info') => {
+    notifyRef.current?.(text, kind)
+  }, [])
+  // Persisted across refresh so your open tabs / active session come back.
+  const [openIds, setOpenIds] = usePersisted<string[]>('lattice.ws.openIds', [])
+  const [activeId, setActiveId] = usePersisted<string | null>('lattice.ws.activeId', null)
+  const [collapsed, setCollapsed] = usePersisted<boolean>('lattice.ws.collapsed', false)
+  // Right-side dock (Files / Terminal / Preview / Git), persisted across refresh.
+  const [dockOpen, setDockOpen] = usePersisted<boolean>('lattice.ws.dockOpen', false)
+  const [dockView, setDockView] = usePersisted<DockView>('lattice.ws.dockView', 'files')
+  const [dockWidth, setDockWidth] = usePersisted<number>('lattice.ws.dockWidth', 380)
   const [newTarget, setNewTarget] = useState<NewSessionTarget | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
-  const [mode, setMode] = useState<SidebarMode>('active')
+  const [mode, setMode] = usePersisted<SidebarMode>('lattice.ws.mode', 'active')
   const [confirmKill, setConfirmKill] = useState<Session | null>(null)
   const [confirmEmpty, setConfirmEmpty] = useState(false)
   // Below md the sidebar overlays the pane instead of sitting beside it.
@@ -44,20 +76,12 @@ export function Workspace({ agents }: Props) {
     [agents],
   )
 
-  // The embedded editor is offerable only when some online machine has
-  // code-server (D28 per-node install). Gates the sidebar's Open-Editor action
-  // so we never present a button that would fail placement.
-  const editorAvailable = useMemo(
-    () => agents.some((a) => a.online && a.capabilities?.codeServerInstalled),
-    [agents],
-  )
-
   const sessionById = (id: string): Session | undefined => ws.sessions.find((s) => s.id === id)
 
   const openSession = useCallback((id: string) => {
     setOpenIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
     setActiveId(id)
-  }, [])
+  }, [setOpenIds, setActiveId])
 
   const closeTab = useCallback(
     (id: string) => {
@@ -67,13 +91,23 @@ export function Workspace({ agents }: Props) {
         return next
       })
     },
-    [],
+    [setOpenIds, setActiveId],
   )
 
-  // Drop tabs whose session disappeared from the backend.
+  // Drop tabs whose session disappeared from the backend, and keep activeId on a
+  // real open tab. Guarded on `ready` so restored-from-localStorage tabs aren't
+  // wiped during the initial empty-sessions load (they reattach once sessions land).
   useEffect(() => {
-    setOpenIds((prev) => prev.filter((id) => ws.sessions.some((s) => s.id === id)))
-  }, [ws.sessions])
+    if (ws.sessionsState !== 'ready') return
+    const alive = (id: string) => ws.sessions.some((s) => s.id === id)
+    setOpenIds((prev) => {
+      const next = prev.filter(alive)
+      if (next.length !== prev.length) {
+        setActiveId((cur) => (cur && next.includes(cur) ? cur : next[next.length - 1] ?? null))
+      }
+      return next.length === prev.length ? prev : next
+    })
+  }, [ws.sessions, ws.sessionsState, setOpenIds, setActiveId])
 
   const onCreated = useCallback(
     (res: SessionWithPlacement) => {
@@ -86,34 +120,26 @@ export function Workspace({ agents }: Props) {
     [ws, openSession],
   )
 
-  // One-click "Open Editor" for a project: reuse the project's existing editor
-  // session if one is live (never spawn a second code-server for the same
-  // project), otherwise create one and open it. Locality-boosted to the local
-  // agent; the mesh still auto-places onto any code-server-capable machine.
-  const onOpenEditor = useCallback(
+
+  // The project "+" launches a single Claude session directly (no chooser, no
+  // editor pair) — the Claude-desktop model: one click, one Claude session.
+  const onNewClaude = useCallback(
     async (p: Project) => {
-      const existing = ws.sessions.find(
-        (s) => s.kind === 'editor' && s.projectPath === p.path && s.status !== 'exited',
-      )
-      if (existing) {
-        openSession(existing.id)
-        setMobileNavOpen(false)
-        return
-      }
       try {
         const res = await createSession({
-          kind: 'editor',
+          kind: 'claude',
           scope: 'project',
           projectPath: p.path,
           title: p.name,
           userAgentId: localAgent?.id,
         })
         onCreated(res)
-      } catch {
-        /* surfaced via session polling; keep the UI responsive */
+      } catch (e) {
+        notify(`Couldn't start ${p.name} — ${parseHubError(e, 'the mesh rejected the session')}`, 'error')
       }
     },
-    [ws.sessions, localAgent, openSession, onCreated],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [localAgent, onCreated],
   )
 
   // One-click "Open Editor" for a device: reuse an existing device-scoped
@@ -137,16 +163,20 @@ export function Workspace({ agents }: Props) {
           title: a.hostname || a.name || a.id.slice(0, 8),
         })
         onCreated(res)
-      } catch {
-        /* surfaced via session polling; keep the UI responsive */
+      } catch (e) {
+        notify(`Couldn't open the editor on ${a.hostname || a.name} — ${parseHubError(e, 'create failed')}`, 'error')
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ws.sessions, openSession, onCreated],
   )
 
   const onProjectCreated = useCallback(
     (res: CreateProjectResult) => {
       void ws.refreshProjects()
+      // Scaffolding warnings (registry write skipped, KB stub failed, …) are
+      // real but non-fatal — surface them instead of silently dropping them.
+      if (res.warnings?.length) notify(`Project created with notes: ${res.warnings.join(' · ')}`, 'error')
       if (res.session) {
         ws.upsertSession(res.session)
         void ws.refreshSessions()
@@ -154,7 +184,7 @@ export function Workspace({ agents }: Props) {
         setMobileNavOpen(false)
       }
     },
-    [ws, openSession],
+    [ws, openSession, notify],
   )
 
   const selectFromNav = useCallback(
@@ -165,7 +195,8 @@ export function Workspace({ agents }: Props) {
     [openSession],
   )
 
-  const onPin = useCallback(
+  // Reconnect an orphaned session on its OWN machine (resume — keeps context).
+  const onReconnect = useCallback(
     async (sessionId: string, agentId: string) => {
       const s = sessionById(sessionId)
       if (!s) return
@@ -173,17 +204,71 @@ export function Workspace({ agents }: Props) {
         const res = await resumeSession(sessionId, { pinAgentId: agentId })
         ws.upsertSession(res.session)
         void ws.refreshSessions()
-      } catch {
-        /* surfaced via polling; keep UI responsive */
+      } catch (e) {
+        notify(`Couldn't reconnect the session — ${parseHubError(e, 'resume failed')}`, 'error')
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ws],
   )
 
+  // Switch a session to a different machine. A session is pinned for life (D32),
+  // so "switching" = start a fresh session on the chosen machine and drop the old
+  // one. Intended for use BEFORE you've started the conversation; the new session
+  // begins clean on the new box. If create fails the old session is left intact.
+  const onPickMachine = useCallback(
+    async (sessionId: string, agentId: string) => {
+      const s = sessionById(sessionId)
+      if (!s || s.agentId === agentId) return
+      try {
+        const res = await createSession({
+          kind: s.kind,
+          scope: 'project',
+          projectPath: s.projectPath,
+          title: s.title,
+          pinAgentId: agentId,
+          userAgentId: localAgent?.id,
+        })
+        // Open the new session FIRST, then retire the old one. Use trash (not
+        // delete-forever): it ends the old process AND is recoverable, so a
+        // mis-click on a session that already has a conversation never destroys
+        // it permanently. Clean up local state immediately to avoid a flash of
+        // the dead tab while the next poll catches up.
+        ws.upsertSession(res.session)
+        openSession(res.session.id)
+        setMobileNavOpen(false)
+        await trashSession(s.id)
+        closeTab(s.id)
+        ws.removeSession(s.id)
+        void ws.refreshSessions()
+      } catch (e) {
+        // create failed (e.g. machine ineligible): old session left intact.
+        notify(`Couldn't move the session — ${parseHubError(e, 'that machine can\'t host it')}`, 'error')
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ws, localAgent, openSession, closeTab],
+  )
+
   // Closing a tab (the X) just removes the tab — it does NOT end or delete the
   // session. Lifecycle changes go through archive / trash / delete below.
   const onCloseSession = useCallback((id: string) => closeTab(id), [closeTab])
+
+  // Rename a session (I — session naming, v0.1.5). Optimistic: update the row in
+  // place immediately, then reconcile with the server's canonical view. A manual
+  // rename is sticky on the hub (the auto-namer never overwrites it).
+  const onRenameSession = useCallback(
+    async (id: string, title: string) => {
+      try {
+        const updated = await renameSession(id, title.trim())
+        ws.upsertSession(updated)
+      } catch (e) {
+        notify(`Couldn't rename the session — ${parseHubError(e, 'try again')}`, 'error')
+        void ws.refreshSessions()
+      }
+    },
+    [ws, notify],
+  )
 
   // Archive (hide, keep) or unarchive a session. Archiving drops its open tab.
   const onArchiveSession = useCallback(
@@ -192,13 +277,13 @@ export function Workspace({ agents }: Props) {
       try {
         const updated = await setSessionArchived(id, archived)
         ws.upsertSession(updated)
-      } catch {
-        /* surfaced via the live WS / poll */
+      } catch (e) {
+        notify(`Couldn't ${archived ? 'archive' : 'unarchive'} the session — ${parseHubError(e, 'try again')}`, 'error')
       } finally {
         void ws.refreshSessions()
       }
     },
-    [closeTab, ws],
+    [closeTab, ws, notify],
   )
 
   // Delete = move to Trash: ends the process, hides it, recoverable for 30 days.
@@ -207,11 +292,13 @@ export function Workspace({ agents }: Props) {
       closeTab(id)
       try {
         await trashSession(id)
+      } catch (e) {
+        notify(`Couldn't move the session to Trash — ${parseHubError(e, 'try again')}`, 'error')
       } finally {
         void ws.refreshSessions()
       }
     },
-    [closeTab, ws],
+    [closeTab, ws, notify],
   )
 
   // Restore a session out of Trash back into the active workspace.
@@ -220,13 +307,13 @@ export function Workspace({ agents }: Props) {
       try {
         const updated = await setSessionDeleted(id, false)
         ws.upsertSession(updated)
-      } catch {
-        /* surfaced via the live WS / poll */
+      } catch (e) {
+        notify(`Couldn't restore the session — ${parseHubError(e, 'try again')}`, 'error')
       } finally {
         void ws.refreshSessions()
       }
     },
-    [ws],
+    [ws, notify],
   )
 
   // Permanently delete (from Trash) — confirmed via the in-app dialog.
@@ -235,22 +322,54 @@ export function Workspace({ agents }: Props) {
       closeTab(id)
       try {
         await deleteSessionForever(id)
+      } catch (e) {
+        notify(`Couldn't delete the session — ${parseHubError(e, 'try again')}`, 'error')
       } finally {
         ws.removeSession(id)
         void ws.refreshSessions()
       }
     },
-    [closeTab, ws],
+    [closeTab, ws, notify],
   )
 
   // Empty Trash — permanently delete every trashed session (confirmed in-app).
   const onEmptyTrash = useCallback(async () => {
     try {
       await emptyTrash()
+    } catch (e) {
+      notify(`Couldn't empty Trash — ${parseHubError(e, 'try again')}`, 'error')
     } finally {
       void ws.refreshSessions()
     }
-  }, [ws])
+  }, [ws, notify])
+
+  // Consume a palette intent once (keyed by nonce). Open-project reuses a live
+  // session for that path if one exists, else starts a Claude session there.
+  // The Workspace mounts fresh when you cross over from Fleet, so its session /
+  // project lists arrive async — gate on `ready` and re-run when data lands
+  // rather than consuming the intent against an empty list.
+  const lastIntentNonce = useRef<number>(0)
+  useEffect(() => {
+    if (!intent || intent.nonce === lastIntentNonce.current) return
+    if (intent.kind === 'open-session') {
+      if (ws.sessionsState !== 'ready') return
+      if (ws.sessions.some((s) => s.id === intent.sessionId)) openSession(intent.sessionId)
+    } else if (intent.kind === 'open-project') {
+      if (ws.sessionsState !== 'ready' || ws.projectsState !== 'ready') return
+      const live = ws.sessions.find(
+        (s) => s.projectPath === intent.projectPath && s.status !== 'exited' && !s.archived && !s.deletedAt,
+      )
+      if (live) openSession(live.id)
+      else {
+        const p = ws.projects.find((x) => x.path === intent.projectPath)
+        if (p) void onNewClaude(p)
+      }
+    } else if (intent.kind === 'new-project') {
+      setWizardOpen(true)
+    }
+    lastIntentNonce.current = intent.nonce
+    onIntentConsumed?.()
+  }, [intent, ws.sessions, ws.projects, ws.sessionsState, ws.projectsState, openSession, onNewClaude, onIntentConsumed])
 
   const activeSession = activeId ? sessionById(activeId) : undefined
 
@@ -281,7 +400,9 @@ export function Workspace({ agents }: Props) {
   useEffect(() => {
     const ed = activeSession
     if (!ed || ed.kind !== 'editor') return
-    if (!agentById.get(ed.agentId)?.capabilities?.claudeInstalled) return
+    // Only pair a Claude side-pane when the editor's machine can actually run claude
+    // (installed AND authable — F14); otherwise we'd auto-spawn a dead blank claude.
+    if (!canHostClaude(agentById.get(ed.agentId))) return
     if (pairedClaudeFor(ed)) return
     if (pairingInFlight.current.has(ed.id)) return
     pairingInFlight.current.add(ed.id)
@@ -309,9 +430,32 @@ export function Workspace({ agents }: Props) {
     activeSession?.kind === 'editor'
       ? {
           pairedClaudeId: pairedClaudeFor(activeSession)?.id ?? null,
-          editorAgentHasClaude: !!agentById.get(activeSession.agentId)?.capabilities?.claudeInstalled,
+          editorAgentHasClaude: canHostClaude(agentById.get(activeSession.agentId)),
         }
       : { pairedClaudeId: null, editorAgentHasClaude: false }
+
+  // Drag the dock's left edge to resize; clamped so the session pane keeps room.
+  const paneRowRef = useRef<HTMLDivElement>(null)
+  const startDockDrag = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      const row = paneRowRef.current
+      if (!row) return
+      const onMove = (ev: MouseEvent) => {
+        const rect = row.getBoundingClientRect()
+        setDockWidth(Math.min(Math.max(rect.right - ev.clientX, 280), rect.width - 360))
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        document.body.style.userSelect = ''
+      }
+      document.body.style.userSelect = 'none'
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    [setDockWidth],
+  )
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
@@ -329,16 +473,16 @@ export function Workspace({ agents }: Props) {
           onToggleCollapse={() => setCollapsed((c) => !c)}
           onSelectSession={openSession}
           onNewSession={(p) => setNewTarget({ kind: 'project', project: p })}
+          onNewClaude={onNewClaude}
           onNewDeviceSession={(a) => setNewTarget({ kind: 'device', agent: a })}
           onBeginNewProject={() => setWizardOpen(true)}
-          onOpenEditor={onOpenEditor}
           onOpenDeviceEditor={onOpenDeviceEditor}
+          onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onTrashSession={onTrashSession}
           onRestoreTrash={onRestoreTrash}
           onDeleteForever={(s) => setConfirmKill(s)}
           onEmptyTrash={() => setConfirmEmpty(true)}
-          editorAvailable={editorAvailable}
         />
       </div>
 
@@ -359,6 +503,10 @@ export function Workspace({ agents }: Props) {
               setNewTarget({ kind: 'project', project: p })
               setMobileNavOpen(false)
             }}
+            onNewClaude={(p) => {
+              void onNewClaude(p)
+              setMobileNavOpen(false)
+            }}
             onNewDeviceSession={(a) => {
               setNewTarget({ kind: 'device', agent: a })
               setMobileNavOpen(false)
@@ -367,17 +515,16 @@ export function Workspace({ agents }: Props) {
               setWizardOpen(true)
               setMobileNavOpen(false)
             }}
-            onOpenEditor={onOpenEditor}
             onOpenDeviceEditor={(a) => {
               void onOpenDeviceEditor(a)
               setMobileNavOpen(false)
             }}
+            onRenameSession={onRenameSession}
             onArchiveSession={onArchiveSession}
             onTrashSession={onTrashSession}
             onRestoreTrash={onRestoreTrash}
             onDeleteForever={(s) => setConfirmKill(s)}
             onEmptyTrash={() => setConfirmEmpty(true)}
-            editorAvailable={editorAvailable}
           />
           <button
             type="button"
@@ -408,22 +555,44 @@ export function Workspace({ agents }: Props) {
             sessions={ws.sessions}
             onActivate={setActiveId}
             onClose={closeTab}
+            dockOpen={dockOpen}
+            onToggleDock={() => setDockOpen((o) => !o)}
           />
         )}
 
-        <div className="min-h-0 flex-1">
-          {activeSession ? (
-            <SessionPane
-              key={activeSession.id}
-              session={activeSession}
-              agents={agents}
-              onClose={() => onCloseSession(activeSession.id)}
-              onPin={(agentId) => onPin(activeSession.id, agentId)}
-              pairedClaudeId={editorPaired.pairedClaudeId}
-              editorAgentHasClaude={editorPaired.editorAgentHasClaude}
-            />
-          ) : (
-            <WorkspaceEmpty />
+        <div ref={paneRowRef} className="flex min-h-0 flex-1">
+          <div className="relative min-w-0 flex-1">
+            {activeSession ? (
+              <SessionPane
+                key={activeSession.id}
+                session={activeSession}
+                agents={agents}
+                onClose={() => onCloseSession(activeSession.id)}
+                onReconnect={(agentId) => onReconnect(activeSession.id, agentId)}
+                onPickMachine={(agentId) => onPickMachine(activeSession.id, agentId)}
+                pairedClaudeId={editorPaired.pairedClaudeId}
+                editorAgentHasClaude={editorPaired.editorAgentHasClaude}
+              />
+            ) : (
+              <WorkspaceEmpty onNew={() => setNewTarget({ kind: 'project', project: null })} />
+            )}
+          </div>
+
+          {activeSession && dockOpen && (
+            <>
+              <div className="dock-resize" onMouseDown={startDockDrag} title="drag to resize">
+                <span className="dock-resize-grip" />
+              </div>
+              <div className="dock-wrap" style={{ width: dockWidth }}>
+                <DockPanel
+                  session={activeSession}
+                  agents={agents}
+                  view={dockView}
+                  onView={setDockView}
+                  onClose={() => setDockOpen(false)}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -432,6 +601,8 @@ export function Workspace({ agents }: Props) {
         <NewSessionDialog
           target={newTarget}
           agents={agents}
+          projects={ws.projects}
+          projectsState={ws.projectsState}
           onClose={() => setNewTarget(null)}
           onCreated={onCreated}
         />
@@ -476,12 +647,16 @@ function TabStrip({
   sessions,
   onActivate,
   onClose,
+  dockOpen,
+  onToggleDock,
 }: {
   openIds: string[]
   activeId: string | null
   sessions: Session[]
   onActivate: (id: string) => void
   onClose: (id: string) => void
+  dockOpen: boolean
+  onToggleDock: () => void
 }) {
   return (
     <div className="term-scroll flex shrink-0 items-stretch gap-px overflow-x-auto border-b border-zinc-800 bg-zinc-950/70">
@@ -519,11 +694,23 @@ function TabStrip({
           </div>
         )
       })}
+      {/* Right-dock toggle — Claude-Code-desktop-style panel switch. */}
+      <button
+        type="button"
+        onClick={onToggleDock}
+        title={dockOpen ? 'hide panel' : 'show panel (Files · Terminal · Preview · Git)'}
+        className={`ml-auto flex shrink-0 items-center gap-1.5 self-center rounded-md px-2.5 py-1 font-mono text-[11px] transition-colors ${
+          dockOpen ? 'text-teal-300' : 'text-zinc-500 hover:text-zinc-200'
+        }`}
+        style={{ marginRight: 6 }}
+      >
+        <Icon name="panel-left" size={15} style={{ transform: 'scaleX(-1)' }} />
+      </button>
     </div>
   )
 }
 
-function WorkspaceEmpty() {
+function WorkspaceEmpty({ onNew }: { onNew: () => void }) {
   return (
     <div className="grid h-full place-items-center px-6 text-center">
       <div className="max-w-sm">
@@ -534,12 +721,15 @@ function WorkspaceEmpty() {
           </svg>
         </div>
         <h2 className="mt-5 font-display text-lg font-semibold text-zinc-100">Open a session to begin</h2>
-        <p className="mt-1.5 font-mono text-[12px] leading-relaxed text-zinc-500">
-          pick a project on the left, then start a Claude or terminal session.
-          <br />
-          the mesh auto-places it on the best machine — you can always override.
-          <br />
-          …or pick a device to work on that machine directly.
+        <div className="mt-3 flex flex-col gap-2.5 font-mono text-[12px] leading-[1.6] text-zinc-500">
+          <p className="[text-wrap:balance]">Start a session in any of your projects. The mesh places it on the best machine, and you can always override.</p>
+          <p className="[text-wrap:balance]">Or pick a device on the left to work on that machine directly.</p>
+        </div>
+        <button type="button" className="btn btn-primary" style={{ marginTop: 20 }} onClick={onNew}>
+          New session
+        </button>
+        <p className="mt-5 font-mono text-[11px] text-zinc-600">
+          press <kbd className="rounded border border-zinc-700 bg-zinc-800/60 px-1.5 py-0.5 text-zinc-400">⌘K</kbd> to jump anywhere
         </p>
       </div>
     </div>

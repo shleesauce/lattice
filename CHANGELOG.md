@@ -4,6 +4,37 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-09-17
+
+Power control finally has a face. The unattended loop (wake → work → sleep) has had a hub
+endpoint since v0.1.5, but nothing in the dashboard ever called it — the only power control a
+human could actually reach was Wake. This release adds **reboot** to the action set and puts all
+four actions in the machine panel, so restarting a fleet box is a click instead of an SSH session.
+
+### Added
+- **Restart any machine from the dashboard.** Reboot joins sleep and shut down as a power action,
+  and Wake / Sleep / Reboot / Shut down now live behind a power button in each machine's panel
+  header. Reboot is the gentlest of the three — it's the only one the machine comes back from on
+  its own, without a magic packet or a walk down the hall.
+- **Confirms that name the machine.** Reboot and Shut down require a second click on a prompt that
+  says which machine it means and what will happen to it. Sleep doesn't ask, because the Wake
+  button two rows above undoes it.
+- **Actions grey out with a reason.** Availability is the inverse of reachability — Wake is the
+  only action enabled on an offline box and the only one disabled on an online one — and every
+  disabled item carries its reason as a tooltip instead of being silently dead.
+- **Every power action is audited.** Each round-trip appends an `audit_log` row
+  (`event_type=power_control`), so "who restarted that box at 2am" outlives the rotating hub log.
+
+### Notes
+- Reboot runs the same unprivileged way shut down already did (`shutdown -r now` on macOS,
+  `systemctl reboot` on Linux, `shutdown.exe /r /t 0` on Windows) with **no sudo wrapper** — a
+  wrapper would need a tty or a NOPASSWD rule the installer never writes, and would hang instead of
+  failing. Where the OS requires root for reboot, the permission error surfaces in the result for
+  the operator to read. See D39 in `docs/DECISIONS.md`.
+- Power stays privilege-class: a passwordless hub demands the master token, the same gate `exec`
+  uses. Reboot being gentler does not lower its auth class — it still knocks a machine off the mesh
+  and kills every live session on it.
+
 ## [0.2.1] - 2026-06-11
 
 A reliability + security point release on top of v0.2.0, driven by real-world dogfooding and a

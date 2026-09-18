@@ -315,8 +315,12 @@ func (r *Registry) registerPending(reqID string) chan proto.Envelope {
 	return ch
 }
 
-// resolvePending routes an agent result to the waiting channel for its reqId.
-func (r *Registry) resolvePending(reqID string, env proto.Envelope) {
+// resolvePending routes an agent result to the waiting channel for its reqId and
+// reports whether anyone was still waiting. false means the frame arrived LATE —
+// the round-trip already answered (or timed out) and the channel is gone. Callers
+// that can say something useful about a late result (e.g. a power action that
+// failed after its ack-before-action) branch on it instead of dropping it.
+func (r *Registry) resolvePending(reqID string, env proto.Envelope) bool {
 	r.pendMu.Lock()
 	ch, ok := r.pending[reqID]
 	if ok {
@@ -327,6 +331,7 @@ func (r *Registry) resolvePending(reqID string, env proto.Envelope) {
 		// Buffered (cap 1) and removed from the map, so this never blocks.
 		ch <- env
 	}
+	return ok
 }
 
 // clearPending removes a reqId channel (called on timeout / completion).

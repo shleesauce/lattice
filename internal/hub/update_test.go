@@ -117,3 +117,42 @@ func TestHandleUpdateRefusesDowngrade(t *testing.T) {
 		t.Fatalf("downgrade attempt: status=%d want 409", rec.Code)
 	}
 }
+
+// hubRestartPlan is the v0.2.3 fix for the second mini-ops ops bug: the hub swapped
+// its binary, reported a launchd `restartHint` that does not exist on a PM2 host,
+// and kept serving the OLD code. The matrix that matters is (service label × PM2).
+func TestHubRestartPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		label           string
+		underPM2        bool
+		restartRequired bool
+		viaPM2          bool
+	}{
+		// The mini-ops hub: PM2, no launchd label. Nothing for the operator to do —
+		// we exit and PM2's autorestart brings us back on the new binary.
+		{"pm2 only", "", true, false, true},
+		// PM2 wins over a stale launchd label from an earlier install: kickstarting
+		// that label would restart a DIFFERENT process and leave this one on the old
+		// build.
+		{"pm2 beats a stale launchd label", "sh.lattice.hub", true, false, true},
+		// A normally-installed hub: launchd restarts it, no manual step, not PM2.
+		{"launchd", "sh.lattice.hub", false, false, false},
+		// Bare foreground process / container entrypoint: nobody will restart it, so
+		// say so instead of showing a green "done" over stale code.
+		{"nothing manages it", "", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restartRequired, viaPM2 := hubRestartPlan(tc.label, tc.underPM2)
+			if restartRequired != tc.restartRequired || viaPM2 != tc.viaPM2 {
+				t.Errorf("hubRestartPlan(%q, %v) = (restartRequired=%v, viaPM2=%v), want (%v, %v)",
+					tc.label, tc.underPM2, restartRequired, viaPM2, tc.restartRequired, tc.viaPM2)
+			}
+			// The two outcomes are mutually exclusive: "you must restart it" and
+			// "PM2 is restarting it" can never both be true.
+			if restartRequired && viaPM2 {
+				t.Error("reported both restartRequired and viaPM2")
+			}
+		})
+	}
+}

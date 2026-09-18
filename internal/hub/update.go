@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/shleesauce/lattice/internal/proto"
@@ -165,7 +166,7 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// is silently still on the previous build. Detect now (before the response) so
 	// the answer is honest; the actual restart happens after the flush below.
 	hubLabel := update.ServiceLabel()
-	restartRequired := hubLabel == ""
+	restartRequired, underPM2 := hubRestartPlan(hubLabel, update.UnderPM2())
 
 	// 3) Respond with the summary, then restart the hub AFTER the response flushes.
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -183,10 +184,24 @@ func (h *Hub) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if underPM2 {
+		// Push the response out before the process goes away: PM2 will relaunch us
+		// on the new binary, but the browser needs the summary first.
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		go func() {
+			time.Sleep(hubRestartGrace)
+			log.Printf("update: hub exiting so PM2 restarts it on %s (%s)", target, update.PM2Hint())
+			exitForPM2(0)
+		}()
+		return
+	}
+
 	go func() {
 		// Let the HTTP response (and the dashboard's progress render) reach the
 		// browser before the restart yanks the listener out from under it.
-		time.Sleep(750 * time.Millisecond)
+		time.Sleep(hubRestartGrace)
 		if err := update.RestartByLabel(hubLabel); err != nil {
 			log.Printf("update: hub restart via %s failed: %v (new binary %s applies on next start)", hubLabel, err, target)
 			return
@@ -262,3 +277,39 @@ func (h *Hub) updateAgents(base, target string) []agentUpdateOutcome {
 	}
 	return out
 }
+
+// hubRestartPlan decides how the hub gets onto the binary it just swapped in,
+// given the service label update.ServiceLabel() found ("" = none Lattice manages)
+// and whether PM2 is supervising this process.
+//
+//	restartRequired — nothing will restart the hub; the operator must, and the
+//	                  response says so rather than showing a green "done" over a
+//	                  process still running the OLD code.
+//	viaPM2          — exit after the response flushes and let PM2's autorestart
+//	                  (scripts/pm2-hub.config.cjs) bring us back on the new binary.
+//
+// PM2 is checked FIRST because it is the real supervisor whenever it is present:
+// a stale launchd label left over from an earlier install would otherwise win and
+// we would kickstart a different process (or nothing) while this one kept serving
+// the old build. That is the v0.2.2 mini-ops failure — the hub reported
+// restartRequired with a launchctl hint that does not exist on a PM2 host, and sat
+// on the old binary until someone noticed.
+//
+// Pure, so the matrix is table-testable without a live supervisor.
+func hubRestartPlan(hubLabel string, underPM2 bool) (restartRequired, viaPM2 bool) {
+	if underPM2 {
+		return false, true
+	}
+	return hubLabel == "", false
+}
+
+// hubRestartGrace is how long the hub waits after writing the update summary
+// before it restarts (or, under PM2, exits): long enough for the response and the
+// dashboard's progress render to reach the browser, short enough that the new
+// build is up before anyone reloads.
+var hubRestartGrace = 750 * time.Millisecond
+
+// exitForPM2 terminates the hub so PM2's autorestart brings it back on the freshly
+// swapped binary. A var so a test can assert the PM2 path is taken without killing
+// the test process.
+var exitForPM2 = func(code int) { os.Exit(code) }

@@ -278,7 +278,16 @@ func (h *Hub) readLoop(ac *agentConn) {
 			if err := proto.As(env, &res); err != nil {
 				continue
 			}
-			h.registry.resolvePending(res.ReqID, env)
+			if !h.registry.resolvePending(res.ReqID, env) {
+				// LATE frame. Power is ack-before-action (the process is expected
+				// to die mid-command), so the HTTP round-trip has already answered
+				// ok=true by the time the command's own failure is known. Dropping
+				// it is what v0.2.2 did — and it is why a reboot that failed with
+				// "NOT super-user" left a success row in audit_log. Record the
+				// correction so the audit trail ends up truthful even though the
+				// operator's original response cannot be recalled.
+				h.auditLatePower(ac.id, res)
+			}
 
 		case proto.TypeUpdateResult:
 			var res proto.UpdateResultPayload

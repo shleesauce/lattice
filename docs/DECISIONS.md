@@ -557,6 +557,10 @@ cause-by-cause (orphan-process kill, Windows self-exit, etc.). As built (v0.2.0,
   changed — altering live timeouts is riskier than the comment is worth.
 
 ## D39 — `reboot` joins the power actions; power gets a UI surface behind a named confirm  (v0.2.0, extends D13)
+> **Superseded in part by D40 (v0.2.3).** The "no sudo wrapper" decision below was wrong on both
+> counts: `sudo -n` cannot hang (only plain `sudo` can), and the permission error this promised would
+> "surface in the result" was discarded one line later, so a failed reboot reported `ok:true`. The
+> rest of D39 — one validation source, ack-before-action, privilege class, auditing, the UI — stands.
 **Why:** the unattended loop (D13: wake → work → sleep) shipped in v0.1.5 with a hub endpoint and
 `powerAgent()` in the dashboard client, but **no component ever called it** — the only power control a
 human could reach was Wake. Restarting a fleet box (after an update, a wedged driver, a kernel
@@ -594,6 +598,70 @@ a magic packet or a human.
 separate `/api/agents/{id}/reboot` route (another route to gate, another chance to forget
 `privileged`); a browser `confirm()` (unstyleable, and it can't show which machine it means);
 confirming Sleep too (confirm fatigue on the one reversible action trains people to click through).
+
+## D40 — Power tells the truth: pre-flight before the ack, `sudo -n` for escalation, PM2 as a first-class supervisor  (v0.2.3, supersedes D39's sudo rationale)
+**Why:** D39 shipped reboot and it silently did nothing. On `emu` (macOS, agent running as
+`emulationstation` under launchd) `POST /api/agents/emu-darwin/power {"action":"reboot"}` returned
+`{"ok":true,"error":""}`, audit_log recorded a success, and the machine stayed up — `shutdown -r now`
+had failed with `shutdown: NOT super-user`. Three separate causes, all in `internal/agent/power.go`:
+the agent acked `ok:true` *before* running anything, the command's error was discarded outright
+(`_ = cmd.run(runCtx)`), and nothing was logged. The operator had no way to learn the truth from
+any surface Lattice offers.
+
+**D39 said** a `sudo` wrapper "would need a tty or a NOPASSWD rule the installer never writes, so it
+would hang or fail obscurely," and chose to run unprivileged and surface the permission error. Half
+of that reasoning was wrong and the other half never happened. **`sudo -n` cannot hang** — `-n` is
+non-interactive by definition: with no usable credential it exits 1 immediately with "a password is
+required" and never opens a prompt. The hang objection applies to plain `sudo`, which this codebase
+still never calls. And the error D39 promised would "surface in the result" was thrown away one line
+later, so the honest-failure story it traded privilege for did not exist.
+
+**Decisions:**
+- **Pre-flight before the ack.** `powerPreflight` runs before the `ok:true` frame. For reboot and
+  shutdown as a non-root user it probes `sudo -n true`; an action that provably cannot succeed
+  answers `ok:false` with the operator-facing reason *and the sudoers line that fixes it*, and
+  **executes nothing**. Ack-before-action is kept only past that gate, where the process really is
+  expected to die mid-command. `ok:true` still means *issued*, not *completed* — but it is no longer
+  issued blind.
+- **Only macOS is pre-failed.** `shutdown(8)` demands euid 0 with no polkit-style escape hatch, so a
+  non-root user with no NOPASSWD rule always gets "NOT super-user". Linux is deliberately **not**
+  pre-failed: systemd-logind grants reboot/poweroff to a local session over polkit, so an
+  unprivileged `systemctl reboot` genuinely can succeed, and refusing it up front would be a lie in
+  the other direction. Windows attempts and lets `shutdown.exe` report its own refusal.
+- **Ordered candidates, never plain sudo.** `powerCommandCandidates(goos, action, isRoot)` is a pure
+  function returning the argv list to try in order: `sudo -n <cmd>` then the bare command for
+  unix reboot/shutdown as non-root; the bare command alone as root (wrapping it would add a
+  dependency for no gain) and for sleep (never needs privilege); Windows unchanged. Being pure makes
+  the whole matrix table-testable in `internal/agent/power_test.go` with no privileged side effects.
+  The bare fallback runs **only** when sudo itself refused or is missing — if sudo ran the command
+  and the *command* failed, retrying it unprivileged can only fail the same way, and would risk a
+  second reboot attempt if the first half-took.
+- **Late results are audited, not dropped.** Because power acks first, a post-ack failure can only
+  ever be known late. The agent logs it and pushes a second `power_control_result`;
+  `Registry.resolvePending` now reports whether anyone was still waiting, and the hub audits an
+  unclaimed power frame as `event_type=power_control_late` with `ok:false` and the OS's own words.
+  The original HTTP response cannot be recalled, but the durable record ends up correct — which is
+  the surface that answers "did that box actually restart at 2am".
+- **PM2 is a supervisor, not an absence of one.** `detectService()` returned "" under PM2 and
+  `restartHint()` printed a `launchctl kickstart` for a label that does not exist there, so the
+  mini-ops hub and agent swapped their binaries and kept running the old code — v0.2.2 shipped that
+  way twice. Both now detect PM2 (`pm_id` / `PM2_HOME`, the Go-side equivalent of Node's
+  `process.env.pm_id`), report `pm2 restart lattice-hub lattice-agent`, and **self-restart by
+  exiting** after the ack flushes, letting PM2's `autorestart` relaunch them on the new build. PM2
+  is checked *first*, ahead of any launchd label: a stale unit from an earlier install would
+  otherwise win and restart a different process while this one served stale code.
+- **The agent's token leaves argv.** `scripts/pm2-agent.config.cjs` passes the enrollment token via
+  `LATTICE_TOKEN` (already supported by `agent.parseFlags`) instead of `--token`, matching
+  `pm2-hub.config.cjs`, so `ps` and `pm2 describe lattice-agent` stop printing it.
+
+**Rejected:** plain `sudo` (D39's hang objection stands for the interactive form — it is the reason
+`-n` is mandatory, not optional); a setuid helper binary (a permanent root-capable artifact on every
+fleet machine to fix a three-line bug); having the installer write a NOPASSWD sudoers rule
+unprompted (silently granting an agent root-equivalent power on every box is the operator's call to
+make, so the pre-flight *prints* the line instead of installing it); pre-failing Linux the way macOS
+is (polkit makes unprivileged reboot genuinely possible there); keeping `ok:true` and relying on the
+dashboard to poll `last_seen` to infer whether the box went down (turns a knowable error into a
+guess, and a reboot that is merely slow looks identical to one that never happened).
 
 ## Open / deferred for the IDE milestone
 - **Preview framework mode** (D36) — no-strip + dev-server `base`, verified with live HMR on a real device.

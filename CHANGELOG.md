@@ -4,6 +4,47 @@ All notable changes to Lattice are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-09-17
+
+v0.2.2 shipped reboot to the dashboard and it did not work. Clicking Restart on a macOS box
+answered `{"ok":true}`, wrote a success row to the audit log, and left the machine running: the
+agent acked *before* it ran the command and then threw the command's error away, so
+`shutdown: NOT super-user` never reached anyone. This release makes the answer true and gives the
+command a way to actually succeed.
+
+### Fixed
+- **Power results tell the truth.** The agent now pre-flights a reboot or shutdown *before* it acks.
+  If the action provably cannot work — a non-root macOS agent with no NOPASSWD sudo rule — it
+  answers `ok:false` with the reason and the exact `sudoers` line that fixes it, and **executes
+  nothing**. `ok:true` still means *issued*, never *completed*, but it is no longer issued blind.
+- **A command that fails after the ack is no longer silent.** Power is ack-before-action by design
+  (the process is expected to die mid-command), so the only moment the real outcome is known is
+  always after the HTTP round-trip has answered. The agent now logs the failure and pushes a late
+  `power_control_result`; the hub records it as `event_type=power_control_late`. The audit log ends
+  up truthful even though the operator's original response cannot be recalled.
+- **Reboot and shut down can now actually escalate.** On macOS and Linux, a non-root agent tries
+  `sudo -n <command>` first and falls back to the bare command when sudo refuses (no rule, no tty)
+  or is absent. Never plain `sudo`: `-n` exits immediately instead of blocking on a prompt no
+  daemon can answer. Sleep is unchanged — it never needed privilege. Windows is unchanged.
+- **The hub and agent restart themselves under PM2.** `restartHint` assumed launchd and told
+  operators to run a `launchctl kickstart` for a label that does not exist on a PM2 host, while the
+  process quietly kept serving the old binary — v0.2.2 shipped to mini-ops twice this way. Both
+  processes now detect PM2 (`pm_id` / `PM2_HOME`), report `pm2 restart lattice-hub lattice-agent`
+  as the hint, and self-restart by exiting after the update ack so PM2's `autorestart` brings them
+  back on the new build.
+
+### Changed
+- **The agent's enrollment token is out of the process command line.** `scripts/pm2-agent.config.cjs`
+  joins the hub's config in passing the token through `LATTICE_TOKEN` instead of `--token`, so
+  `ps` and `pm2 describe lattice-agent` no longer print it. (PM2 still persists env in
+  `~/.pm2/dump.pm2` — this removes the casual exposure, not the on-disk copy.)
+
+### Notes
+- Linux is deliberately **not** pre-failed for an unprivileged reboot: systemd-logind grants
+  reboot/poweroff to a local session over polkit, so `systemctl reboot` genuinely can succeed
+  without sudo. Only macOS, where `shutdown(8)` demands euid 0 with no escape hatch, is refused
+  up front. See D40 in `docs/DECISIONS.md`, which supersedes D39's no-sudo rationale.
+
 ## [0.2.2] - 2026-09-17
 
 Power control finally has a face. The unattended loop (wake → work → sleep) has had a hub

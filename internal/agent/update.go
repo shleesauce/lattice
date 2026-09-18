@@ -31,6 +31,9 @@ var (
 	exitAfterRestart = func() { os.Exit(0) }
 	// goos is runtime.GOOS, overridable in tests to exercise the Windows path.
 	goos = runtime.GOOS
+	// updateUnderPM2 reports whether PM2 supervises this agent. A var so a test can
+	// exercise the exit-for-PM2 path on a machine that is not running PM2.
+	updateUnderPM2 = update.UnderPM2
 )
 
 // handleUpdate pulls+verifies+swaps the release binary on this agent, reports the
@@ -67,6 +70,17 @@ func handleUpdate(ctx context.Context, p proto.UpdatePayload, outbound chan<- []
 	sendFrame(ctx, outbound, proto.TypeUpdateResult, result)
 
 	if label == "" {
+		// PM2 is not a service Lattice can kickstart, but it relaunches an app that
+		// exits (autorestart). So under PM2 the agent restarts itself by exiting
+		// after the ack has flushed — the same trick the hub uses. Without this, an
+		// agent on a PM2 host stayed on the old binary until a human ran pm2
+		// restart, which is exactly how mini-ops shipped v0.2.2 twice.
+		if updateUnderPM2() {
+			log.Printf("agent: update applied (%s); exiting so PM2 restarts this agent on the new binary (%s)", p.Version, update.PM2Hint())
+			time.Sleep(restartGrace)
+			exitAfterRestart()
+			return
+		}
 		// No service to restart — the swapped binary applies on next start.
 		log.Printf("agent: update applied (%s); no installed Lattice service to restart; new binary applies on next start", p.Version)
 		return

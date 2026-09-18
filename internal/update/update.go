@@ -355,6 +355,13 @@ func RestartHint() string { return restartHint() }
 // detectService probes for an installed Lattice service (hub or agent) and returns
 // its label WITHOUT side effects, or "" if none is installed.
 func detectService() string {
+	// Under PM2, the process supervisor is PM2 — even if a stale launchd/systemd
+	// unit of the same name happens to exist. Kickstarting that unit would restart
+	// a DIFFERENT process (or nothing) and leave this one on the old binary, so
+	// report "no managed service" and let the caller take the PM2 exit path.
+	if UnderPM2() {
+		return ""
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		uid := os.Getuid()
@@ -411,8 +418,37 @@ func restartService() string {
 	return label
 }
 
+// pm2Hint is the restart command for a PM2-supervised deployment. Both Lattice
+// processes are named here because the hub and the agent on the hub host are two
+// PM2 apps running the SAME swapped binary — restarting one leaves the other on
+// the old code.
+const pm2Hint = "pm2 restart lattice-hub lattice-agent"
+
+// UnderPM2 reports whether THIS process was launched by PM2. PM2 injects a fixed
+// set of vars into every app it spawns (pm_id is per-app, PM2_HOME points at the
+// daemon's state dir), which is the Go-side equivalent of Node's
+// `process.env.pm_id`. It matters because PM2 is not one of the services
+// detectService() knows how to kickstart: under PM2 the update handler must exit
+// and let PM2's autorestart bring the new binary up, and the manual hint must be a
+// pm2 command rather than a launchctl one.
+func UnderPM2() bool {
+	if os.Getenv("pm_id") != "" {
+		return true
+	}
+	return os.Getenv("PM2_HOME") != ""
+}
+
+// PM2Hint is the operator-facing restart command for a PM2 deployment.
+func PM2Hint() string { return pm2Hint }
+
 // restartHint returns the exact restart command for the user's OS.
 func restartHint() string {
+	// PM2 wins over the OS default: when PM2 is the supervisor, a launchctl
+	// kickstart of a label that was never installed does nothing and the operator
+	// is left staring at a command that silently fails.
+	if UnderPM2() {
+		return pm2Hint
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return fmt.Sprintf("launchctl kickstart -k gui/%d/sh.lattice.hub", os.Getuid())

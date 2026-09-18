@@ -287,3 +287,17 @@ func sanitizeFilename(name string) string {
 	}
 	return name
 }
+
+// auditLatePower records a power_control_result that arrived after its round-trip
+// had already answered. Power acks before it acts, so "the command failed" can
+// only ever be known late; without this row the audit_log would keep v0.2.2's lie
+// (a success entry for a machine that never went down). Best-effort, like every
+// other LogAudit caller.
+func (h *Hub) auditLatePower(agentID string, res proto.PowerControlResultPayload) {
+	log.Printf("power: LATE result agent=%s action=%s ok=%v err=%q (round-trip already answered)",
+		agentID, res.Action, res.OK, res.Error)
+	detail, _ := json.Marshal(map[string]any{"ok": res.OK, "error": res.Error, "late": true})
+	if err := h.store.LogAudit("", agentID, "power_control_late", res.Action, string(detail), time.Now()); err != nil {
+		log.Printf("audit: power_control_late log failed: %v", err)
+	}
+}

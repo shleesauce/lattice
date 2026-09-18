@@ -32,14 +32,18 @@ func decodeUpdateResult(t *testing.T, outbound <-chan []byte) proto.UpdateResult
 func stubUpdate(t *testing.T) {
 	t.Helper()
 	oApply, oLabel, oRestart, oGrace := updateApply, updateServiceLabel, updateRestart, restartGrace
-	oExit, oGoos := exitAfterRestart, goos
+	oExit, oGoos, oPM2 := exitAfterRestart, goos, updateUnderPM2
 	t.Cleanup(func() {
 		updateApply, updateServiceLabel, updateRestart, restartGrace = oApply, oLabel, oRestart, oGrace
-		exitAfterRestart, goos = oExit, oGoos
+		exitAfterRestart, goos, updateUnderPM2 = oExit, oGoos, oPM2
 	})
 	restartGrace = time.Millisecond
 	// Default: non-windows + a no-op exit, so existing tests never call os.Exit.
 	goos = "darwin"
+	// Stubbed false so the suite is hermetic: run from a PM2-spawned shell the real
+	// update.UnderPM2() would see pm_id in the environment and send the no-service
+	// tests down the exit path.
+	updateUnderPM2 = func() bool { return false }
 	exitAfterRestart = func() { t.Fatal("exitAfterRestart called unexpectedly (non-windows path)") }
 }
 
@@ -178,5 +182,68 @@ func TestHandleUpdateApplyErrorReportsAndDoesNotRestart(t *testing.T) {
 	res := decodeUpdateResult(t, outbound)
 	if res.OK || res.Error == "" {
 		t.Fatalf("ack = %+v, want OK=false with an error", res)
+	}
+}
+
+// The v0.2.3 fix for the mini-ops agent: PM2 is not a service the agent can
+// kickstart (ServiceLabel is ""), but PM2 DOES relaunch an app that exits. Before
+// this, the agent on a PM2 host took the "no service to restart" path and stayed
+// on the OLD binary until a human ran `pm2 restart` — which is how mini-ops
+// shipped v0.2.2 twice. Assert it still acks OK first, then self-exits.
+func TestHandleUpdateNoServiceExitsUnderPM2(t *testing.T) {
+	stubUpdate(t)
+	updateApply = func(context.Context, update.Options) (string, error) { return "base", nil }
+	updateServiceLabel = func() string { return "" } // PM2 installs no launchd label
+	updateUnderPM2 = func() bool { return true }
+	restarted := false
+	updateRestart = func(string) error { restarted = true; return nil }
+
+	exited := false
+	ackedBeforeExit := false
+	outbound := make(chan []byte, 4)
+	exitAfterRestart = func() {
+		exited = true
+		// The ack must already be on the wire: once we exit, PM2 relaunches a fresh
+		// process that knows nothing about this reqID.
+		if len(outbound) > 0 {
+			ackedBeforeExit = true
+		}
+	}
+
+	handleUpdate(context.Background(), proto.UpdatePayload{ReqID: "r-pm2", Version: "v9.9.9"}, outbound)
+
+	if !exited {
+		t.Fatal("agent did not exit under PM2 — it will keep running the OLD binary")
+	}
+	if !ackedBeforeExit {
+		t.Error("agent exited before the ack was queued; the hub will record a timeout")
+	}
+	if restarted {
+		t.Error("updateRestart was called under PM2 — there is no service label to restart")
+	}
+	res := decodeUpdateResult(t, outbound)
+	if !res.OK || res.ReqID != "r-pm2" {
+		t.Fatalf("ack = %+v, want OK reqID=r-pm2", res)
+	}
+	// No launchd/systemd label was used, so the ack must not claim one.
+	if res.Restarted != "" {
+		t.Errorf("Restarted = %q, want empty (PM2 restarted it, not a Lattice-managed service)", res.Restarted)
+	}
+}
+
+// The inverse guard: with no service AND no PM2 (bare foreground process), the
+// agent must NOT exit — exiting there would take the agent off the mesh entirely
+// with nothing to bring it back.
+func TestHandleUpdateNoServiceNoPM2DoesNotExit(t *testing.T) {
+	stubUpdate(t) // exitAfterRestart t.Fatal's if called; updateUnderPM2 stubbed false
+	updateApply = func(context.Context, update.Options) (string, error) { return "base", nil }
+	updateServiceLabel = func() string { return "" }
+	updateRestart = func(string) error { t.Fatal("restart called with no service label"); return nil }
+
+	outbound := make(chan []byte, 4)
+	handleUpdate(context.Background(), proto.UpdatePayload{ReqID: "r-bare"}, outbound)
+
+	if res := decodeUpdateResult(t, outbound); !res.OK {
+		t.Fatalf("ack = %+v, want OK", res)
 	}
 }

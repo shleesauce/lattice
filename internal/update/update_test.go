@@ -171,3 +171,72 @@ func copyFile(t *testing.T, src, dst string) {
 		t.Fatalf("write %s: %v", dst, err)
 	}
 }
+
+// TestUnderPM2 pins the environment contract for PM2 detection: PM2 injects
+// pm_id into every app it spawns and PM2_HOME points at the daemon's state dir.
+// Getting this wrong is not cosmetic — it decides whether the hub self-restarts
+// after an update or silently keeps running the old binary (the v0.2.2 symptom on
+// mini-ops, where both processes live under PM2 and no launchd label exists).
+func TestUnderPM2(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"pm_id set (a PM2-spawned app)", map[string]string{"pm_id": "5"}, true},
+		{"PM2_HOME set", map[string]string{"PM2_HOME": "/Users/x/.pm2"}, true},
+		{"both set", map[string]string{"pm_id": "0", "PM2_HOME": "/Users/x/.pm2"}, true},
+		{"neither (launchd/systemd/bare)", nil, false},
+		{"empty values do not count", map[string]string{"pm_id": "", "PM2_HOME": ""}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("pm_id", "")
+			t.Setenv("PM2_HOME", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := UnderPM2(); got != tc.want {
+				t.Errorf("UnderPM2() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRestartHintUnderPM2: the manual hint must name BOTH PM2 apps. A launchctl
+// kickstart of a label that was never installed fails silently, which is the
+// hint v0.2.2 printed on a PM2 host.
+func TestRestartHintUnderPM2(t *testing.T) {
+	t.Setenv("PM2_HOME", "")
+	t.Setenv("pm_id", "7")
+	hint := restartHint()
+	if hint != "pm2 restart lattice-hub lattice-agent" {
+		t.Fatalf("restartHint() under PM2 = %q", hint)
+	}
+	if hint != PM2Hint() {
+		t.Errorf("PM2Hint() = %q disagrees with restartHint()", PM2Hint())
+	}
+	if strings.Contains(hint, "launchctl") || strings.Contains(hint, "systemctl") {
+		t.Errorf("PM2 hint leaks an OS service command: %q", hint)
+	}
+}
+
+// TestRestartHintWithoutPM2 keeps the OS default for every non-PM2 deployment.
+func TestRestartHintWithoutPM2(t *testing.T) {
+	t.Setenv("pm_id", "")
+	t.Setenv("PM2_HOME", "")
+	if hint := restartHint(); strings.Contains(hint, "pm2") {
+		t.Fatalf("non-PM2 host got a pm2 hint: %q", hint)
+	}
+}
+
+// TestDetectServiceYieldsToPM2: under PM2 there is no service label to kickstart,
+// even if a stale launchd/systemd unit of the same name exists — restarting that
+// would restart a different process and leave this one on the old binary.
+func TestDetectServiceYieldsToPM2(t *testing.T) {
+	t.Setenv("PM2_HOME", "")
+	t.Setenv("pm_id", "3")
+	if label := detectService(); label != "" {
+		t.Fatalf("detectService() under PM2 = %q, want \"\"", label)
+	}
+}

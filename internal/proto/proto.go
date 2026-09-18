@@ -229,12 +229,26 @@ type PowerAction string
 
 const (
 	PowerSleep    PowerAction = "sleep"    // suspend to RAM (wakeable via WoL after)
+	PowerReboot   PowerAction = "reboot"   // restart the OS (the agent re-dials on its own)
 	PowerShutdown PowerAction = "shutdown" // full power off
 )
 
-// PowerControlPayload asks an agent to sleep or shut down its OWN machine. There
-// is no "wake" action here — waking a sleeping box is WoL (TypeWake from a LAN
-// peer), since a slept agent isn't connected to receive a frame.
+// Valid reports whether a is an action an agent knows how to perform. The hub
+// (request validation) and the agent (frame validation) both gate on this, so the
+// set of accepted actions lives in exactly one place and a new one can't be
+// accepted by one side and rejected by the other.
+func (a PowerAction) Valid() bool {
+	switch a {
+	case PowerSleep, PowerReboot, PowerShutdown:
+		return true
+	}
+	return false
+}
+
+// PowerControlPayload asks an agent to sleep, reboot, or shut down its OWN
+// machine. There is no "wake" action here — waking a sleeping box is WoL
+// (TypeWake from a LAN peer), since a slept agent isn't connected to receive a
+// frame. A reboot is the one action the agent comes back from by itself.
 type PowerControlPayload struct {
 	ReqID  string      `json:"reqId"`
 	Action PowerAction `json:"action"`

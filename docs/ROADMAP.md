@@ -25,6 +25,8 @@ The IDE milestone (M2) is the headline feature direction within it.
 - Per-agent PTY ↔ xterm.js interactive terminal in the dashboard.
 - File-tree browse + download per agent.
 - `wake` action: an agent on a LAN sends a magic packet to a sleeping peer.
+- `power` action: sleep / reboot / shut down any machine from its own agent — sleep + shutdown
+  in v0.1.5, reboot and the per-machine power menu (confirm-gated) in v0.2.0. See `DECISIONS.md` D39.
 
 ### Phase 3 — Workspace (the core product)
 A Claude-Code / VS-Code-style mesh workspace (see `DECISIONS.md` D15–D21): a Projects→Sessions

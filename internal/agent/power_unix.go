@@ -22,16 +22,21 @@ func (c powerCmd) run(ctx context.Context) error {
 }
 
 // powerCommand maps a PowerAction to the platform command. macOS uses pmset
-// (sleep) / shutdown; Linux uses systemctl. These typically require privilege —
-// the agent runs as the login user, so sleep generally works unprivileged on
-// macOS, while shutdown/Linux suspend may need the agent to run as root or with
-// a polkit rule. A permission failure surfaces back as the result Error.
+// (sleep) / shutdown (halt + reboot); Linux uses systemctl. These typically
+// require privilege — the agent runs as the login user, so sleep generally works
+// unprivileged on macOS, while reboot/shutdown and Linux suspend may need the
+// agent to run as root or with a polkit rule. Reboot deliberately shells out the
+// SAME unprivileged way shutdown already does (no sudo wrapper, which would need
+// a tty or a NOPASSWD rule the installer never writes) — a permission failure
+// surfaces back as the result Error rather than hanging on a password prompt.
 func powerCommand(action proto.PowerAction) (powerCmd, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		switch action {
 		case proto.PowerSleep:
 			return powerCmd{"pmset", []string{"sleepnow"}}, nil
+		case proto.PowerReboot:
+			return powerCmd{"shutdown", []string{"-r", "now"}}, nil
 		case proto.PowerShutdown:
 			return powerCmd{"shutdown", []string{"-h", "now"}}, nil
 		}
@@ -39,6 +44,8 @@ func powerCommand(action proto.PowerAction) (powerCmd, error) {
 		switch action {
 		case proto.PowerSleep:
 			return powerCmd{"systemctl", []string{"suspend"}}, nil
+		case proto.PowerReboot:
+			return powerCmd{"systemctl", []string{"reboot"}}, nil
 		case proto.PowerShutdown:
 			return powerCmd{"systemctl", []string{"poweroff"}}, nil
 		}

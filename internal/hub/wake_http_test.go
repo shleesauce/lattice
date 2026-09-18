@@ -74,13 +74,52 @@ func TestWakeNoLiveRelay(t *testing.T) {
 	}
 }
 
+// postPower drives handlePower with a raw JSON body, as a privileged caller.
+func postPower(t *testing.T, h *Hub, targetID, body string) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := privileged(httptest.NewRequest(http.MethodPost, "/api/agents/"+targetID+"/power", strings.NewReader(body)))
+	h.handlePower(rec, req, targetID)
+	return rec.Code
+}
+
 // TestPowerBadAction: a bogus power action → 400 before any agent round-trip.
 func TestPowerBadAction(t *testing.T) {
 	h := testHub(t)
-	rec := httptest.NewRecorder()
-	req := privileged(httptest.NewRequest(http.MethodPost, "/api/agents/studio/power", strings.NewReader(`{"action":"explode"}`)))
-	h.handlePower(rec, req, "studio")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d want 400", rec.Code)
+	for _, body := range []string{
+		`{"action":"explode"}`,
+		`{"action":""}`,
+		`{"action":"hibernate"}`,
+		`{"action":"Reboot"}`, // wire values are lowercase
+	} {
+		if code := postPower(t, h, "studio", body); code != http.StatusBadRequest {
+			t.Errorf("body %s: status=%d want 400", body, code)
+		}
+	}
+}
+
+// TestPowerAcceptsKnownActions: sleep/reboot/shutdown all pass validation and go
+// on to the agent round-trip. No agent is connected in this hub, so the expected
+// outcome is the round-trip's 404 — proving the request got PAST the 400 gate
+// rather than being rejected as an unknown action.
+func TestPowerAcceptsKnownActions(t *testing.T) {
+	h := testHub(t)
+	for _, action := range []string{"sleep", "reboot", "shutdown"} {
+		code := postPower(t, h, "studio", `{"action":"`+action+`"}`)
+		if code == http.StatusBadRequest {
+			t.Errorf("action %q rejected as invalid (400)", action)
+		}
+		if code != http.StatusNotFound {
+			t.Errorf("action %q: status=%d want 404 (no such agent connected)", action, code)
+		}
+	}
+}
+
+// TestPowerSurroundingWhitespace: the hub trims the action before validating, so
+// a client that sends " reboot " is honoured rather than 400'd.
+func TestPowerSurroundingWhitespace(t *testing.T) {
+	h := testHub(t)
+	if code := postPower(t, h, "studio", `{"action":"  reboot  "}`); code == http.StatusBadRequest {
+		t.Fatalf("whitespace-padded action rejected as invalid")
 	}
 }

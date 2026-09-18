@@ -218,12 +218,13 @@ func (h *Hub) relayWake(w http.ResponseWriter, relayID, mac string, onSubnet boo
 }
 
 // handlePower answers POST /api/agents/{id}/power with body
-// {"action":"sleep"|"shutdown"}, asking the target agent to suspend or power off
-// its OWN machine — the close of the unattended loop (wake → work → sleep). The
-// agent acks before it goes offline, so a successful sleep returns ok=true and
-// then the agent drops from the fleet.
+// {"action":"sleep"|"reboot"|"shutdown"}, asking the target agent to suspend,
+// restart, or power off its OWN machine — the close of the unattended loop
+// (wake → work → sleep). The agent acks before it goes offline, so a successful
+// sleep returns ok=true and then the agent drops from the fleet; a reboot drops it
+// the same way but it re-dials once its OS service comes back.
 func (h *Hub) handlePower(w http.ResponseWriter, r *http.Request, agentID string) {
-	// Privilege-class (destructive: powers a machine off/asleep): gated by
+	// Privilege-class (destructive: powers a machine off/asleep/around): gated by
 	// agentActions[*].privileged in handleAgentSub before dispatch.
 	var body struct {
 		Action string `json:"action"`
@@ -233,8 +234,10 @@ func (h *Hub) handlePower(w http.ResponseWriter, r *http.Request, agentID string
 		return
 	}
 	action := proto.PowerAction(strings.TrimSpace(body.Action))
-	if action != proto.PowerSleep && action != proto.PowerShutdown {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "action must be sleep or shutdown"})
+	// One source of truth for the accepted set (proto.PowerAction.Valid), shared
+	// with the agent's own frame check — so neither side can drift.
+	if !action.Valid() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "action must be sleep, reboot or shutdown"})
 		return
 	}
 
@@ -253,6 +256,15 @@ func (h *Hub) handlePower(w http.ResponseWriter, r *http.Request, agentID string
 		return
 	}
 	log.Printf("power: agent=%s action=%s ok=%v err=%q", agentID, action, res.OK, res.Error)
+	// Audit the machine-state change: these are the destructive actions where
+	// "who knocked this box over, and when" has to survive the log rotation. Not
+	// session-scoped (a power action targets the host, not a session), so the
+	// session_id column is empty — best-effort like every other LogAudit caller,
+	// since losing the row must not fail the request the operator already made.
+	detail, _ := json.Marshal(map[string]any{"ok": res.OK, "error": res.Error})
+	if err := h.store.LogAudit("", agentID, "power_control", string(action), string(detail), time.Now()); err != nil {
+		log.Printf("audit: power_control log failed: %v", err)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": res.OK, "error": res.Error, "action": res.Action})
 }
 

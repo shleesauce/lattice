@@ -6,7 +6,7 @@ import { useFleet, type ConnState } from './useFleet'
 import { useDevices } from './useDevices'
 import { useWorkspace } from './useWorkspace'
 import { usePersisted } from './usePersisted'
-import { getAuthStatus, getSetupStatus, wakeAgent } from './api'
+import { getAuthStatus, getSetupStatus, powerAgent, wakeAgent, type PowerAction } from './api'
 import type { AuthStatus, SetupStatus } from './types'
 import { FirstRunWizard } from './components/FirstRunWizard'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -222,6 +222,24 @@ function Dashboard() {
     wakeTimers.current.add(t)
   }
 
+  // Sleep / reboot / shut down a machine through its own agent. The agent acks
+  // BEFORE it acts, so ok=true means "issued" — the box then drops off the mesh
+  // (and, for a reboot, re-joins on its own). The confirm for the destructive
+  // actions already happened in the Fleet power menu.
+  const onPower = (m: Machine, action: PowerAction) => {
+    if (!m.hasAgent || !m.agentId) {
+      flash(`${m.label} has no lattice agent — can't control its power`, 'error')
+      return
+    }
+    const verb = action === 'shutdown' ? 'shutdown' : action
+    void powerAgent(m.agentId, action)
+      .then((res) => {
+        if (res.ok) flash(`${verb} sent to ${m.label}`)
+        else flash(res.error || `Couldn't ${verb} ${m.label}`, 'error')
+      })
+      .catch(() => flash(`Couldn't reach the mesh to ${verb} ${m.label}`, 'error'))
+  }
+
   // Start a session on a device. Only agent-backed machines can host a lattice
   // session; for others we surface their SSH reach instead.
   const onNewSession = (m: Machine) => {
@@ -270,6 +288,7 @@ function Dashboard() {
             onManageMesh={() => setManageMeshOpen(true)}
             onSelect={setSelectedId}
             onWake={onWake}
+            onPower={onPower}
             onNewSession={onNewSession}
             onOpenWorkspace={() => setView('workspace')}
             onOpenProject={(name) => {

@@ -556,6 +556,45 @@ cause-by-cause (orphan-process kill, Windows self-exit, etc.). As built (v0.2.0,
   `isLive(offlineAfter)` so a stale-but-unreaped socket never blocks a real reconnect) rather than
   changed — altering live timeouts is riskier than the comment is worth.
 
+## D39 — `reboot` joins the power actions; power gets a UI surface behind a named confirm  (v0.2.0, extends D13)
+**Why:** the unattended loop (D13: wake → work → sleep) shipped in v0.1.5 with a hub endpoint and
+`powerAgent()` in the dashboard client, but **no component ever called it** — the only power control a
+human could reach was Wake. Restarting a fleet box (after an update, a wedged driver, a kernel
+upgrade) meant SSH or walking to it, which is the exact per-OS errand Lattice exists to kill. Reboot
+is also the *least* destructive of the three: it's the only one the machine comes back from without
+a magic packet or a human.
+
+**Decisions:**
+- **One validation source.** `proto.PowerAction.Valid()` owns the accepted set; the hub's request
+  check and the agent's frame check both call it. Previously each side spelled out
+  `!= sleep && != shutdown` — two places to forget when adding a third action, and a mismatch there
+  means the hub accepts what the agent refuses (or worse, the reverse).
+- **Reboot reuses the shutdown privilege path exactly** — darwin `shutdown -r now`, linux
+  `systemctl reboot`, windows `shutdown.exe /r /t 0`, all shelled out as the agent's own user with
+  **no sudo wrapper**. A `sudo` prefix would need a tty or a NOPASSWD rule the installer never
+  writes, so it would hang or fail obscurely; running unprivileged fails *fast* and the permission
+  error surfaces in the result's `Error` for the operator to read. Whether reboot needs root is an
+  OS/deployment question, not something the agent should paper over.
+- **Ack-before-action is preserved** (the shutdown pattern): the agent sends `power_control_result`
+  with OK=true, waits 500ms for the frame to flush, then runs the command on a detached context. So
+  `ok=true` means *issued*, never *completed* — the process is expected to die mid-command.
+- **Still privilege-class.** `agentActions["power"].privileged` stays true (same gate as `exec`), so a
+  passwordless hub demands the master token. Reboot being "gentler" does not lower its auth class:
+  it still knocks a machine off the mesh and kills every live session on it.
+- **Audited.** Every power round-trip appends an `audit_log` row (`event_type=power_control`,
+  `tool_name=<action>`, empty `session_id` — it targets a host, not a session), so "who restarted
+  studio at 2am" outlives the rotating hub log. Best-effort like every other `LogAudit` caller.
+- **UI: one small menu per machine, not four buttons.** Wake / Sleep / Reboot / Shut down live behind
+  a power button in the machine panel's header. Availability is the *inverse* of reachability — Wake
+  is the only action enabled on an offline box and the only one disabled on an online one — and each
+  disabled item carries the reason as its tooltip rather than being silently dead. Reboot and
+  Shutdown require a second click on a confirm that **names the machine and states the consequence**;
+  Sleep does not, because sleep is undone by the Wake button two rows above it.
+**Rejected:** a `sudo`-wrapped reboot (hangs on a password prompt the browser can't answer); a
+separate `/api/agents/{id}/reboot` route (another route to gate, another chance to forget
+`privileged`); a browser `confirm()` (unstyleable, and it can't show which machine it means);
+confirming Sleep too (confirm fatigue on the one reversible action trains people to click through).
+
 ## Open / deferred for the IDE milestone
 - **Preview framework mode** (D36) — no-strip + dev-server `base`, verified with live HMR on a real device.
 - **D9** product name — **FINALIZED as "Lattice"** (2026-06-04, M3 Phase 5). No longer provisional;

@@ -99,7 +99,8 @@ One command, removes everything, touches nothing else — see [Uninstall](#unins
 - **Workspace** — long-lived **Claude** and **terminal** sessions that survive a browser refresh
   *and* a hub restart, smart placement across machines, and an embedded **VS Code** editor
   (code-server) tunnelled through the hub — reachable from any device at one URL.
-- **Remote ops** — interactive terminal, file browser, and **wake-on-LAN** for any machine.
+- **Remote ops** — interactive terminal, file browser, **wake-on-LAN**, and per-machine **power
+  controls** (sleep / reboot / shut down, each behind a confirm that names the machine).
 - **Manage mesh** — rename / remove machines, per-machine revocable join tokens, and the
   integrations detect-and-guide panel.
 - **Single binary** — the same artifact is the hub or an agent depending on the subcommand;

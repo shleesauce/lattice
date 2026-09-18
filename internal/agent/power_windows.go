@@ -21,12 +21,16 @@ func (c powerCmd) run(ctx context.Context) error {
 }
 
 // powerCommand maps a PowerAction to the Windows command. Sleep uses
-// rundll32 powrprof (does NOT hibernate when hibernation is off); shutdown uses
-// shutdown.exe. A failure (e.g. insufficient privilege) surfaces as result Error.
+// rundll32 powrprof (does NOT hibernate when hibernation is off); reboot and
+// shutdown both use shutdown.exe (/r vs /s), run the same unprivileged way as the
+// rest of the agent. A failure (e.g. insufficient privilege) surfaces as result
+// Error.
 func powerCommand(action proto.PowerAction) (powerCmd, error) {
 	switch action {
 	case proto.PowerSleep:
 		return powerCmd{"rundll32.exe", []string{"powrprof.dll,SetSuspendState", "0,1,0"}}, nil
+	case proto.PowerReboot:
+		return powerCmd{"shutdown.exe", []string{"/r", "/t", "0"}}, nil
 	case proto.PowerShutdown:
 		return powerCmd{"shutdown.exe", []string{"/s", "/t", "0"}}, nil
 	}

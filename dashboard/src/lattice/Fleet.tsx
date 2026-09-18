@@ -1,10 +1,12 @@
 /* Control Room — machines rail + the live mesh map + a side panel for the
    selected machine. All real fleet data (no mock). */
+import { useEffect, useState } from 'react'
 import { Icon } from './Icon'
 import { Dot, Chip } from './primitives'
 import { FleetMap } from './FleetMap'
 import { STATUS_LABEL, fitScore } from './adapt'
 import type { Machine } from './adapt'
+import type { PowerAction } from '../api'
 
 export function Fleet({
   machines,
@@ -15,6 +17,7 @@ export function Fleet({
   onManageMesh,
   onSelect,
   onWake,
+  onPower,
   onNewSession,
   onOpenWorkspace,
   onOpenProject,
@@ -28,6 +31,7 @@ export function Fleet({
   onManageMesh: () => void
   onSelect: (id: string) => void
   onWake: (m: Machine) => void
+  onPower: (m: Machine, action: PowerAction) => void
   onNewSession: (m: Machine) => void
   onOpenWorkspace: () => void
   // Jump straight into a specific project / session in the Workspace.
@@ -159,6 +163,7 @@ export function Fleet({
           m={m}
           canWake={canWake}
           onWake={onWake}
+          onPower={onPower}
           onNewSession={onNewSession}
           onOpenWorkspace={onOpenWorkspace}
           onOpenSession={onOpenSession}
@@ -172,6 +177,7 @@ function SidePanel({
   m,
   canWake,
   onWake,
+  onPower,
   onNewSession,
   onOpenWorkspace,
   onOpenSession,
@@ -179,6 +185,7 @@ function SidePanel({
   m: Machine
   canWake: boolean
   onWake: (m: Machine) => void
+  onPower: (m: Machine, action: PowerAction) => void
   onNewSession: (m: Machine) => void
   onOpenWorkspace: () => void
   onOpenSession: (id: string) => void
@@ -199,6 +206,7 @@ function SidePanel({
               {m.label}
             </span>
           </div>
+          <PowerMenu m={m} canWake={canWake} onWake={onWake} onPower={onPower} />
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {alive ? (
@@ -331,6 +339,145 @@ function SidePanel({
             New session
           </button>
         </div>
+      )}
+    </div>
+  )
+}
+
+// The four power controls, in escalation order. `confirm` marks the ones that are
+// destructive enough to need an explicit yes naming the machine — reboot and
+// shutdown drop the box off the mesh and take any unsaved work with it. Wake is
+// listed here because the operator thinks of it as "power", but it's a different
+// road: WoL relayed by a LAN peer (wakeAgent), not a frame to a sleeping agent.
+const POWER_ITEMS: { action: PowerAction | 'wake'; label: string; icon: string; confirm: boolean }[] = [
+  { action: 'wake', label: 'Wake', icon: 'zap', confirm: false },
+  { action: 'sleep', label: 'Sleep', icon: 'circle-dot', confirm: false },
+  { action: 'reboot', label: 'Reboot', icon: 'refresh-cw', confirm: true },
+  { action: 'shutdown', label: 'Shut down', icon: 'power', confirm: true },
+]
+
+// Consequence copy for the confirm step, so the dialog says what actually happens
+// to THIS machine rather than a generic "are you sure?".
+const CONFIRM_BODY: Record<'reboot' | 'shutdown', string> = {
+  reboot: 'It drops off the mesh, loses any unsaved work and every live session, and re-joins on its own once it boots.',
+  shutdown: 'It drops off the mesh, loses any unsaved work and every live session, and can only come back via Wake — or in person.',
+}
+
+// PowerMenu — the per-machine power controls (Wake / Sleep / Reboot / Shut down)
+// behind one small button in the machine panel's header. Availability is the
+// inverse of reachability: Wake is the ONLY thing you can do to an offline box,
+// and the only thing you can't do to an online one.
+function PowerMenu({
+  m,
+  canWake,
+  onWake,
+  onPower,
+}: {
+  m: Machine
+  canWake: boolean
+  onWake: (m: Machine) => void
+  onPower: (m: Machine, action: PowerAction) => void
+}) {
+  const [open, setOpen] = useState(false)
+  // The action awaiting a confirm; null = showing the plain item list.
+  const [pending, setPending] = useState<'reboot' | 'shutdown' | null>(null)
+
+  // Esc backs out one step (confirm → list → closed), only while open.
+  useEffect(() => {
+    if (!open) return
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      if (pending) setPending(null)
+      else setOpen(false)
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [open, pending])
+
+  const close = () => {
+    setOpen(false)
+    setPending(null)
+  }
+
+  // A power_control frame only reaches a machine whose agent is actually checked
+  // in; a Tailscale/SSH-only box has nothing to receive it.
+  const canControl = !m.offline && m.hasAgent && !!m.agentId
+  const reasonFor = (action: PowerAction | 'wake'): string => {
+    if (action === 'wake') {
+      if (!m.offline) return 'already online'
+      if (!m.mac) return 'no known MAC address'
+      if (!canWake) return 'needs an online machine on its subnet to broadcast'
+      return 'wake over LAN'
+    }
+    if (m.offline) return 'offline — wake it first'
+    if (!m.hasAgent || !m.agentId) return 'no lattice agent on this machine'
+    return `${action} ${m.label}`
+  }
+  const enabled = (action: PowerAction | 'wake'): boolean =>
+    action === 'wake' ? m.offline && !!m.mac && canWake : canControl
+
+  const run = (action: PowerAction | 'wake') => {
+    if (action === 'wake') onWake(m)
+    else onPower(m, action)
+    close()
+  }
+
+  return (
+    <div className="pwr-wrap">
+      <button
+        type="button"
+        className="iconbtn"
+        title="Power"
+        aria-label={`Power controls for ${m.label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => (open ? close() : setOpen(true))}
+      >
+        <Icon name="power" size={15} />
+      </button>
+
+      {open && (
+        <>
+          <div className="prj-menu-backdrop" onClick={close} />
+          <div className="pwr-menu" role="menu" aria-label={`Power — ${m.label}`}>
+            {pending ? (
+              <div className="pwr-confirm">
+                <div className="ttl">
+                  <Icon name={pending === 'reboot' ? 'refresh-cw' : 'power'} size={14} />
+                  {pending === 'reboot' ? 'Reboot' : 'Shut down'} <span className="nm">{m.label}</span>?
+                </div>
+                <p>{CONFIRM_BODY[pending]}</p>
+                <div className="row">
+                  <button type="button" className="btn btn-danger" onClick={() => run(pending)}>
+                    {pending === 'reboot' ? 'Reboot' : 'Shut down'}
+                  </button>
+                  <button type="button" className="btn btn-ghost" onClick={() => setPending(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              POWER_ITEMS.map((it) => (
+                <button
+                  key={it.action}
+                  type="button"
+                  role="menuitem"
+                  className={`pwr-item${it.confirm ? ' danger' : ''}`}
+                  disabled={!enabled(it.action)}
+                  title={reasonFor(it.action)}
+                  onClick={() => {
+                    if (it.confirm) setPending(it.action as 'reboot' | 'shutdown')
+                    else run(it.action)
+                  }}
+                >
+                  <Icon name={it.icon} size={14} />
+                  {it.label}
+                </button>
+              ))
+            )}
+          </div>
+        </>
       )}
     </div>
   )

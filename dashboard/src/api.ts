@@ -114,9 +114,15 @@ export async function wakeAgent(targetId: string): Promise<WakeResult> {
   return data
 }
 
-// powerAgent sleeps or shuts down a machine via its own agent — the close of the
-// unattended loop (wake → work → sleep).
-export async function powerAgent(agentId: string, action: 'sleep' | 'shutdown'): Promise<WakeResult> {
+// PowerAction mirrors proto.PowerAction on the Go side — the set the hub accepts
+// on /api/agents/{id}/power. Wake is NOT one of these: a sleeping agent isn't
+// connected to receive a frame, so waking goes through wakeAgent (WoL relay).
+export type PowerAction = 'sleep' | 'reboot' | 'shutdown'
+
+// powerAgent sleeps, reboots, or shuts down a machine via its own agent — the
+// close of the unattended loop (wake → work → sleep). The agent acks BEFORE it
+// acts, so ok=true means "issued", not "already down".
+export async function powerAgent(agentId: string, action: PowerAction): Promise<WakeResult> {
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/power`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
